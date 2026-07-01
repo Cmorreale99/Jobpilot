@@ -1,0 +1,5 @@
+Personal journal — NOT a career artifact.
+
+This file lives outside the approved career-documents folder (folder_id "personal").
+It exists only to prove that broad Drive scanning is disabled by default: the pipeline
+must never ingest this content unless GDRIVE_ALLOW_BROAD_SCAN is explicitly enabled.

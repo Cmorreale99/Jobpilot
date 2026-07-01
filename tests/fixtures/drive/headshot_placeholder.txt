@@ -1,0 +1,2 @@
+Binary image placeholder. This entry has MIME type image/jpeg and must be skipped by
+the MIME allowlist — its body should never be read into the Master CV.

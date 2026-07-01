@@ -1,0 +1,53 @@
+{
+  "description": "Fixture Google Drive for offline Master CV ingestion. Mirrors what a real Drive MCP 'list files in folder' call would return, including artifacts that must be skipped by policy.",
+  "sources": [
+    {
+      "id": "drv_resume_001",
+      "name": "Master Resume 2026.txt",
+      "mime_type": "text/plain",
+      "folder_id": "career_docs",
+      "modified_time": "2026-05-14T09:30:00Z",
+      "path": "resume.txt"
+    },
+    {
+      "id": "drv_project_002",
+      "name": "Realtime Fraud Pipeline - Project Writeup.md",
+      "mime_type": "text/markdown",
+      "folder_id": "career_docs",
+      "modified_time": "2026-04-02T17:12:00Z",
+      "path": "project_writeup.md"
+    },
+    {
+      "id": "drv_portfolio_003",
+      "name": "Onboarding Redesign Case Study",
+      "mime_type": "application/vnd.google-apps.document",
+      "folder_id": "career_docs",
+      "modified_time": "2026-06-20T11:45:00Z",
+      "path": "portfolio_case_study.md"
+    },
+    {
+      "id": "drv_transcript_004",
+      "name": "University Transcript.pdf",
+      "mime_type": "application/pdf",
+      "folder_id": "career_docs",
+      "modified_time": "2025-11-01T08:00:00Z",
+      "path": "transcript_extracted.txt"
+    },
+    {
+      "id": "drv_headshot_005",
+      "name": "profile_headshot.jpg",
+      "mime_type": "image/jpeg",
+      "folder_id": "career_docs",
+      "modified_time": "2026-03-10T14:00:00Z",
+      "path": "headshot_placeholder.txt"
+    },
+    {
+      "id": "drv_journal_006",
+      "name": "personal_journal.txt",
+      "mime_type": "text/plain",
+      "folder_id": "personal",
+      "modified_time": "2026-06-28T22:15:00Z",
+      "path": "personal_journal.txt"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+Jordan Rivera
+Senior Backend Engineer — Distributed Systems
+jordan.rivera@example.com | github.com/jordanrivera
+
+SUMMARY
+Backend engineer with 7 years building high-throughput data and payments systems.
+Focused on reliability, observability, and pragmatic delivery.
+
+EXPERIENCE
+
+Northwind Payments — Staff Engineer (2022–present)
+
+Problem: Payment settlement jobs ran nightly and frequently missed the banking cutoff, delaying merchant payouts.
+Action: Re-architected the settlement pipeline into idempotent, sharded workers with a replayable event log.
+Result: Cut settlement runtime from 6 hours to 40 minutes and eliminated missed banking cutoffs for 18 straight months.
+
+Problem: On-call engineers had no way to trace a single payment across seven services.
+Action: Introduced distributed tracing and a correlation-id standard adopted across all payment services.
+Result: Reduced mean time to resolution for payment incidents from 3 hours to 25 minutes.
+
+Cirrus Analytics — Senior Software Engineer (2018–2022)
+
+Problem: The analytics API buckled under quarterly reporting load, timing out for enterprise customers.
+Action: Added a read-through cache and query-planner hints, and moved heavy aggregations to a columnar store.
+Result: Sustained 12x peak traffic with p99 latency under 300ms and zero reporting-window outages.
+
+SKILLS
+Python, Go, PostgreSQL, Kafka, gRPC, AWS, Kubernetes, distributed systems, observability.

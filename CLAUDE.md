@@ -101,6 +101,41 @@ GitHub and Google Drive are accessed through their **MCP servers**, not hand-rol
 - OAuth still governs the underlying access; tokens are passed to the MCP servers and stored encrypted per the guardrails.
 - Gmail (send + scoped interview scan), the compliant job source, and LinkedIn remain direct API clients — MCP is only for Drive + GitHub.
 
+### Google Drive integration (Master CV evidence)
+
+Drive is an **evidence source for explicit career artifacts only** — resumes, project
+docs, portfolio/case-study docs, transcripts, work samples (PDF/DOCX/Google Docs/
+Markdown/text). It is **read/search/download only.** Broad personal Drive mining is out
+of scope; the `DriveClient` interface deliberately exposes no delete/move/permission/
+write operations.
+
+- **Mocks are the default.** `GDRIVE_MCP_ENABLED=false` selects `MockDriveClient`
+  (`app/integrations/mock/drive.py`), backed by `tests/fixtures/drive/`. The whole
+  Master CV pipeline runs end-to-end with no OAuth, no MCP, no network.
+- **Interface:** `DriveClient` in `app/integrations/base.py` —
+  `list_candidate_sources`, `read_source`, `get_source_metadata`, `list_changed_sources`.
+  Nothing broader.
+- **Real client:** `McpDriveClient` (`app/integrations/mcp/drive.py`) is an async adapter
+  onto the **Google Workspace MCP** server (taylorwilsdon/google_workspace_mcp), mapping
+  the interface to its `list_drive_items` / `search_drive_files` / `get_drive_file_content`
+  / `get_drive_file_permissions` tools. Endpoint/transport come from config only
+  (`GDRIVE_MCP_SERVER`, `GDRIVE_MCP_TRANSPORT`, `GDRIVE_MCP_ENABLED`) — no URLs hardcoded.
+  On connect it validates tool names via `list_tools` and fails with a clear
+  `DriveConfigurationError`. The `DriveClient` interface is **async** (mock included);
+  the ingestion service awaits it. Remaining to go live: the encrypted OAuth token store
+  (`TODO(mcp-auth)`) and, if the server returns formatted text rather than structured
+  content, a parser at `_extract_payload` — see PLAN.md M6.
+- **Selection:** `create_drive_client()` (`app/integrations/drive_factory.py`) returns
+  mock vs. MCP based on `GDRIVE_MCP_ENABLED`.
+- **Source policy** (`app/services/source_policy.py`) is the single ingestion gate:
+  MIME allowlist (`GDRIVE_ALLOWED_MIME_TYPES`) + approved-folder scope
+  (`GDRIVE_SOURCE_FOLDER_ID`). Broad scanning is off unless `GDRIVE_ALLOW_BROAD_SCAN=true`;
+  with no folder and no broad scan, nothing is ingested.
+- **Provenance:** ingestion (`app/services/master_cv_ingestion.py`) records a `CvSource`
+  per document (`source_type=gdrive`, external ref, title, mime, modified time, raw text,
+  ingested-at). The domain `MasterCvBuilder` structures evidence into PAR claims that
+  each trace back to a source ref — it never invents experience.
+
 ## Pipeline (two independent nightly jobs)
 
 **Application pipeline:** refresh Master CV (if sources changed) → fetch jobs (24h) → score all → top `SHORTLIST_SIZE` (~250) → deep re-rank to `TOP_N` (10) with rationale → tailor materials → research contact + draft outreach into the approval queue.
@@ -127,6 +162,9 @@ A failure in one job never blocks the other.
 | `TOP_N` | `10` | Deep-ranked final matches. |
 | `ANTHROPIC_MODEL_BULK` | (sonnet 5 high) | Bulk scoring/extraction. |
 | `ANTHROPIC_MODEL_DEEP` | (opus 4.8 high) | Deep ranking/drafting. |
+| `GDRIVE_MCP_ENABLED` | `false` | When false, the fixture-backed mock Drive client is used (no OAuth/MCP). True selects the MCP-backed client. |
+| `GDRIVE_SOURCE_FOLDER_ID` | (empty) | Approved career-docs folder. With no folder and no broad scan, nothing is ingested. |
+| `GDRIVE_ALLOW_BROAD_SCAN` | `false` | Never scan the whole Drive by default. True is required to look outside the approved folder. |
 
 ## Out of scope (do not build)
 
