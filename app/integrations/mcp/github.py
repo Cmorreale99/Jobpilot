@@ -82,10 +82,16 @@ class McpGitHubClient:
                 "McpGitHubClient constructed while GITHUB_MCP_ENABLED is false. "
                 "Use the mock client, or set GITHUB_MCP_ENABLED=true."
             )
-        if not self._settings.github_mcp_server:
+        transport = self._settings.github_mcp_transport
+        if transport == "http" and not self._settings.github_mcp_server:
             raise GitHubConfigurationError(
                 "GITHUB_MCP_ENABLED is true but GITHUB_MCP_SERVER is empty. "
                 "Set GITHUB_MCP_SERVER to the GitHub MCP endpoint."
+            )
+        if transport == "stdio" and not self._settings.github_mcp_command:
+            raise GitHubConfigurationError(
+                "GITHUB_MCP_TRANSPORT is stdio but GITHUB_MCP_COMMAND is empty. "
+                "Set GITHUB_MCP_COMMAND (and GITHUB_MCP_ARGS) to launch the server."
             )
         if not self._settings.github_username and not self._settings.github_allow_broad_scan:
             raise GitHubConfigurationError(
@@ -129,10 +135,27 @@ class McpGitHubClient:
                 await self._verify_tools(session)
                 yield session
         elif transport == "stdio":
-            # TODO(mcp): stdio needs the server launch command/args; use stdio_client(...).
-            raise GitHubConfigurationError(
-                "GITHUB_MCP_TRANSPORT=stdio is not wired yet; use transport=http."
+            from mcp import StdioServerParameters
+            from mcp.client.stdio import stdio_client
+
+            if not self._settings.github_mcp_command:
+                raise GitHubConfigurationError(
+                    "GITHUB_MCP_TRANSPORT is stdio but GITHUB_MCP_COMMAND is empty."
+                )
+            # github/github-mcp-server reads its PAT from the environment when launched
+            # locally; the token never appears on the command line.
+            params = StdioServerParameters(
+                command=self._settings.github_mcp_command,
+                args=self._settings.github_mcp_args.split(),
+                env={"GITHUB_PERSONAL_ACCESS_TOKEN": creds.access_token},
             )
+            async with (
+                stdio_client(params) as (read, write),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                await self._verify_tools(session)
+                yield session
         else:
             raise GitHubConfigurationError(
                 f"Unsupported GITHUB_MCP_TRANSPORT: {transport!r} (expected http/stdio)."

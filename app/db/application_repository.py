@@ -174,13 +174,13 @@ class SqlApplicationRepository:
             return _to_outreach(row) if row is not None else None
 
     def list_pending_outreach(self, user_id: str) -> list[OutreachRecord]:
+        return self.list_outreach_by_status(user_id, OutreachStatus.DRAFTED)
+
+    def list_outreach_by_status(self, user_id: str, status: OutreachStatus) -> list[OutreachRecord]:
         with self._session_factory() as session:
             rows = session.scalars(
                 select(OutreachRow)
-                .where(
-                    OutreachRow.user_id == user_id,
-                    OutreachRow.status == OutreachStatus.DRAFTED.value,
-                )
+                .where(OutreachRow.user_id == user_id, OutreachRow.status == status.value)
                 .order_by(OutreachRow.id)
             )
             return [_to_outreach(row) for row in rows]

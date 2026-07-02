@@ -21,6 +21,8 @@ from app.db.session import create_all, create_db_engine, create_session_factory
 from app.domain.applications import ApplicationRepository
 from app.domain.cv import MasterCvRepository
 from app.domain.jobs import JobRepository
+from app.integrations.base import MailClient, MailConfigurationError
+from app.integrations.mail_factory import create_mail_client
 from app.integrations.oauth.base import OAuthError
 from app.integrations.oauth.factory import create_oauth_providers
 from app.security.crypto import TokenCipher, TokenEncryptionError
@@ -91,6 +93,30 @@ def get_job_repository(request: Request) -> JobRepository:
     repository = SqlJobRepository(create_session_factory(engine))
     request.app.state.job_repository = repository
     return repository
+
+
+def get_mail_client(request: Request) -> MailClient:
+    """Return the app's mail client, building the configured one on first use.
+
+    Mock (in-process outbox) unless ``GMAIL_ENABLED``; misconfiguration of the real
+    client (missing encryption key or credential) is reported as HTTP 503.
+    """
+    existing = getattr(request.app.state, "mail_client", None)
+    if isinstance(existing, MailClient):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    store = None
+    try:
+        if settings.gmail_enabled:
+            cipher = TokenCipher.from_settings(settings)
+            engine = create_db_engine(settings)
+            create_all(engine)
+            store = SqlOAuthCredentialStore(create_session_factory(engine), cipher)
+        client = create_mail_client(settings, store=store, user_id=settings.pipeline_user_id)
+    except (TokenEncryptionError, MailConfigurationError) as exc:
+        raise HTTPException(status_code=503, detail=f"Mail is not configured: {exc}") from exc
+    request.app.state.mail_client = client
+    return client
 
 
 def get_master_cv_repository(request: Request) -> MasterCvRepository:

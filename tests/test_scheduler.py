@@ -9,6 +9,7 @@ from app.config import Settings
 from app.integrations.mock.drive import MockDriveClient
 from app.integrations.mock.github import MockGitHubClient
 from app.integrations.mock.jobs import MockJobSource
+from app.integrations.mock.mail import MockMailClient
 from app.integrations.mock.research import MockResearchClient
 from app.scheduler import APPLICATION_PIPELINE_JOB_ID, create_scheduler, main, run_job_safely
 from app.services.application_repository import InMemoryApplicationRepository
@@ -30,6 +31,7 @@ def _deps(job_source: object | None = None) -> PipelineDependencies:
         github_client=MockGitHubClient(GITHUB_FIXTURES_DIR),
         job_source=job_source or MockJobSource(JOBS_FIXTURES_DIR),  # type: ignore[arg-type]
         research_client=MockResearchClient(RESEARCH_FIXTURES_DIR),
+        mail_client=MockMailClient(),
         master_cv_repository=InMemoryMasterCvRepository(),
         job_repository=InMemoryJobRepository(),
         application_repository=InMemoryApplicationRepository(),

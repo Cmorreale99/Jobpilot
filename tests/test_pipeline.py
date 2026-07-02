@@ -10,6 +10,7 @@ from app.domain.applications import ApplicationStatus, OutreachStatus
 from app.integrations.mock.drive import MockDriveClient
 from app.integrations.mock.github import MockGitHubClient
 from app.integrations.mock.jobs import MockJobSource
+from app.integrations.mock.mail import MockMailClient
 from app.integrations.mock.research import MockResearchClient
 from app.services.application_repository import InMemoryApplicationRepository
 from app.services.job_repository import InMemoryJobRepository
@@ -34,6 +35,7 @@ def deps() -> PipelineDependencies:
         github_client=MockGitHubClient(GITHUB_FIXTURES_DIR),
         job_source=MockJobSource(JOBS_FIXTURES_DIR),
         research_client=MockResearchClient(RESEARCH_FIXTURES_DIR),
+        mail_client=MockMailClient(),
         master_cv_repository=InMemoryMasterCvRepository(),
         job_repository=InMemoryJobRepository(),
         application_repository=InMemoryApplicationRepository(),
@@ -112,6 +114,54 @@ async def test_fresh_jobs_window_is_honored(
     assert result.match_count == 0
     assert result.drafts_queued == 0
     assert result.master_cv_version == 1  # the CV still refreshed
+
+
+async def test_auto_send_approves_and_sends_addressable_drafts(
+    deps: PipelineDependencies, pipeline_settings: Settings
+) -> None:
+    auto = pipeline_settings.model_copy(update={"outreach_auto_send": True})
+    result = await run_application_pipeline(deps, auto, now=_NOW)
+
+    # Fixture contacts: Ledgerline + Sentinel Pay have emails; Streamforge has a
+    # contact without one; the rest have no researched contact at all.
+    mail = deps.mail_client
+    assert isinstance(mail, MockMailClient)
+    assert result.drafts_sent == len(mail.outbox) == 2
+    assert {e.to for e in mail.outbox} == {
+        "priya.raman@ledgerline.example",
+        "m.webb@sentinelpay.example",
+    }
+    # Everything auto-approved; unaddressable drafts stay approved, never guessed at.
+    assert deps.application_repository.list_pending_outreach("u1") == []
+    approved = deps.application_repository.list_outreach_by_status("u1", OutreachStatus.APPROVED)
+    assert len(approved) == 2
+    assert all(r.contact is None or not r.contact.email for r in approved)
+
+
+async def test_auto_send_rerun_never_resends(
+    deps: PipelineDependencies, pipeline_settings: Settings
+) -> None:
+    auto = pipeline_settings.model_copy(update={"outreach_auto_send": True})
+    first = await run_application_pipeline(deps, auto, now=_NOW)
+    second = await run_application_pipeline(deps, auto, now=_NOW)
+
+    mail = deps.mail_client
+    assert isinstance(mail, MockMailClient)
+    assert first.drafts_sent == 2
+    assert second.drafts_sent == 0
+    assert len(mail.outbox) == 2  # a re-run never re-sends
+
+
+async def test_flag_off_sends_nothing(
+    deps: PipelineDependencies, pipeline_settings: Settings
+) -> None:
+    result = await run_application_pipeline(deps, pipeline_settings, now=_NOW)
+    mail = deps.mail_client
+    assert isinstance(mail, MockMailClient)
+    assert result.drafts_sent == 0
+    assert mail.outbox == []
+    # All drafts wait in the approval queue for the human.
+    assert len(deps.application_repository.list_pending_outreach("u1")) == result.drafts_queued
 
 
 async def test_default_window_comes_from_settings(

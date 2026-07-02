@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
-import pytest
 from app.config import Settings
 from app.domain.applications import ApplicationStatus, OutreachStatus
 from app.domain.cv import MasterCv, ParClaim
@@ -128,18 +125,3 @@ async def test_rerun_never_resurrects_a_discarded_draft(
     assert repo.list_pending_outreach("u1") == []
     record = repo.get_outreach(first[0].id)
     assert record is not None and record.status is OutreachStatus.DISCARDED
-
-
-async def test_auto_send_flag_only_warns(
-    mock_research_client: MockResearchClient,
-    settings: Settings,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    repo = InMemoryApplicationRepository()
-    auto_send = settings.model_copy(update={"outreach_auto_send": True})
-    with caplog.at_level(logging.WARNING):
-        records = await run_drafting(
-            "u1", _cv(), [_match(_LEDGERLINE, 1)], mock_research_client, repo, auto_send
-        )
-    assert any("OUTREACH_AUTO_SEND" in r.message for r in caplog.records)
-    assert all(r.status is OutreachStatus.DRAFTED for r in records)  # still queued, not sent

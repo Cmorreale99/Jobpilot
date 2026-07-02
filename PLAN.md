@@ -181,7 +181,9 @@ LlmClient (protocol, app/llm/client.py)
         `python -m app.scheduler --once` runs the pipeline immediately (exit code
         reflects success); no `--once` schedules it nightly. Dependencies build lazily
         at first fire, so the process starts with zero credentials.
-- [ ] **M6 — Real integrations behind flags**
+- [~] **M6 — Real integrations behind flags** — all code paths built and offline-tested;
+      what remains is live verification of the two MCP servers against real deployments
+      (auth contract, tool names, payload format), which requires real credentials.
   - [x] **Encrypted OAuth credential store** — `oauth_credentials` model +
         `TokenCipher` (Fernet, `TOKEN_ENCRYPTION_KEY`); tokens encrypted at rest.
         `OAuthCredentialStore` protocol with `InMemoryOAuthCredentialStore` (mock-first)
@@ -205,28 +207,47 @@ LlmClient (protocol, app/llm/client.py)
         `get_drive_file_content` / `get_drive_file_permissions`; config-driven endpoint;
         `list_tools` validation on connect; response→dataclass mapping, unit-tested
         offline via an injected fake session; credentials now sourced from the store.
-        **Remaining before it talks to real Drive:**
+        Both transports wired: http (bearer header) and stdio
+        (`GDRIVE_MCP_COMMAND`/`GDRIVE_MCP_ARGS`; token passed via the child process env,
+        never the command line).
+        **Remaining — needs a live deployment + real credentials to verify:**
         1. Confirm the server's auth contract (bearer header vs. server-side token).
         2. **Live tool-name verification** — `list_tools` will confirm/deny the four names
            against the actual deployment; override `DriveToolNames` if they differ.
         3. **Response format** — if the server returns human-formatted text (not
            structured content/JSON), add a parser at `_extract_payload`.
-        4. **stdio transport** — only `http` is wired; stdio needs launch command/args
-           config (`GDRIVE_MCP_COMMAND`/`GDRIVE_MCP_ARGS`).
   - [~] **GitHub MCP** — targets the official github/github-mcp-server. Done: async
         `McpGitHubClient` mapping the `GitHubClient` interface onto `search_repositories`
         / `get_file_contents` / `list_commits`; config-driven endpoint; `list_tools`
         validation; base64 README decode; response→dataclass mapping, unit-tested offline
         via an injected fake session; PAT now sourced from the store.
-        **Remaining before it talks to real GitHub:**
-        1. Confirm auth (bearer header for the remote server vs.
-           `GITHUB_PERSONAL_ACCESS_TOKEN` for a locally launched one).
+        Both transports wired: http (bearer header) and stdio
+        (`GITHUB_MCP_COMMAND`/`GITHUB_MCP_ARGS`; PAT passed via
+        `GITHUB_PERSONAL_ACCESS_TOKEN` in the child process env).
+        **Remaining — needs a live deployment + real credentials to verify:**
+        1. Confirm auth (bearer header for the remote server vs. env for local).
         2. **Languages breakdown** — no first-class per-repo languages tool; metadata
            reports the primary language only. Wire a `/languages` equivalent if exposed.
-        3. **Response format / stdio** — same caveats as Drive (text-vs-structured
-           payloads; only `http` transport wired).
-  - [ ] Gmail send behind approval; compliant job-source adapter.
-  - [ ] Mocks remain the default for tests.
+        3. **Response format** — same caveat as Drive (text-vs-structured payloads).
+  - [x] **Gmail send behind approval** — `MailClient` interface (send-only, deliberately
+        no read surface) with `MockMailClient` (in-process outbox, the default) and
+        `GmailMailClient` (`integrations/real/gmail.py`, Gmail REST `messages.send`,
+        offline-tested via `MockTransport`). `create_mail_client` switches on
+        `GMAIL_ENABLED`; the sending identity resolves from the encrypted store and the
+        credential must carry the gmail.send scope (`resolve_mail_credentials` enforces
+        it). Sending itself is `send_approved_outreach`/`send_outreach`
+        (`services/outreach_send.py`): **approved → sent only**, a draft without a
+        researched contact email is skipped (never guessed), a failed send stays
+        approved for retry, re-runs never re-send. Surfaced as `POST /outreach/{id}/send`
+        (+ a Send stamp on the dashboard folio) and as the pipeline's opt-in
+        `OUTREACH_AUTO_SEND` stage (auto-approve fresh drafts → send the addressable).
+  - [x] **Compliant job-source adapter** — `RemotiveJobSource`
+        (`integrations/real/jobs_remotive.py`) over Remotive's public keyless API
+        (explicitly permits listing reuse); HTML descriptions flattened for the
+        tokenizer; `since` honored. `create_job_source` switches on
+        `JOB_SOURCE_PROVIDER` (`mock` default | `remotive`). LinkedIn remains a
+        documented refusal — no adapter.
+  - [x] Mocks remain the default for tests (and for every factory).
 - [ ] **M7 — Interview scan + prep packets**
 
 ## Decisions

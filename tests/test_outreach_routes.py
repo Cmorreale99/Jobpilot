@@ -6,6 +6,7 @@ import pytest
 from app.domain.jobs import Job
 from app.domain.outreach import Contact, OutreachMessage
 from app.domain.tailoring import TailoredMaterials
+from app.integrations.mock.mail import MockMailClient
 from app.main import create_app
 from app.services.application_repository import InMemoryApplicationRepository
 from fastapi.testclient import TestClient
@@ -17,11 +18,21 @@ def repo() -> InMemoryApplicationRepository:
 
 
 @pytest.fixture
-def client(repo: InMemoryApplicationRepository) -> TestClient:
-    return TestClient(create_app(application_repository=repo))
+def mail() -> MockMailClient:
+    return MockMailClient()
 
 
-def _seed_draft(repo: InMemoryApplicationRepository, external_id: str = "j1") -> int:
+@pytest.fixture
+def client(repo: InMemoryApplicationRepository, mail: MockMailClient) -> TestClient:
+    return TestClient(create_app(application_repository=repo, mail_client=mail))
+
+
+def _seed_draft(
+    repo: InMemoryApplicationRepository,
+    external_id: str = "j1",
+    *,
+    email: str | None = "priya@example.com",
+) -> int:
     job = Job(
         source="mock",
         external_id=external_id,
@@ -34,7 +45,7 @@ def _seed_draft(repo: InMemoryApplicationRepository, external_id: str = "j1") ->
     record = repo.upsert_draft(
         application.id,
         OutreachMessage(subject="Regarding the role", body="Hi Priya,"),
-        Contact(name="Priya Raman", source="fixture"),
+        Contact(name="Priya Raman", source="fixture", email=email),
     )
     return record.id
 
@@ -88,3 +99,38 @@ def test_double_approve_conflicts(client: TestClient, repo: InMemoryApplicationR
 
 def test_missing_draft_is_404(client: TestClient) -> None:
     assert client.post("/outreach/999/approve").status_code == 404
+
+
+def test_send_approved_draft_delivers_and_marks_sent(
+    client: TestClient, repo: InMemoryApplicationRepository, mail: MockMailClient
+) -> None:
+    outreach_id = _seed_draft(repo)
+    assert client.post(f"/outreach/{outreach_id}/approve").status_code == 200
+    response = client.post(f"/outreach/{outreach_id}/send")
+    assert response.status_code == 200
+    assert response.json()["status"] == "sent"
+    assert [e.to for e in mail.outbox] == ["priya@example.com"]
+    # A sent draft cannot be sent twice.
+    assert client.post(f"/outreach/{outreach_id}/send").status_code == 409
+
+
+def test_send_requires_approval_first(
+    client: TestClient, repo: InMemoryApplicationRepository
+) -> None:
+    outreach_id = _seed_draft(repo)
+    assert client.post(f"/outreach/{outreach_id}/send").status_code == 409  # still drafted
+
+
+def test_send_without_contact_email_conflicts(
+    client: TestClient, repo: InMemoryApplicationRepository, mail: MockMailClient
+) -> None:
+    outreach_id = _seed_draft(repo, email=None)
+    client.post(f"/outreach/{outreach_id}/approve")
+    response = client.post(f"/outreach/{outreach_id}/send")
+    assert response.status_code == 409
+    assert "contact email" in response.json()["detail"]
+    assert mail.outbox == []
+
+
+def test_send_missing_draft_is_404(client: TestClient) -> None:
+    assert client.post("/outreach/999/send").status_code == 404

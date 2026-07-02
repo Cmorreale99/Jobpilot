@@ -162,6 +162,10 @@ class ApplicationRepository(Protocol):
 
     def list_pending_outreach(self, user_id: str) -> list[OutreachRecord]: ...
 
+    def list_outreach_by_status(
+        self, user_id: str, status: OutreachStatus
+    ) -> list[OutreachRecord]: ...
+
     def transition_outreach(
         self, outreach_id: int, new_status: OutreachStatus
     ) -> OutreachRecord: ...
