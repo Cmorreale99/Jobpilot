@@ -12,13 +12,12 @@ from app.config import Settings, get_settings
 from app.domain.cv import MasterCv
 from app.domain.jobs import JobMatch, JobRepository
 from app.domain.matching import (
-    HeuristicJobReranker,
-    HeuristicJobScorer,
     JobReranker,
     JobScorer,
     run_two_stage,
 )
 from app.integrations.base import JobSource
+from app.services.matching_factory import create_matchers
 
 
 async def run_matching(
@@ -37,11 +36,16 @@ async def run_matching(
     jobs = await job_source.fetch_recent_jobs(since)
     repository.upsert_jobs(jobs)
 
+    if scorer is None or reranker is None:
+        default_scorer, default_reranker = create_matchers(settings)
+        scorer = scorer or default_scorer
+        reranker = reranker or default_reranker
+
     matches = run_two_stage(
         master_cv,
         jobs,
-        scorer or HeuristicJobScorer(),
-        reranker or HeuristicJobReranker(),
+        scorer,
+        reranker,
         shortlist_size=settings.shortlist_size,
         top_n=settings.top_n,
     )

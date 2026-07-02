@@ -96,17 +96,32 @@ def _tokenize(text: str) -> list[str]:
 
 @dataclass(frozen=True)
 class CvProfile:
-    """A CV's keyword profile, built once and reused across all jobs."""
+    """A CV's matching profile, built once and reused across all jobs.
+
+    ``tokens`` powers the keyword-overlap heuristic; ``summary`` is a compact PAR rendering
+    of the same claims so an LLM-backed scorer/reranker can reason about fit. Enriching the
+    profile (rather than passing the whole ``MasterCv``) keeps the scorer/reranker protocols
+    unchanged across both implementations.
+    """
 
     tokens: frozenset[str]
+    summary: str = ""
 
 
 def build_profile(master_cv: MasterCv) -> CvProfile:
-    """Extract the CV's keyword profile from its PAR claims (works on reconstructed CVs)."""
+    """Extract the CV's matching profile from its PAR claims (works on reconstructed CVs)."""
     parts: list[str] = []
+    lines: list[str] = []
     for claim in master_cv.claims:
         parts.extend([claim.action, claim.problem or "", claim.result or "", claim.evidence_text])
-    return CvProfile(tokens=frozenset(_tokenize(" ".join(parts))))
+        segments = []
+        if claim.problem:
+            segments.append(f"Problem: {claim.problem}")
+        segments.append(f"Action: {claim.action}")
+        if claim.result:
+            segments.append(f"Result: {claim.result}")
+        lines.append(" | ".join(segments))
+    return CvProfile(tokens=frozenset(_tokenize(" ".join(parts))), summary="\n".join(lines))
 
 
 class JobScorer(Protocol):
