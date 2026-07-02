@@ -119,7 +119,11 @@ flow does no HTTP.
 upserts the encrypted credential. The `OAuthFlowService` is a per-app singleton (the
 state store links start↔callback), injected in tests and built lazily in prod — a missing
 `TOKEN_ENCRYPTION_KEY` surfaces as HTTP 503, not a crash. `app.main:app` imports with zero
-credentials. Still to build: an Alembic migration for the `oauth_credentials` table.
+credentials.
+
+**Migrations:** schema is owned by Alembic (`alembic.ini`, env under `app/db/migrations/`;
+the URL is resolved from `DATABASE_URL`). Run `alembic upgrade head`; add revisions with
+`alembic revision --autogenerate -m "..."`. `create_all` is only a dev/test convenience.
 
 ## MCP integrations (GitHub + Google Drive)
 
