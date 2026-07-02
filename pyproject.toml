@@ -8,6 +8,8 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
     "mcp>=1.2",
+    "sqlalchemy>=2.0",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]

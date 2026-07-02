@@ -40,8 +40,11 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
 ## Milestones
 
 - [ ] **M0 — Scaffold**: repo structure, `uv`/ruff/mypy/pytest, `.env.example`, interfaces + mocks, fixtures.
-  - [x] Drive interface (`DriveClient`) + fixture-backed `MockDriveClient` + `tests/fixtures/drive/`.
-  - [x] `app/config.py` (Drive settings), `.env.example`.
+  - [x] Drive + GitHub interfaces + fixture-backed mocks + `tests/fixtures/`.
+  - [x] `app/config.py`, `.env.example`.
+  - [x] DB layer started: SQLAlchemy `Base` + `session` + first model (`oauth_credentials`).
+  - [ ] Alembic env + migrations (tests currently use `create_all`).
+  - [ ] FastAPI entrypoint (`app/main.py`), `app/scheduler.py`, `web/`.
 - [ ] **M1 — Master CV (mocked sources)**
   - [x] Mock Drive ingestion → PAR-framed Master CV with `cv_sources` provenance.
   - [x] Mock GitHub ingestion (README + contribution signals) into the same builder;
@@ -56,15 +59,22 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
 - [ ] **M4 — Dashboard**
 - [ ] **M5 — Orchestration (idempotent nightly jobs)**
 - [ ] **M6 — Real integrations behind flags**
+  - [x] **Encrypted OAuth credential store** — `oauth_credentials` model +
+        `TokenCipher` (Fernet, `TOKEN_ENCRYPTION_KEY`); tokens encrypted at rest.
+        `OAuthCredentialStore` protocol with `InMemoryOAuthCredentialStore` (mock-first)
+        and `SqlOAuthCredentialStore` (SQLAlchemy, tested on SQLite). Factories accept a
+        `store` + `user_id` and inject decrypted `DriveCredentials`/`GitHubCredentials`
+        into the MCP clients. **Remaining:** the OAuth *authorization* flow that obtains
+        and refreshes tokens to populate the store; an Alembic migration for the table
+        (tests use `create_all`).
   - [~] **Google Drive MCP** — targets the Google Workspace MCP server
         (taylorwilsdon/google_workspace_mcp). Done: async `McpDriveClient` mapping the
         `DriveClient` interface onto `list_drive_items` / `search_drive_files` /
         `get_drive_file_content` / `get_drive_file_permissions`; config-driven endpoint;
         `list_tools` validation on connect; response→dataclass mapping, unit-tested
-        offline via an injected fake session. **Remaining before it talks to real Drive:**
-        1. **OAuth token store** — build `oauth_credentials` (encrypted at rest) and pass
-           decrypted `DriveCredentials` into the client; confirm the server's auth
-           contract (bearer header vs. server-side token). See `TODO(mcp-auth)`.
+        offline via an injected fake session; credentials now sourced from the store.
+        **Remaining before it talks to real Drive:**
+        1. Confirm the server's auth contract (bearer header vs. server-side token).
         2. **Live tool-name verification** — `list_tools` will confirm/deny the four names
            against the actual deployment; override `DriveToolNames` if they differ.
         3. **Response format** — if the server returns human-formatted text (not
@@ -75,10 +85,10 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
         `McpGitHubClient` mapping the `GitHubClient` interface onto `search_repositories`
         / `get_file_contents` / `list_commits`; config-driven endpoint; `list_tools`
         validation; base64 README decode; response→dataclass mapping, unit-tested offline
-        via an injected fake session. **Remaining before it talks to real GitHub:**
-        1. **OAuth/PAT store** — pass a decrypted `GitHubCredentials` from
-           `oauth_credentials`; confirm auth (bearer header for the remote server vs.
-           `GITHUB_PERSONAL_ACCESS_TOKEN` for a locally launched one). See `TODO(mcp-auth)`.
+        via an injected fake session; PAT now sourced from the store.
+        **Remaining before it talks to real GitHub:**
+        1. Confirm auth (bearer header for the remote server vs.
+           `GITHUB_PERSONAL_ACCESS_TOKEN` for a locally launched one).
         2. **Languages breakdown** — no first-class per-repo languages tool; metadata
            reports the primary language only. Wire a `/languages` equivalent if exposed.
         3. **Response format / stdio** — same caveats as Drive (text-vs-structured

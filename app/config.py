@@ -38,6 +38,15 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # --- Core / persistence / secrets ---------------------------------------------
+    # Default to an in-memory SQLite DB so the app imports and tests run with zero
+    # infrastructure. Production sets a Postgres URL (postgresql+psycopg://...).
+    database_url: str = "sqlite+pysqlite:///:memory:"
+    secret_key: str = ""
+    # Fernet key for encrypting OAuth tokens at rest. Generate with
+    # ``python -m app.security.crypto``. Required only when the credential store is used.
+    token_encryption_key: str = ""
+
     # --- Google Drive MCP wiring (real integration; off by default) ---------------
     gdrive_mcp_enabled: bool = False
     gdrive_mcp_server: str = ""
