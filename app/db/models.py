@@ -10,7 +10,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -67,3 +77,49 @@ class CvSourceRow(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     modified_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class JobRow(Base):
+    """A job posting, deduped on ``(source, external_id)``."""
+
+    __tablename__ = "jobs"
+    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_jobs_source_external"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String(64))
+    external_id: Mapped[str] = mapped_column(String(255))
+    title: Mapped[str] = mapped_column(String(1024))
+    company: Mapped[str] = mapped_column(String(512))
+    description: Mapped[str] = mapped_column(Text)
+    location: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote: Mapped[bool] = mapped_column(Boolean, default=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class JobMatchRow(Base):
+    """A deep-ranked match of a job against a user's Master CV version."""
+
+    __tablename__ = "job_matches"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "master_cv_version",
+            "job_source",
+            "job_external_id",
+            name="uq_job_match_user_version_job",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    master_cv_version: Mapped[int] = mapped_column(Integer)
+    job_source: Mapped[str] = mapped_column(String(64))
+    job_external_id: Mapped[str] = mapped_column(String(255))
+    score: Mapped[float] = mapped_column(Float)
+    rank: Mapped[int] = mapped_column(Integer)
+    stage: Mapped[str] = mapped_column(String(16))
+    rationale: Mapped[str] = mapped_column(Text)
+    matched_terms: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

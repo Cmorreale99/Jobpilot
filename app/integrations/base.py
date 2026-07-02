@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from app.domain.jobs import Job
+
 
 class DriveConfigurationError(RuntimeError):
     """Raised when a Drive client is asked to run without valid configuration.
@@ -207,4 +209,22 @@ class GitHubClient(Protocol):
 
     async def list_changed_repos(self, user_id: str, since: datetime) -> list[GitHubRepo]:
         """List repositories pushed to since ``since`` (for incremental refresh)."""
+        ...
+
+
+# =================================================================================
+# Jobs
+# =================================================================================
+
+
+@runtime_checkable
+class JobSource(Protocol):
+    """A source of job postings (compliant API, mock fixtures, ...).
+
+    Returns the domain :class:`Job` type directly — jobs are a first-class domain entity
+    (persisted and matched), so unlike Drive/GitHub there is no separate transport shape.
+    """
+
+    async def fetch_recent_jobs(self, since: datetime | None = None) -> list[Job]:
+        """Fetch postings, optionally only those posted after ``since``."""
         ...
