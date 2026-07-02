@@ -166,6 +166,13 @@ class SqlApplicationRepository:
             row = session.get(OutreachRow, outreach_id)
             return _to_outreach(row) if row is not None else None
 
+    def get_outreach_for_application(self, application_id: int) -> OutreachRecord | None:
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(OutreachRow).where(OutreachRow.application_id == application_id)
+            )
+            return _to_outreach(row) if row is not None else None
+
     def list_pending_outreach(self, user_id: str) -> list[OutreachRecord]:
         with self._session_factory() as session:
             rows = session.scalars(

@@ -112,6 +112,10 @@ class InMemoryApplicationRepository:
     def get_outreach(self, outreach_id: int) -> OutreachRecord | None:
         return self._outreach.get(outreach_id)
 
+    def get_outreach_for_application(self, application_id: int) -> OutreachRecord | None:
+        outreach_id = self._outreach_by_application.get(application_id)
+        return self._outreach.get(outreach_id) if outreach_id is not None else None
+
     def list_pending_outreach(self, user_id: str) -> list[OutreachRecord]:
         return sorted(
             (

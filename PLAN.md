@@ -140,7 +140,23 @@ LlmClient (protocol, app/llm/client.py)
         only warns until the real mail client (M6).
   - [x] Approval-queue API (`app/api/outreach.py`): `GET /outreach/queue`,
         `POST /outreach/{id}/approve|discard`; illegal transitions → 409, missing → 404.
-- [ ] **M4 — Dashboard**
+- [x] **M4 — Dashboard**
+  - [x] Read API for the dashboard (`app/api/dashboard.py`): `GET /master-cv/latest`
+        (claims + provenance summary), `GET /matches` (deep-ranked matches for the
+        latest CV version), `GET /applications` (+ `/{id}` detail with the outreach
+        draft), and `POST /applications/{id}/transition` through the domain state
+        machine (404/409/422). Repos injected in tests, lazily built over SQL in prod
+        (same pattern as the OAuth flow); CORS restricted to `DASHBOARD_ORIGINS`.
+  - [x] `web/`: minimal Next.js (app router, TS) + Tailwind v4 dashboard — a
+        single-sheet "pipeline ledger": approval queue first (approve/discard), ranked
+        matches with rationale + matched terms, applications with state-machine-derived
+        action stamps, evidence-sources card with the OAuth connect links (closing the
+        M6 "connect UI" gap). One detail view per application (materials, cover letter,
+        outreach draft with contact provenance). `NEXT_PUBLIC_API_URL` /
+        `NEXT_PUBLIC_USER_ID` config; `npm run build` type-checks clean.
+  - [x] Verified end-to-end offline: seeded SQLite via migrations + the mock pipeline,
+        exercised every endpoint (incl. approve/discard/transition + CORS preflight)
+        over real HTTP, dashboard + folio routes serve.
 - [ ] **M5 — Orchestration (idempotent nightly jobs)**
 - [ ] **M6 — Real integrations behind flags**
   - [x] **Encrypted OAuth credential store** — `oauth_credentials` model +

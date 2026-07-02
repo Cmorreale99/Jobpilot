@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     top_n: int = 10  # deep-ranked final matches
     jobs_mock_fixtures_dir: str = "tests/fixtures/jobs"
 
+    # --- Dashboard (Next.js dev server origin allowed to call this API) -------------
+    dashboard_origins: str = "http://localhost:3000"
+
     # --- Tailoring + outreach (approval queue) --------------------------------------
     # When false (the default and the safe path), approved drafts wait in the approval
     # queue; nothing is ever sent automatically. Sending itself lands with the real
@@ -142,6 +145,10 @@ class Settings(BaseSettings):
     @property
     def github_oauth_scope_list(self) -> tuple[str, ...]:
         return tuple(s for s in self.github_oauth_scopes.split() if s)
+
+    @property
+    def dashboard_origin_list(self) -> tuple[str, ...]:
+        return tuple(o.strip() for o in self.dashboard_origins.split(",") if o.strip())
 
     @property
     def gdrive_allowed_mime_types_set(self) -> frozenset[str]:
