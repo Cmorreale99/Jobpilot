@@ -22,6 +22,19 @@ APPROVED_FOLDER_ID = "career_docs"
 GITHUB_USERNAME = "jordanrivera"
 
 
+@pytest.fixture(autouse=True)
+def _ignore_developer_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests hermetic: never read the developer's real ``.env``.
+
+    Every ``Settings(...)`` constructed in tests sees only explicit kwargs and real
+    env vars — a filled-in local ``.env`` (real tokens, enabled integrations) must
+    not change test behavior.
+    """
+    monkeypatch.setattr(
+        Settings, "model_config", {**Settings.model_config, "env_file": None}, raising=True
+    )
+
+
 @pytest.fixture
 def drive_fixtures_dir() -> Path:
     return FIXTURES_DIR

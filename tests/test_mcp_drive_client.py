@@ -216,3 +216,52 @@ def test_stdio_transport_needs_no_server_url() -> None:
         credentials=DriveCredentials(user_email="jordan@example.com", access_token="tok"),
     )
     assert isinstance(client, McpDriveClient)
+
+
+# --- formatted-text parsing (shapes verified live against workspace-mcp) -----------
+
+_LIVE_LISTING = (
+    "Found 2 items in folder '1Mc_FOLDER' for user@example.com:\n"
+    '- Name: "resume (1).pdf" (ID: 1RK-file1, Type: application/pdf, Size: 95181, '
+    "Created: 2026-07-02T16:26:09.857Z, Modified: 2026-07-01T00:05:16.000Z, "
+    "Last Edited By: Cam M <user@example.com>) Link: https://drive.google.com/file/d/1RK-file1/view\n"
+    '- Name: "Case Studies (Wellington, LLM Pipelines).pdf" (ID: 1Vz-file2, '
+    "Type: application/pdf, Size: 754095, Created: 2026-07-02T16:27:02.625Z, "
+    "Modified: 2026-05-14T17:14:28.000Z) Link: https://drive.google.com/file/d/1Vz-file2/view\n"
+)
+
+_LIVE_CONTENT = (
+    'File: "resume (1).pdf" (ID: 1RK-file1, Type: application/pdf)\n'
+    "Link: https://drive.google.com/file/d/1RK-file1/view\n\n"
+    "--- CONTENT ---\n"
+    "Cam Morreale Reverse-engineers broken data systems into decision infrastructure"
+)
+
+
+async def test_listing_text_is_parsed_into_sources() -> None:
+    client, _ = _client({TOOLS.list_folder: _FakeResult(structured={"result": _LIVE_LISTING})})
+    sources = await client.list_candidate_sources("u1")
+    assert [s.source_ref for s in sources] == ["1RK-file1", "1Vz-file2"]
+    first = sources[0]
+    assert first.title == "resume (1).pdf"
+    assert first.mime_type == "application/pdf"
+    assert first.folder_id == "1Mc_FOLDER"
+    assert first.modified_time is not None and first.modified_time.year == 2026
+    # Titles containing parentheses/commas must not confuse the parser.
+    assert sources[1].title == "Case Studies (Wellington, LLM Pipelines).pdf"
+
+
+async def test_content_text_is_parsed_into_document() -> None:
+    client, _ = _client({TOOLS.read_content: _FakeResult(structured={"result": _LIVE_CONTENT})})
+    doc = await client.read_source("1RK-file1")
+    assert doc.title == "resume (1).pdf"
+    assert doc.mime_type == "application/pdf"
+    assert doc.text.startswith("Cam Morreale Reverse-engineers")
+
+
+async def test_error_results_raise_instead_of_parsing_empty() -> None:
+    error = _FakeResult(text="Error calling tool 'list_drive_items': boom")
+    error.isError = True
+    client, _ = _client({TOOLS.list_folder: error})
+    with pytest.raises(DriveResponseError, match="returned an error"):
+        await client.list_candidate_sources("u1")
