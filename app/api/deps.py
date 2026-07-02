@@ -28,6 +28,7 @@ from app.integrations.mail_factory import create_mail_client
 from app.integrations.oauth.base import OAuthError
 from app.integrations.oauth.factory import create_oauth_providers
 from app.security.crypto import TokenCipher, TokenEncryptionError
+from app.services.credentials import create_refreshing_store
 from app.services.oauth_flow import OAuthFlowService
 
 
@@ -101,7 +102,9 @@ def get_mail_client(request: Request) -> MailClient:
     """Return the app's mail client, building the configured one on first use.
 
     Mock (in-process outbox) unless ``GMAIL_ENABLED``; misconfiguration of the real
-    client (missing encryption key or credential) is reported as HTTP 503.
+    client (missing encryption key or credential) is reported as HTTP 503. The real
+    client is rebuilt per request through the refreshing credential view — a Gmail
+    access token snapshot goes stale within the hour, so it is never cached.
     """
     existing = getattr(request.app.state, "mail_client", None)
     if isinstance(existing, MailClient):
@@ -113,11 +116,14 @@ def get_mail_client(request: Request) -> MailClient:
             cipher = TokenCipher.from_settings(settings)
             engine = create_db_engine(settings)
             create_all(engine)
-            store = SqlOAuthCredentialStore(create_session_factory(engine), cipher)
+            store = create_refreshing_store(
+                SqlOAuthCredentialStore(create_session_factory(engine), cipher), settings
+            )
         client = create_mail_client(settings, store=store, user_id=settings.pipeline_user_id)
     except (TokenEncryptionError, MailConfigurationError) as exc:
         raise HTTPException(status_code=503, detail=f"Mail is not configured: {exc}") from exc
-    request.app.state.mail_client = client
+    if not settings.gmail_enabled:
+        request.app.state.mail_client = client  # the mock is safe to cache
     return client
 
 

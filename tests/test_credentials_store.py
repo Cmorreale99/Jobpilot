@@ -139,3 +139,41 @@ def test_drive_factory_without_store_leaves_credentials_unset() -> None:
     assert isinstance(client, McpDriveClient)
     with pytest.raises(DriveConfigurationError):
         client._require_credentials()  # noqa: SLF001
+
+
+# --- refreshing read-through view (keeps nightly-job tokens fresh) -----------------
+
+
+def test_refreshing_store_renews_near_expiry_tokens() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.domain.credentials import PROVIDER_GDRIVE, OAuthCredential
+    from app.integrations.oauth.mock import MockOAuthProvider
+    from app.security.crypto import TokenCipher
+    from app.services.credentials import InMemoryOAuthCredentialStore, RefreshingCredentialStore
+    from app.services.oauth_flow import InMemoryStateStore, OAuthFlowService
+
+    store = InMemoryOAuthCredentialStore(TokenCipher(TokenCipher.generate_key()))
+    store.upsert(
+        OAuthCredential(
+            user_id="u1",
+            provider=PROVIDER_GDRIVE,
+            account_label="jordan@example.com",
+            access_token="stale-token",
+            refresh_token="refresh-me",
+            scopes=("https://www.googleapis.com/auth/gmail.send",),
+            expires_at=datetime.now(tz=UTC) - timedelta(minutes=5),  # already expired
+        )
+    )
+    provider = MockOAuthProvider(PROVIDER_GDRIVE, account_label="jordan@example.com")
+    flow = OAuthFlowService(store, {PROVIDER_GDRIVE: provider}, InMemoryStateStore())
+    refreshing = RefreshingCredentialStore(store, flow)
+
+    credential = refreshing.get("u1", PROVIDER_GDRIVE)
+
+    assert credential is not None
+    assert credential.access_token != "stale-token"  # renewed via the provider
+    assert provider.refresh_calls == 1
+    # The renewal was persisted, so the next raw read sees the fresh token too.
+    raw = store.get("u1", PROVIDER_GDRIVE)
+    assert raw is not None and raw.access_token == credential.access_token
