@@ -44,7 +44,9 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
   - [x] `app/config.py`, `.env.example`.
   - [x] DB layer started: SQLAlchemy `Base` + `session` + first model (`oauth_credentials`).
   - [ ] Alembic env + migrations (tests currently use `create_all`).
-  - [ ] FastAPI entrypoint (`app/main.py`), `app/scheduler.py`, `web/`.
+  - [x] FastAPI entrypoint (`app/main.py`, app factory + `/health`) with the OAuth
+        router (`app/api/`). Lazy, injectable flow wiring; imports with zero creds.
+  - [ ] `app/scheduler.py`, `web/`.
 - [ ] **M1 — Master CV (mocked sources)**
   - [x] Mock Drive ingestion → PAR-framed Master CV with `cv_sources` provenance.
   - [x] Mock GitHub ingestion (README + contribution signals) into the same builder;
@@ -71,9 +73,12 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
         `MockTransport`). `OAuthFlowService` (`app/services/oauth_flow.py`) does
         start → callback (anti-CSRF `state`, single-use) → encrypted upsert, and
         `get_valid_credential` transparently refreshes near-expiry tokens.
-        **Remaining:** a web callback route (needs the FastAPI app) to drive
-        start/complete over HTTP; an Alembic migration for the table (tests use
-        `create_all`).
+  - [x] **OAuth HTTP routes** — `GET /oauth/{provider}/start` (302 → consent) and
+        `/callback` (validate single-use state, exchange, encrypted upsert) on the
+        FastAPI app (`app/api/oauth.py`), tested end-to-end with `TestClient` +
+        mock providers. Misconfiguration (e.g. no `TOKEN_ENCRYPTION_KEY`) → HTTP 503.
+        **Remaining:** an Alembic migration for `oauth_credentials` (tests use
+        `create_all`); a small UI to launch the connect flow (part of M4).
   - [~] **Google Drive MCP** — targets the Google Workspace MCP server
         (taylorwilsdon/google_workspace_mcp). Done: async `McpDriveClient` mapping the
         `DriveClient` interface onto `list_drive_items` / `search_drive_files` /

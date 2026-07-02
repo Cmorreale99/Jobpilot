@@ -112,8 +112,14 @@ of the app seeing plaintext or ciphertext.
 httpx) plus `OAuthFlowService`, which does `start` (mint anti-CSRF `state`, return consent
 URL) → `complete` (validate single-use `state`, exchange code, encrypted upsert) →
 `get_valid_credential` (auto-refresh near-expiry tokens). Providers do no storage; the
-flow does no HTTP. Still to build: a FastAPI callback route to drive it over HTTP, and an
-Alembic migration for the `oauth_credentials` table.
+flow does no HTTP.
+
+**HTTP** (`app/main.py`, `app/api/oauth.py`): `GET /oauth/{provider}/start` redirects
+(302) to consent; `/callback` validates the single-use `state`, exchanges the code, and
+upserts the encrypted credential. The `OAuthFlowService` is a per-app singleton (the
+state store links start↔callback), injected in tests and built lazily in prod — a missing
+`TOKEN_ENCRYPTION_KEY` surfaces as HTTP 503, not a crash. `app.main:app` imports with zero
+credentials. Still to build: an Alembic migration for the `oauth_credentials` table.
 
 ## MCP integrations (GitHub + Google Drive)
 
