@@ -34,14 +34,17 @@ export function EmptyRow({ children }: { children: React.ReactNode }) {
 export function statusInk(status: string): string {
   switch (status) {
     case "drafted":
+    case "detected":
       return "text-carmine";
     case "approved":
     case "applied":
     case "interviewing":
     case "offer":
     case "sent":
+    case "scheduled":
+    case "completed":
       return "text-viridian";
     default:
-      return "text-annotation"; // rejected / ignored / discarded: closed entries
+      return "text-annotation"; // rejected / ignored / discarded / cancelled: closed entries
   }
 }

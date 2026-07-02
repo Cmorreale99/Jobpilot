@@ -113,6 +113,21 @@ class Settings(BaseSettings):
     gmail_enabled: bool = False
     gmail_send_url: str = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
+    # --- Interview scan (separate nightly job; the ONLY inbox read) ------------------
+    # Master off-switch for all inbox reads. False disables the scan entirely.
+    interview_inbox_scan: bool = True
+    # The scoped search query — only mail matching it is ever read.
+    interview_scan_query: str = 'interview OR "phone screen" OR "schedule a call"'
+    # How far back the scan looks (re-scans are idempotent).
+    interview_scan_since_hours: int = 72
+    # When the nightly interview scan fires (local time; separate from the pipeline).
+    interview_scan_hour: int = 3
+    interview_scan_minute: int = 0
+    inbox_mock_fixtures_dir: str = "tests/fixtures/inbox"
+    # Swap the heuristic prep-packet generator for the LLM-backed one (DEEP tier).
+    # Off by default; same real-client requirement/fallback as the other LLM flags.
+    interview_llm_prep: bool = False
+
     # --- Nightly orchestration ------------------------------------------------------
     # The single JobPilot user the nightly pipeline runs for (single-user system).
     pipeline_user_id: str = "u1"

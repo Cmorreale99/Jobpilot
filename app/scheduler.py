@@ -21,6 +21,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.config import Settings, get_settings
+from app.services.interview_scan import (
+    InterviewScanDependencies,
+    build_default_interview_dependencies,
+    run_interview_scan,
+)
 from app.services.pipeline import (
     PipelineDependencies,
     build_default_dependencies,
@@ -30,6 +35,7 @@ from app.services.pipeline import (
 logger = logging.getLogger(__name__)
 
 APPLICATION_PIPELINE_JOB_ID = "application-pipeline"
+INTERVIEW_SCAN_JOB_ID = "interview-scan"
 
 
 async def run_job_safely[T](name: str, coro_factory: Callable[[], Awaitable[T]], /) -> T | None:
@@ -46,11 +52,13 @@ async def run_job_safely[T](name: str, coro_factory: Callable[[], Awaitable[T]],
 def create_scheduler(
     settings: Settings | None = None,
     dependencies: PipelineDependencies | None = None,
+    interview_dependencies: InterviewScanDependencies | None = None,
 ) -> AsyncIOScheduler:
-    """Build the scheduler with the nightly application-pipeline trigger registered.
+    """Build the scheduler with both independent nightly triggers registered.
 
     Dependencies are built lazily at first fire (not at scheduler construction), so the
-    process starts with zero credentials and no database connection.
+    process starts with zero credentials and no database connection. Each job runs
+    through :func:`run_job_safely`, so a failure in one never blocks the other.
     """
     settings = settings or get_settings()
     scheduler = AsyncIOScheduler()
@@ -62,11 +70,24 @@ def create_scheduler(
             lambda: run_application_pipeline(deps, settings),
         )
 
+    async def interview_scan_job() -> None:
+        deps = interview_dependencies or build_default_interview_dependencies(settings)
+        await run_job_safely(
+            INTERVIEW_SCAN_JOB_ID,
+            lambda: run_interview_scan(deps, settings),
+        )
+
     scheduler.add_job(
         application_pipeline_job,
         CronTrigger(hour=settings.pipeline_hour, minute=settings.pipeline_minute),
         id=APPLICATION_PIPELINE_JOB_ID,
         name="Nightly application pipeline (CV refresh → matching → outreach drafts)",
+    )
+    scheduler.add_job(
+        interview_scan_job,
+        CronTrigger(hour=settings.interview_scan_hour, minute=settings.interview_scan_minute),
+        id=INTERVIEW_SCAN_JOB_ID,
+        name="Nightly interview scan (scoped inbox → interviews → prep packets)",
     )
     return scheduler
 
@@ -75,19 +96,37 @@ async def _serve(settings: Settings) -> None:
     scheduler = create_scheduler(settings)
     scheduler.start()
     logger.info(
-        "scheduler running; application pipeline fires daily at %02d:%02d",
+        "scheduler running; application pipeline fires daily at %02d:%02d, "
+        "interview scan at %02d:%02d",
         settings.pipeline_hour,
         settings.pipeline_minute,
+        settings.interview_scan_hour,
+        settings.interview_scan_minute,
     )
     await asyncio.Event().wait()  # run until interrupted
 
 
-async def _run_once(settings: Settings, dependencies: PipelineDependencies | None) -> int:
-    deps = dependencies or build_default_dependencies(settings)
-    result = await run_job_safely(
-        APPLICATION_PIPELINE_JOB_ID, lambda: run_application_pipeline(deps, settings)
-    )
-    return 0 if result is not None else 1
+async def _run_once(
+    settings: Settings,
+    dependencies: PipelineDependencies | None,
+    interview_dependencies: InterviewScanDependencies | None,
+    job: str,
+) -> int:
+    """Run the selected job(s) immediately; exit 0 only if everything succeeded."""
+    ok = True
+    if job in ("pipeline", "all"):
+        deps = dependencies or build_default_dependencies(settings)
+        result = await run_job_safely(
+            APPLICATION_PIPELINE_JOB_ID, lambda: run_application_pipeline(deps, settings)
+        )
+        ok = ok and result is not None
+    if job in ("interviews", "all"):
+        ideps = interview_dependencies or build_default_interview_dependencies(settings)
+        scan_result = await run_job_safely(
+            INTERVIEW_SCAN_JOB_ID, lambda: run_interview_scan(ideps, settings)
+        )
+        ok = ok and scan_result is not None
+    return 0 if ok else 1
 
 
 def main(
@@ -95,18 +134,23 @@ def main(
     *,
     settings: Settings | None = None,
     dependencies: PipelineDependencies | None = None,
+    interview_dependencies: InterviewScanDependencies | None = None,
 ) -> int:
-    """CLI entrypoint. ``--once`` runs the pipeline now; default schedules it nightly."""
+    """CLI entrypoint. ``--once`` runs the job(s) now; default schedules them nightly."""
     parser = argparse.ArgumentParser(description="JobPilot nightly scheduler")
+    parser.add_argument("--once", action="store_true", help="run the job(s) once and exit")
     parser.add_argument(
-        "--once", action="store_true", help="run the application pipeline once and exit"
+        "--job",
+        choices=["pipeline", "interviews", "all"],
+        default="all",
+        help="which job --once runs (default: all)",
     )
     args = parser.parse_args(argv)
     settings = settings or get_settings()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     if args.once:
-        return asyncio.run(_run_once(settings, dependencies))
+        return asyncio.run(_run_once(settings, dependencies, interview_dependencies, args.job))
 
     try:
         asyncio.run(_serve(settings))

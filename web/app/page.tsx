@@ -7,6 +7,7 @@ import {
   api,
   oauthStartUrl,
   type Application,
+  type Interview,
   type MasterCvSummary,
   type MatchesResponse,
   type OutreachDraft,
@@ -17,20 +18,23 @@ export default function Dashboard() {
   const [queue, setQueue] = useState<OutreachDraft[] | null>(null);
   const [matches, setMatches] = useState<MatchesResponse | null>(null);
   const [applications, setApplications] = useState<Application[] | null>(null);
+  const [interviews, setInterviews] = useState<Interview[] | null>(null);
   const [masterCv, setMasterCv] = useState<MasterCvSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [q, m, a, cv] = await Promise.all([
+      const [q, m, a, i, cv] = await Promise.all([
         api.queue(),
         api.matches(),
         api.applications(),
+        api.interviews(),
         api.masterCv(),
       ]);
       setQueue(q);
       setMatches(m);
       setApplications(a);
+      setInterviews(i);
       setMasterCv(cv);
       setError(null);
     } catch (e) {
@@ -54,10 +58,91 @@ export default function Dashboard() {
       )}
 
       <QueueSection queue={queue} onChanged={load} />
+      <InterviewsSection interviews={interviews} onChanged={load} />
       <MatchesSection matches={matches} />
       <ApplicationsSection applications={applications} onChanged={load} />
       <AccountsSection masterCv={masterCv} />
     </main>
+  );
+}
+
+function InterviewsSection({
+  interviews,
+  onChanged,
+}: {
+  interviews: Interview[] | null;
+  onChanged: () => Promise<void>;
+}) {
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const active = (interviews ?? []).filter(
+    (i) => i.stage === "detected" || i.stage === "scheduled",
+  );
+  const closed = (interviews ?? []).length - active.length;
+
+  const move = async (id: number, stage: string) => {
+    setBusyId(id);
+    setActionError(null);
+    try {
+      await api.transitionInterview(id, stage);
+      await onChanged();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "The stage change failed.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <section aria-label="Interviews">
+      <SectionHead
+        title="Interviews"
+        count={active.length}
+        accent={active.some((i) => i.stage === "detected")}
+      />
+      {actionError && <p className="py-1 text-sm text-carmine">{actionError}</p>}
+      {interviews && active.length === 0 && (
+        <EmptyRow>
+          No open interviews. The nightly scan reads only invite-matching mail.
+          {closed > 0 ? ` (${closed} closed)` : ""}
+        </EmptyRow>
+      )}
+      <ul className="divide-y divide-rule">
+        {active.map((interview) => (
+          <li
+            key={interview.id}
+            className="flex flex-wrap items-baseline gap-x-3 gap-y-2 py-3"
+          >
+            <div className="min-w-0 flex-1">
+              <Link
+                href={`/interviews/${interview.id}`}
+                className="text-sm font-medium underline-offset-2 hover:underline"
+              >
+                {interview.company}
+              </Link>
+              <span className="text-sm text-annotation">
+                {" "}
+                · {interview.job_title ?? "role not stated"}
+                {interview.has_prep_packet ? " · prep packet ready" : ""}
+              </span>
+            </div>
+            <span className={`stamped ${statusInk(interview.stage)}`}>{interview.stage}</span>
+            <div className="flex gap-2">
+              {interview.allowed_transitions.map((next) => (
+                <button
+                  key={next}
+                  className="stamp text-ink"
+                  disabled={busyId === interview.id}
+                  onClick={() => move(interview.id, next)}
+                >
+                  {next}
+                </button>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

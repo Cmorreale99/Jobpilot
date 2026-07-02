@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from app.domain.interviews import InboxMessage
 from app.domain.jobs import Job
 from app.domain.outreach import Contact
 
@@ -319,6 +320,36 @@ class MailClient(Protocol):
 
     async def send_email(self, email: OutgoingEmail) -> str:
         """Send and return the provider's message id."""
+        ...
+
+
+# =================================================================================
+# Inbox scan (interview detection — the ONLY permitted inbox read)
+# =================================================================================
+
+
+class InboxConfigurationError(RuntimeError):
+    """Raised when an inbox scanner is asked to run without valid configuration."""
+
+
+class InboxResponseError(RuntimeError):
+    """Raised when an inbox API returns a payload we can't map to our contract."""
+
+
+@runtime_checkable
+class InboxScanner(Protocol):
+    """Query-scoped, read-only inbox search for interview detection.
+
+    Deliberately the narrowest possible surface: one search method, no labels, no
+    threads, no send, no modify. The *query* keeps reads scoped to likely interview
+    mail (data minimization); the ``INTERVIEW_INBOX_SCAN`` flag gates whether it is
+    ever called at all.
+    """
+
+    async def search_messages(
+        self, query: str, since: datetime | None = None
+    ) -> list[InboxMessage]:
+        """Return messages matching ``query`` (optionally received after ``since``)."""
         ...
 
 

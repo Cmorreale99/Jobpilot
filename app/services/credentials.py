@@ -113,3 +113,26 @@ def resolve_mail_credentials(store: OAuthCredentialStore, user_id: str) -> MailC
     return MailCredentials(
         sender_email=credential.account_label, access_token=credential.access_token
     )
+
+
+def resolve_inbox_credentials(store: OAuthCredentialStore, user_id: str) -> MailCredentials:
+    """Return the Gmail read identity for ``user_id`` or fail clearly.
+
+    The interview scan reuses the stored Google credential; its scopes must include
+    ``gmail.readonly`` — add it to ``GOOGLE_OAUTH_SCOPES`` before connecting the account.
+    """
+    credential = store.get(user_id, PROVIDER_GDRIVE)
+    if credential is None:
+        raise MailConfigurationError(
+            f"No stored Google credential for user {user_id!r}. Connect the Google "
+            "account (with the gmail.readonly scope) before enabling the inbox scan."
+        )
+    if credential.scopes and not any("gmail.readonly" in scope for scope in credential.scopes):
+        raise MailConfigurationError(
+            "The stored Google credential lacks the gmail.readonly scope. Reconnect the "
+            "account with GOOGLE_OAUTH_SCOPES including "
+            "https://www.googleapis.com/auth/gmail.readonly."
+        )
+    return MailCredentials(
+        sender_email=credential.account_label, access_token=credential.access_token
+    )

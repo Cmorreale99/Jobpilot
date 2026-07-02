@@ -266,7 +266,36 @@ LlmClient (protocol, app/llm/client.py)
         `JOB_SOURCE_PROVIDER` (`mock` default | `remotive`). LinkedIn remains a
         documented refusal — no adapter.
   - [x] Mocks remain the default for tests (and for every factory).
-- [ ] **M7 — Interview scan + prep packets**
+- [x] **M7 — Interview scan + prep packets**
+  - [x] Inbox scan interface (`InboxScanner`, `integrations/base.py`): one query-scoped,
+        read-only search method — no labels, threads, send, or modify. Domain shape
+        `InboxMessage` lives in `domain/interviews.py`. `MockInboxScanner` (fixtures in
+        `tests/fixtures/inbox/`, honors the query) is the default; `GmailInboxScanner`
+        (`integrations/real/gmail_inbox.py`, metadata+snippet only — full bodies never
+        downloaded) requires the gmail.readonly scope, offline-tested via MockTransport.
+        `create_inbox_scanner` switches on `GMAIL_ENABLED`.
+  - [x] Privacy gates, layered: `INTERVIEW_INBOX_SCAN=false` disables all inbox reads
+        (verified structurally — the scanner is never invoked); the
+        `INTERVIEW_SCAN_QUERY` scopes what a read can return; the conservative heuristic
+        detector drops everything without explicit invite language (rejections and
+        job-board noise never become rows).
+  - [x] `interviews.stage` state machine (`domain/interviews.py`): detected → scheduled
+        → completed, with cancellation; terminal stages never reopen; validated
+        transitions everywhere.
+  - [x] Prep packets: `PrepPacketGenerator` protocol — heuristic default grounded in the
+        matching application's tailored materials (linked via `normalize_company`) and
+        Master CV claims; `LlmPrepPacketGenerator` (`llm/prep.py`, DEEP) behind
+        `INTERVIEW_LLM_PREP` with the standard fallback guard (`create_prep_generator`).
+        Verified live against the real API.
+  - [x] Persistence: `interviews` + `prep_packets` (migration `0005`), dedupe on
+        `(user_id, source_message_id)`; re-scans idempotent, stages never regressed,
+        one packet per interview. `InterviewRepository` in-memory + SQL.
+  - [x] `run_interview_scan` (`services/interview_scan.py`, Lambda-portable) registered
+        as the second independent nightly job (`INTERVIEW_SCAN_HOUR`, default 03:00);
+        `--once --job pipeline|interviews|all`; failure isolation verified (a pipeline
+        crash does not block the scan — observed live).
+  - [x] Surfaced: `/interviews` API (list/detail-with-packet/transition, 404/409/422)
+        + dashboard Interviews section and interview folio page with the packet.
 
 ## Decisions
 

@@ -15,11 +15,13 @@ from starlette.requests import Request
 from app.config import Settings, get_settings
 from app.db.application_repository import SqlApplicationRepository
 from app.db.credentials_store import SqlOAuthCredentialStore
+from app.db.interview_repository import SqlInterviewRepository
 from app.db.job_repository import SqlJobRepository
 from app.db.master_cv_repository import SqlMasterCvRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.domain.applications import ApplicationRepository
 from app.domain.cv import MasterCvRepository
+from app.domain.interviews import InterviewRepository
 from app.domain.jobs import JobRepository
 from app.integrations.base import MailClient, MailConfigurationError
 from app.integrations.mail_factory import create_mail_client
@@ -117,6 +119,19 @@ def get_mail_client(request: Request) -> MailClient:
         raise HTTPException(status_code=503, detail=f"Mail is not configured: {exc}") from exc
     request.app.state.mail_client = client
     return client
+
+
+def get_interview_repository(request: Request) -> InterviewRepository:
+    """Return the app's interview repository, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "interview_repository", None)
+    if isinstance(existing, InterviewRepository):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    repository = SqlInterviewRepository(create_session_factory(engine))
+    request.app.state.interview_repository = repository
+    return repository
 
 
 def get_master_cv_repository(request: Request) -> MasterCvRepository:
