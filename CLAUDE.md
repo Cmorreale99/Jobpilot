@@ -84,6 +84,7 @@ CLAUDE.md
 - `interviews.stage` and `outreach.status`: explicit state machines with validated transitions in `domain/`.
 - Dedupe jobs on `(source, external_id)`. Nightly jobs are **idempotent** — re-running never double-applies, double-sends, or duplicates rows.
 - **Master CV persistence** (`MasterCvRepository`, in-memory + `SqlMasterCvRepository`): each save writes a new `master_cv` version, but idempotently — a content fingerprint that excludes volatile timestamps (`ingested_at`) means an unchanged refresh adds no version. `cv_sources` dedupe on `(user_id, source_type, external_ref)`. `refresh_master_cv` (`services/master_cv_ingestion.py`) is the build-and-persist entrypoint.
+- **Uploads** (third evidence source alongside Drive + GitHub): `UploadsClient` interface with `LocalUploadsClient` (`integrations/uploads.py`) over a configured `UPLOADS_DIR` — empty by default, meaning disabled. Text/markdown allowlist (`apply_upload_policy`) filters before any read; ingestion records `CvSource(source_type="upload")` and `build_master_cv` merges all three source types.
 - **Jobs + matching**: `JobSource` (mock + future real) feeds `jobs` (deduped on `(source, external_id)`). Two-stage matching (`domain/matching.py`, pure + deterministic) scores every job (stage 1) → shortlists `SHORTLIST_SIZE` → deep re-ranks `TOP_N` with a rationale (stage 2), both behind `JobScorer`/`JobReranker` protocols with heuristic (default) and LLM-backed (`llm/matching.py`, flag `MATCHING_LLM_RANKING`) implementations. `run_matching` (`services/matching.py`) persists results to `job_matches` per `(user_id, master_cv_version)` with replace semantics.
 - **Dashboard**: `web/` (Next.js app router + Tailwind v4, TypeScript) renders one "pipeline ledger" page (approval queue → matches → applications → connect accounts) plus an application detail view; it talks to the read API in `app/api/dashboard.py` (`/master-cv/latest`, `/matches`, `/applications[/{id}]`, `POST /applications/{id}/transition`) with repos injected in tests and lazily built over SQL in prod. CORS is restricted to `DASHBOARD_ORIGINS` (default `http://localhost:3000`); the web app reads `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_USER_ID` (see `web/.env.example`).
 - **Tailoring + outreach (approval queue)**: state machines live in `domain/applications.py` — `applications.status` (`drafted → applied → interviewing → rejected|offer`, `drafted → ignored`) and `outreach.status` (`drafted → approved → sent`, `drafted → discarded`), transitions validated everywhere (`InvalidTransitionError`). Tailoring (`domain/tailoring.py`) and drafting (`domain/outreach.py`) sit behind `MaterialsTailorer`/`OutreachDrafter` protocols — heuristic defaults render Master CV claims verbatim; LLM-backed versions (`llm/drafting.py`, flag `TAILORING_LLM_DRAFTING`, DEEP tier) ground highlights by claim id (hallucinated ids dropped) and fall back to the heuristics on failure. Contacts come from the `ResearchClient` interface (mock fixture-backed) or are honestly absent — never invented. `ApplicationRepository` (in-memory + SQL, migration `0004`) keeps one application per `(user_id, job)` and one outreach row per application; re-runs refresh *drafted* rows only and never overwrite a human decision. `run_drafting` (`services/outreach.py`) orchestrates; the approval queue is served by `GET /outreach/queue` + `POST /outreach/{id}/approve|discard` (`api/outreach.py`).
@@ -227,6 +228,7 @@ A failure in one job never blocks the other.
 | `MATCHING_LLM_RANKING` | `false` | When false, matching uses the heuristic scorer/reranker. True selects the LLM-backed stages (needs `LLM_ENABLED`; else it warns and stays heuristic). |
 | `TAILORING_LLM_DRAFTING` | `false` | When false, tailoring + outreach use the deterministic template drafters. True selects the LLM-backed ones (needs `LLM_ENABLED`; else it warns and stays heuristic). |
 | `GDRIVE_MCP_ENABLED` | `false` | When false, the fixture-backed mock Drive client is used (no OAuth/MCP). True selects the MCP-backed client. |
+| `UPLOADS_DIR` | (empty) | Local folder of user-supplied career artifacts (text/markdown). Empty disables uploads ingestion. |
 | `GDRIVE_SOURCE_FOLDER_ID` | (empty) | Approved career-docs folder. With no folder and no broad scan, nothing is ingested. |
 | `GDRIVE_ALLOW_BROAD_SCAN` | `false` | Never scan the whole Drive by default. True is required to look outside the approved folder. |
 
@@ -248,8 +250,8 @@ A failure in one job never blocks the other.
 
 ## Milestone tracker (update as you go)
 
-- [ ] M0 — scaffold, DB, interfaces + mocks, fixtures
-- [ ] M1 — Master CV (mocked sources)
+- [x] M0 — scaffold, DB, interfaces + mocks, fixtures (scheduler moved to M5)
+- [x] M1 — Master CV (mocked sources)
 - [x] M2 — jobs + two-stage matching (mocked)
 - [x] M3 — tailoring + outreach drafting → approval queue
 - [x] M4 — dashboard

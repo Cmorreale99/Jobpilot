@@ -62,7 +62,7 @@ LlmClient (protocol, app/llm/client.py)
 
 ## Milestones
 
-- [ ] **M0 — Scaffold**: repo structure, `uv`/ruff/mypy/pytest, `.env.example`, interfaces + mocks, fixtures.
+- [x] **M0 — Scaffold**: repo structure, `uv`/ruff/mypy/pytest, `.env.example`, interfaces + mocks, fixtures.
   - [x] Drive + GitHub interfaces + fixture-backed mocks + `tests/fixtures/`.
   - [x] `app/config.py`, `.env.example`.
   - [x] DB layer started: SQLAlchemy `Base` + `session` + first model (`oauth_credentials`).
@@ -70,8 +70,8 @@ LlmClient (protocol, app/llm/client.py)
         verified offline. `create_all` remains a dev/test convenience.
   - [x] FastAPI entrypoint (`app/main.py`, app factory + `/health`) with the OAuth
         router (`app/api/`). Lazy, injectable flow wiring; imports with zero creds.
-  - [ ] `app/scheduler.py`, `web/`.
-- [ ] **M1 — Master CV (mocked sources)**
+  - [x] `web/` (landed with M4). `app/scheduler.py` moved to M5, where orchestration belongs.
+- [x] **M1 — Master CV (mocked sources)**
   - [x] Mock Drive ingestion → PAR-framed Master CV with `cv_sources` provenance.
   - [x] Mock GitHub ingestion (README + contribution signals) into the same builder;
         `build_master_cv` merges Drive + GitHub evidence with per-source provenance.
@@ -82,7 +82,13 @@ LlmClient (protocol, app/llm/client.py)
         `refresh_master_cv` builds and saves. Versioning is idempotent — a fingerprint
         that excludes volatile timestamps means an unchanged re-run adds no new version,
         and sources dedupe on `(user_id, source_type, external_ref)`.
-  - [ ] Uploads ingestion into the same builder.
+  - [x] Uploads ingestion into the same builder: `UploadsClient` interface +
+        `LocalUploadsClient` (`app/integrations/uploads.py`) over a configured
+        `UPLOADS_DIR` (empty default = disabled; the one implementation is local disk, so
+        it is real *and* offline — fixtures in `tests/fixtures/uploads/`). Format policy
+        (`apply_upload_policy`, text/markdown allowlist) filters before any read;
+        `ingest_upload_sources` records `CvSource(source_type="upload")` provenance and
+        `build_master_cv` merges Drive + GitHub + uploads into one PAR-framed CV.
   - [x] LLM-backed PAR structurer (`LlmClaimStructurer`, `app/llm/claim_structurer.py`)
         behind the same `ClaimStructurer` interface — a drop-in for the heuristic. Uses the
         BULK tier via `complete_json`. Enforces **no fabrication** structurally: the model
@@ -157,7 +163,10 @@ LlmClient (protocol, app/llm/client.py)
   - [x] Verified end-to-end offline: seeded SQLite via migrations + the mock pipeline,
         exercised every endpoint (incl. approve/discard/transition + CORS preflight)
         over real HTTP, dashboard + folio routes serve.
-- [ ] **M5 — Orchestration (idempotent nightly jobs)**
+- [ ] **M5 — Orchestration (idempotent nightly jobs)** — includes `app/scheduler.py`
+      (moved from M0): APScheduler triggers kept thin over the existing service
+      functions (`refresh_master_cv` → `run_matching` → `run_drafting`; separate
+      interview-scan job arrives with M7).
 - [ ] **M6 — Real integrations behind flags**
   - [x] **Encrypted OAuth credential store** — `oauth_credentials` model +
         `TokenCipher` (Fernet, `TOKEN_ENCRYPTION_KEY`); tokens encrypted at rest.

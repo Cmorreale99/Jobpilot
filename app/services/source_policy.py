@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from app.config import Settings
-from app.integrations.base import DriveSource, GitHubRepo
+from app.integrations.base import DriveSource, GitHubRepo, UploadCandidate
 
 
 def is_mime_allowed(mime_type: str, settings: Settings) -> bool:
@@ -83,3 +83,16 @@ def apply_repo_policy(repos: Iterable[GitHubRepo], settings: Settings) -> list[G
         for repo in repos
         if is_repo_kind_allowed(repo, settings) and is_repo_in_scope(repo, settings)
     ]
+
+
+# --- Uploads policy ----------------------------------------------------------------
+#
+# Uploads are already user-curated (the user placed the file in the folder), so the only
+# rule is a format allowlist: files the local client can genuinely extract text from.
+
+
+def apply_upload_policy(
+    candidates: Iterable[UploadCandidate], settings: Settings
+) -> list[UploadCandidate]:
+    """Keep only uploads whose MIME type is on the extractable-text allowlist."""
+    return [c for c in candidates if c.mime_type in settings.uploads_allowed_mime_types_set]
