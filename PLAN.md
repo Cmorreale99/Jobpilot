@@ -111,7 +111,35 @@ LlmClient (protocol, app/llm/client.py)
   - [x] Matching swap behind a flag: `create_matchers` (`app/services/matching_factory.py`)
         picks heuristic vs. LLM matchers from `MATCHING_LLM_RANKING`; `run_matching` defaults
         through it. Off by default; on-without-a-real-client logs and falls back.
-- [ ] **M3 — Tailoring + outreach drafting → approval queue**
+- [x] **M3 — Tailoring + outreach drafting → approval queue**
+  - [x] State machines in `domain/` (`app/domain/applications.py`): `applications.status`
+        (`drafted → applied → interviewing → rejected|offer`, `drafted → ignored`) and
+        `outreach.status` (`drafted → approved → sent`, `drafted → discarded`), both with
+        validated transitions (`InvalidTransitionError`); terminal states cannot reopen —
+        a discarded draft is never resurrected by a re-run.
+  - [x] Tailoring (`app/domain/tailoring.py`, pure): `MaterialsTailorer` protocol →
+        `TailoredMaterials` (summary, evidence highlights, cover letter). Heuristic
+        default selects claims by keyword overlap with the job and renders them
+        **verbatim** — materials derive only from real Master CV claims.
+  - [x] Outreach drafting (`app/domain/outreach.py`, pure): `ResearchClient` interface
+        (+ `MockResearchClient` over `tests/fixtures/research/contacts.json`) finds a
+        contact or honestly returns none; `OutreachDrafter` protocol with a heuristic
+        template default. Contacts are researched, never invented — no contact means a
+        generic hiring-team greeting.
+  - [x] LLM-backed drafters (`app/llm/drafting.py`, DEEP tier) behind
+        `TAILORING_LLM_DRAFTING` via `create_drafters`
+        (`app/services/drafting_factory.py`): the tailorer addresses claims by positional
+        id so hallucinated highlight ids are dropped (invented evidence cannot appear);
+        both degrade to the heuristics on any LLM failure.
+  - [x] Persistence: `applications` + `outreach` tables (migration `0004`), one
+        application per `(user_id, job)`, at most one outreach row per application.
+        `ApplicationRepository` protocol with in-memory + SQL impls; **idempotent** —
+        re-runs refresh *drafted* rows only and never overwrite a human decision.
+  - [x] `run_drafting` (`app/services/outreach.py`): matches → tailor → application →
+        research contact → draft → approval queue. Nothing sends; `OUTREACH_AUTO_SEND`
+        only warns until the real mail client (M6).
+  - [x] Approval-queue API (`app/api/outreach.py`): `GET /outreach/queue`,
+        `POST /outreach/{id}/approve|discard`; illegal transitions → 409, missing → 404.
 - [ ] **M4 — Dashboard**
 - [ ] **M5 — Orchestration (idempotent nightly jobs)**
 - [ ] **M6 — Real integrations behind flags**

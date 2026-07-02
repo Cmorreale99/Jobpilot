@@ -98,6 +98,53 @@ class JobRow(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ApplicationRow(Base):
+    """One application per ``(user_id, job)``; status follows the domain state machine."""
+
+    __tablename__ = "applications"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "job_source", "job_external_id", name="uq_applications_user_job"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    job_source: Mapped[str] = mapped_column(String(64))
+    job_external_id: Mapped[str] = mapped_column(String(255))
+    job_title: Mapped[str] = mapped_column(String(1024))
+    job_company: Mapped[str] = mapped_column(String(512))
+    master_cv_version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16))
+    materials_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OutreachRow(Base):
+    """At most one outreach draft per application; status follows the approval queue."""
+
+    __tablename__ = "outreach"
+    __table_args__ = (UniqueConstraint("application_id", name="uq_outreach_application"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    application_id: Mapped[int] = mapped_column(Integer)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    contact_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    contact_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    contact_source: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    subject: Mapped[str] = mapped_column(String(1024))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class JobMatchRow(Base):
     """A deep-ranked match of a job against a user's Master CV version."""
 

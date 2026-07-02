@@ -67,6 +67,17 @@ def test_upgrade_creates_jobs_and_matches(tmp_path: Path) -> None:
     assert {"jobs", "job_matches"} <= tables
 
 
+def test_upgrade_creates_applications_and_outreach(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "apps.db")
+    command.upgrade(_config(url), "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    assert {"applications", "outreach"} <= set(inspector.get_table_names())
+    app_uniques = {u["name"] for u in inspector.get_unique_constraints("applications")}
+    assert "uq_applications_user_job" in app_uniques
+    outreach_uniques = {u["name"] for u in inspector.get_unique_constraints("outreach")}
+    assert "uq_outreach_application" in outreach_uniques
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")
