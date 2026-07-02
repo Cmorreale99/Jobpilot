@@ -18,6 +18,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "drive"
 GITHUB_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "github"
 JOBS_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "jobs"
 RESEARCH_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "research"
+INBOX_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "inbox"
 APPROVED_FOLDER_ID = "career_docs"
 GITHUB_USERNAME = "jordanrivera"
 
@@ -63,6 +64,7 @@ def settings() -> Settings:
         github_allow_broad_scan=False,
         jobs_mock_fixtures_dir=str(JOBS_FIXTURES_DIR),
         research_mock_fixtures_dir=str(RESEARCH_FIXTURES_DIR),
+        inbox_mock_fixtures_dir=str(INBOX_FIXTURES_DIR),
     )
 
 

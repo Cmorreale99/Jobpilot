@@ -1,0 +1,33 @@
+{
+  "description": "Fixture inbox for offline interview detection: two genuine invites, a rejection, and unrelated noise the scoped query/detector must ignore.",
+  "messages": [
+    {
+      "message_id": "msg-2001",
+      "subject": "Interview invitation - Senior Engineer, Fraud Detection",
+      "sender": "Marcus Webb <m.webb@sentinelpay.example>",
+      "received_at": "2026-06-30T14:05:00Z",
+      "body": "Hi, thanks for applying to Sentinel Pay. We'd like to schedule a 60-minute technical interview next week for the Senior Engineer, Fraud Detection role. Please pick a slot that works for you."
+    },
+    {
+      "message_id": "msg-2002",
+      "subject": "Next steps: phone screen with Ledgerline",
+      "sender": "recruiting@ledgerline.example",
+      "received_at": "2026-06-29T09:30:00Z",
+      "body": "Hello! Following up on your application for Staff Backend Engineer, Payments at Ledgerline. We'd love to set up a 30-minute phone screen with the hiring manager. Are you available Thursday?"
+    },
+    {
+      "message_id": "msg-2003",
+      "subject": "Update on your application",
+      "sender": "no-reply@glowbrand.example",
+      "received_at": "2026-06-28T11:00:00Z",
+      "body": "Thank you for your interest in Glowbrand. After careful consideration we have decided to move forward with other candidates."
+    },
+    {
+      "message_id": "msg-2004",
+      "subject": "Your weekly job digest",
+      "sender": "digest@jobsite.example",
+      "received_at": "2026-07-01T08:00:00Z",
+      "body": "Top matches this week: 25 new roles in data engineering. Log in to view your matches and set alerts."
+    }
+  ]
+}

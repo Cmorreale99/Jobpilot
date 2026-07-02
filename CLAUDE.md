@@ -203,9 +203,9 @@ no issue/PR/write operations.
 
 **Sending** (`services/outreach_send.py`): the only exit point. `approved → sent` through the state machine only; a draft without a researched contact email is skipped (never guessed); failures stay approved for retry; re-runs never re-send. Manual path: approve → `POST /outreach/{id}/send` (Send stamp on the folio). Auto path: `OUTREACH_AUTO_SEND=true` in the pipeline. `MailClient` = mock outbox by default; `GMAIL_ENABLED=true` selects the real Gmail client (`integrations/real/gmail.py`). Job source: `JOB_SOURCE_PROVIDER` picks mock (default) or the compliant Remotive API (`integrations/real/jobs_remotive.py`).
 
-**Interview scan (separate):** scoped, query-filtered Gmail read for interview invites only → create/update `interviews` → generate prep packet.
+**Interview scan (separate):** scoped, query-filtered Gmail read for interview invites only → create/update `interviews` → generate prep packet. Implemented as `run_interview_scan` (`services/interview_scan.py`): `INTERVIEW_INBOX_SCAN=false` disables all reads, `INTERVIEW_SCAN_QUERY` scopes them, the conservative detector drops non-invites unstored. Interviews dedupe on `(user_id, source_message_id)`; `interviews.stage` (detected → scheduled → completed, or cancelled) validates transitions. Prep packets: heuristic default grounded in the linked application's materials + CV claims; `INTERVIEW_LLM_PREP=true` selects the DEEP-tier generator (`llm/prep.py`). Second cron trigger at `INTERVIEW_SCAN_HOUR` (03:00); `python -m app.scheduler --once --job interviews` for an immediate run. Surfaced at `/interviews` (API + dashboard section/folio).
 
-A failure in one job never blocks the other.
+A failure in one job never blocks the other (`run_job_safely` — observed live).
 
 ## Guardrails
 
@@ -222,7 +222,8 @@ A failure in one job never blocks the other.
 | `OUTREACH_AUTO_SEND` | `false` | When false, drafts wait in the approval queue (send via `POST /outreach/{id}/send` after approving). When true, the nightly pipeline auto-approves fresh drafts and sends those with a researched contact email. |
 | `GMAIL_ENABLED` | `false` | When false, the in-process mock outbox is used — nothing can leave the machine. True selects the real Gmail client (stored Google credential must carry the gmail.send scope). |
 | `JOB_SOURCE_PROVIDER` | `mock` | `mock` = fixture-backed job source; `remotive` = the compliant public Remotive API. |
-| `INTERVIEW_INBOX_SCAN` | `true` | Set false to disable all inbox reads. |
+| `INTERVIEW_INBOX_SCAN` | `true` | Set false to disable all inbox reads (the scanner is never invoked). |
+| `INTERVIEW_LLM_PREP` | `false` | When false, prep packets use the deterministic template generator. True selects the LLM-backed one (needs `LLM_ENABLED`; else it warns and stays heuristic). |
 | `SHORTLIST_SIZE` | `250` | Stage-1 shortlist size. |
 | `TOP_N` | `10` | Deep-ranked final matches. |
 | `ANTHROPIC_MODEL_BULK` | (sonnet 5 high) | Bulk scoring/extraction. |
@@ -261,4 +262,4 @@ A failure in one job never blocks the other.
 - [x] M4 — dashboard
 - [x] M5 — orchestration (idempotent)
 - [x] M6 — real integrations behind flags (live-verified: `python -m app.tools.verify_mcp`)
-- [ ] M7 — interview scan + prep packets
+- [x] M7 — interview scan + prep packets

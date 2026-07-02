@@ -82,8 +82,8 @@ def test_complete_json_parses_first_try() -> None:
     client = FakeLlmClient(['```json\n{"fit": 0.9}\n```'])
     result = complete_json(client, messages=[LlmMessage.user("score")], tier=ModelTier.BULK)
     assert result == {"fit": 0.9}
-    # Structured extraction is decoded deterministically.
-    assert client.calls[0].temperature == 0.0
+    # No sampling params: current models reject non-default temperature (verified live).
+    assert client.calls[0].temperature is None
 
 
 def test_complete_json_retries_once_then_succeeds() -> None:
@@ -136,12 +136,13 @@ def test_complete_json_no_retry_budget() -> None:
 
 
 def test_price_for_matches_by_substring() -> None:
-    assert price_for("claude-opus-4-8").output_per_mtok == 75.0
+    assert price_for("claude-opus-4-8").output_per_mtok == 25.0
     assert price_for("claude-sonnet-5").input_per_mtok == 3.0
+    assert price_for("claude-fable-5").input_per_mtok == 10.0
 
 
 def test_price_for_unknown_uses_fallback() -> None:
-    assert price_for("some-unknown-model").input_per_mtok == 15.0
+    assert price_for("some-unknown-model").input_per_mtok == 10.0
 
 
 def test_cost_tracker_accumulates() -> None:

@@ -11,11 +11,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.dashboard import router as dashboard_router
+from app.api.interviews import router as interviews_router
 from app.api.oauth import router as oauth_router
 from app.api.outreach import router as outreach_router
 from app.config import Settings, get_settings
 from app.domain.applications import ApplicationRepository
 from app.domain.cv import MasterCvRepository
+from app.domain.interviews import InterviewRepository
 from app.domain.jobs import JobRepository
 from app.integrations.base import MailClient
 from app.services.oauth_flow import OAuthFlowService
@@ -29,6 +31,7 @@ def create_app(
     job_repository: JobRepository | None = None,
     master_cv_repository: MasterCvRepository | None = None,
     mail_client: MailClient | None = None,
+    interview_repository: InterviewRepository | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Tests inject mock-backed services; prod builds them lazily."""
     app = FastAPI(title="JobPilot", version="0.1.0")
@@ -38,6 +41,7 @@ def create_app(
     app.state.job_repository = job_repository
     app.state.master_cv_repository = master_cv_repository
     app.state.mail_client = mail_client
+    app.state.interview_repository = interview_repository
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(app.state.settings.dashboard_origin_list),
@@ -47,6 +51,7 @@ def create_app(
     app.include_router(oauth_router)
     app.include_router(outreach_router)
     app.include_router(dashboard_router)
+    app.include_router(interviews_router)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

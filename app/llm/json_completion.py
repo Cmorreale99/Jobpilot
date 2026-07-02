@@ -72,8 +72,9 @@ def complete_json[T](
             tier=tier,
             system=system,
             max_tokens=max_tokens,
-            # Deterministic decoding for structured extraction.
-            temperature=0.0,
+            # No sampling params: current models (Sonnet 5 / Opus 4.8) reject
+            # non-default temperature with a 400 — verified live. The strict-JSON
+            # system prompts + parse-retry are the structure guarantee instead.
         )
         try:
             parsed = parse_json(response.text)

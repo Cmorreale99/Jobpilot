@@ -145,6 +145,44 @@ class OutreachRow(Base):
     )
 
 
+class InterviewRow(Base):
+    """A detected interview, deduped on ``(user_id, source_message_id)``."""
+
+    __tablename__ = "interviews"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_message_id", name="uq_interviews_user_message"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    source_message_id: Mapped[str] = mapped_column(String(255))
+    company: Mapped[str] = mapped_column(String(512))
+    job_title: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    stage: Mapped[str] = mapped_column(String(16))
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PrepPacketRow(Base):
+    """The prep packet generated for one interview (one row per interview)."""
+
+    __tablename__ = "prep_packets"
+    __table_args__ = (UniqueConstraint("interview_id", name="uq_prep_packets_interview"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    interview_id: Mapped[int] = mapped_column(Integer, index=True)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class JobMatchRow(Base):
     """A deep-ranked match of a job against a user's Master CV version."""
 

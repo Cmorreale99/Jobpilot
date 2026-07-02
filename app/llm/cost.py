@@ -32,14 +32,16 @@ class ModelPrice:
         ) / 1_000_000
 
 
-# Estimated public prices, matched by substring against the model id. A conservative
-# fallback is used for anything unrecognized so an unknown model never logs $0.
+# Public prices as of 2026-07 (per MTok), matched by substring against the model id.
+# Opus 4.x: $5/$25; Sonnet 4.6/5: $3/$15 (intro $2/$10 through 2026-08); Haiku 4.5: $1/$5;
+# Fable 5: $10/$50. A conservative fallback is used so an unknown model never logs $0.
 DEFAULT_PRICES: dict[str, ModelPrice] = {
-    "opus": ModelPrice(input_per_mtok=15.0, output_per_mtok=75.0),
+    "fable": ModelPrice(input_per_mtok=10.0, output_per_mtok=50.0),
+    "opus": ModelPrice(input_per_mtok=5.0, output_per_mtok=25.0),
     "sonnet": ModelPrice(input_per_mtok=3.0, output_per_mtok=15.0),
     "haiku": ModelPrice(input_per_mtok=1.0, output_per_mtok=5.0),
 }
-_FALLBACK_PRICE = ModelPrice(input_per_mtok=15.0, output_per_mtok=75.0)
+_FALLBACK_PRICE = ModelPrice(input_per_mtok=10.0, output_per_mtok=50.0)
 
 
 def price_for(model: str, prices: dict[str, ModelPrice] | None = None) -> ModelPrice:

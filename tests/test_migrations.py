@@ -67,6 +67,15 @@ def test_upgrade_creates_jobs_and_matches(tmp_path: Path) -> None:
     assert {"jobs", "job_matches"} <= tables
 
 
+def test_upgrade_creates_interviews_and_prep_packets(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "interviews.db")
+    command.upgrade(_config(url), "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    assert {"interviews", "prep_packets"} <= set(inspector.get_table_names())
+    uniques = {u["name"] for u in inspector.get_unique_constraints("interviews")}
+    assert "uq_interviews_user_message" in uniques
+
+
 def test_upgrade_creates_applications_and_outreach(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "apps.db")
     command.upgrade(_config(url), "head")
