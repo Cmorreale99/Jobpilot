@@ -20,8 +20,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.domain.cv import CvSource, ParClaim
+from app.domain.cv import CvSource, HeuristicClaimStructurer, ParClaim
 from app.llm.client import LlmClient
+from app.llm.errors import LlmError
 from app.llm.json_completion import complete_json
 from app.llm.types import LlmMessage, ModelTier
 
@@ -70,26 +71,39 @@ class LlmClaimStructurer:
         client: LlmClient,
         *,
         tier: ModelTier = ModelTier.BULK,
-        max_tokens: int = 4096,
+        # Output scales with document size (every claim carries a verbatim quote);
+        # 4096 truncated mid-JSON on real multi-page PDFs — verified live.
+        max_tokens: int = 8192,
         require_grounding: bool = True,
     ) -> None:
         self._client = client
         self._tier = tier
         self._max_tokens = max_tokens
         self._require_grounding = require_grounding
+        self._fallback = HeuristicClaimStructurer()
 
     def structure(self, source: CvSource) -> list[ParClaim]:
         if not source.raw_text.strip():
             return []
 
-        extracted = complete_json(
-            self._client,
-            system=_SYSTEM_PROMPT,
-            messages=[LlmMessage.user(_build_prompt(source))],
-            tier=self._tier,
-            validator=_parse_claims,
-            max_tokens=self._max_tokens,
-        )
+        try:
+            extracted = complete_json(
+                self._client,
+                system=_SYSTEM_PROMPT,
+                messages=[LlmMessage.user(_build_prompt(source))],
+                tier=self._tier,
+                validator=_parse_claims,
+                max_tokens=self._max_tokens,
+            )
+        except LlmError as exc:
+            # One unparseable/truncated response degrades this SOURCE to the heuristic
+            # (usually fewer claims), never the whole nightly ingestion.
+            logger.warning(
+                "LLM structuring failed for source %s; falling back to heuristic: %s",
+                source.external_ref,
+                exc,
+            )
+            return self._fallback.structure(source)
 
         haystack = _normalize(source.raw_text) if self._require_grounding else ""
         claims: list[ParClaim] = []
