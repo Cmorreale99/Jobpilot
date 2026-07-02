@@ -123,7 +123,12 @@ class OAuthFlowService:
     def _needs_refresh(self, credential: OAuthCredential, now: datetime) -> bool:
         if credential.expires_at is None or credential.refresh_token is None:
             return False
-        return credential.expires_at <= now + self._refresh_skew
+        expires_at = credential.expires_at
+        if expires_at.tzinfo is None:
+            # Defensive: some backends (SQLite) round-trip datetimes naive; values
+            # are stored as UTC, so re-tagging is lossless.
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return expires_at <= now + self._refresh_skew
 
 
 def _to_credential(user_id: str, provider: str, token: OAuthToken) -> OAuthCredential:

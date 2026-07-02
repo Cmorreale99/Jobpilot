@@ -72,12 +72,18 @@ def build_default_interview_dependencies(
     session_factory = create_session_factory(engine)
 
     # The real Gmail scanner needs the encrypted credential store; the mock needs nothing.
+    # Reads go through the refreshing view so a near-expiry Google token is renewed
+    # before the scan uses it.
     store = None
     if settings.gmail_enabled:
         from app.db.credentials_store import SqlOAuthCredentialStore
         from app.security.crypto import TokenCipher
+        from app.services.credentials import create_refreshing_store
 
-        store = SqlOAuthCredentialStore(session_factory, TokenCipher.from_settings(settings))
+        store = create_refreshing_store(
+            SqlOAuthCredentialStore(session_factory, TokenCipher.from_settings(settings)),
+            settings,
+        )
 
     return InterviewScanDependencies(
         inbox_scanner=create_inbox_scanner(

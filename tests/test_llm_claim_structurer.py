@@ -10,9 +10,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-import pytest
 from app.domain.cv import CvSource, MasterCvBuilder
-from app.llm import FakeLlmClient, LlmClaimStructurer, LlmJsonError, ModelTier
+from app.llm import FakeLlmClient, LlmClaimStructurer, ModelTier
 from app.llm.types import LlmMessage
 
 _SOURCE_TEXT = (
@@ -170,12 +169,15 @@ def test_blank_source_makes_no_llm_call() -> None:
     assert client.call_count == 0
 
 
-def test_malformed_shape_retries_then_raises() -> None:
-    # Both attempts return the wrong shape (no "claims" key).
+def test_malformed_shape_retries_then_falls_back_to_heuristic() -> None:
+    # Both attempts return the wrong shape (no "claims" key) -> after the corrective
+    # retry, the source degrades to the heuristic structurer instead of raising
+    # (one bad response must never sink the nightly ingestion — seen live).
     client = FakeLlmClient(['{"items": []}', '{"still": "wrong"}'])
-    with pytest.raises(LlmJsonError):
-        LlmClaimStructurer(client).structure(_source())
+    claims = LlmClaimStructurer(client).structure(_source())
     assert client.call_count == 2
+    # The default _source() text has no PAR blocks/bullets, so the heuristic finds none.
+    assert claims == []
 
 
 def test_retry_recovers_after_bad_first_response() -> None:
@@ -233,3 +235,31 @@ def test_structure_signature_matches_protocol() -> None:
     client = FakeLlmClient([_response([])])
     LlmClaimStructurer(client).structure(_source())
     assert isinstance(client.calls[0].messages[0], LlmMessage)
+
+
+def test_persistent_llm_failure_falls_back_to_heuristic_for_that_source() -> None:
+    """A truncated/unparseable response (seen live on large PDFs) degrades one source
+    to the heuristic structurer instead of sinking the whole ingestion."""
+    from datetime import UTC, datetime
+
+    from app.domain.cv import CvSource
+
+    source = CvSource(
+        source_type="gdrive",
+        external_ref="doc-1",
+        title="Write-up",
+        mime_type="text/plain",
+        raw_text=(
+            "Problem: Settlement missed the cutoff.\n"
+            "Action: Re-architected the pipeline into idempotent workers.\n"
+            "Result: Cut runtime by 70%."
+        ),
+        ingested_at=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+    client = FakeLlmClient(default_text='{"claims": [{"action": "truncated mid-str')
+    claims = LlmClaimStructurer(client).structure(source)
+
+    assert client.call_count == 2  # one attempt + one corrective retry, then fallback
+    (claim,) = claims  # the heuristic parsed the PAR block instead
+    assert claim.action == "Re-architected the pipeline into idempotent workers."
+    assert claim.result == "Cut runtime by 70%."

@@ -47,7 +47,9 @@ class LlmPrepPacketGenerator:
         client: LlmClient,
         *,
         tier: ModelTier = ModelTier.DEEP,
-        max_tokens: int = 3000,
+        # Packet length scales with the evidence provided; 3000 truncated mid-JSON on a
+        # real 100+-claim Master CV — verified live.
+        max_tokens: int = 8192,
     ) -> None:
         self._client = client
         self._tier = tier

@@ -11,12 +11,18 @@ missing, so an unconfigured provider is reported clearly rather than silently sk
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.domain.credentials import (
     PROVIDER_GDRIVE,
     PROVIDER_GITHUB,
     OAuthCredential,
     OAuthCredentialStore,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
+    from app.config import Settings
+    from app.services.oauth_flow import OAuthFlowService
 from app.integrations.base import (
     DriveConfigurationError,
     DriveCredentials,
@@ -65,6 +71,40 @@ class InMemoryOAuthCredentialStore:
 
     def delete(self, user_id: str, provider: str) -> None:
         self._rows.pop((user_id, provider), None)
+
+
+class RefreshingCredentialStore:
+    """A read-through :class:`OAuthCredentialStore` view that keeps tokens fresh.
+
+    ``get`` delegates to :meth:`OAuthFlowService.get_valid_credential`, which refreshes
+    a near-expiry token (persisting the result) before returning it. Long-lived
+    processes — the nightly jobs, the API — resolve credentials through this so a
+    token minted hours ago never reaches a client stale. Writes pass through.
+    """
+
+    def __init__(self, store: OAuthCredentialStore, flow: OAuthFlowService) -> None:
+        self._store = store
+        self._flow = flow
+
+    def get(self, user_id: str, provider: str) -> OAuthCredential | None:
+        return self._flow.get_valid_credential(user_id, provider)
+
+    def upsert(self, credential: OAuthCredential) -> None:
+        self._store.upsert(credential)
+
+    def delete(self, user_id: str, provider: str) -> None:
+        self._store.delete(user_id, provider)
+
+
+def create_refreshing_store(
+    store: OAuthCredentialStore, settings: Settings
+) -> OAuthCredentialStore:
+    """Wrap ``store`` so reads auto-refresh, using the configured OAuth providers."""
+    from app.integrations.oauth.factory import create_oauth_providers
+    from app.services.oauth_flow import OAuthFlowService
+
+    flow = OAuthFlowService(store, create_oauth_providers(settings))
+    return RefreshingCredentialStore(store, flow)
 
 
 def resolve_drive_credentials(store: OAuthCredentialStore, user_id: str) -> DriveCredentials:
