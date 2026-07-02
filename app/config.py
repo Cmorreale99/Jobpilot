@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # --- Mock GitHub fixtures (used when MCP is disabled) --------------------------
     github_mock_fixtures_dir: str = "tests/fixtures/github"
 
+    # --- Uploads (local user-supplied career artifacts) -----------------------------
+    # Empty (the default) disables uploads ingestion entirely. Point it at a folder of
+    # text/markdown career artifacts to include them as Master CV evidence.
+    uploads_dir: str = ""
+    uploads_allowed_mime_types: str = "text/plain,text/markdown"
+
     # --- Jobs + two-stage matching ------------------------------------------------
     shortlist_size: int = 250  # stage-1 shortlist size
     top_n: int = 10  # deep-ranked final matches
@@ -145,6 +151,12 @@ class Settings(BaseSettings):
     @property
     def github_oauth_scope_list(self) -> tuple[str, ...]:
         return tuple(s for s in self.github_oauth_scopes.split() if s)
+
+    @property
+    def uploads_allowed_mime_types_set(self) -> frozenset[str]:
+        return frozenset(
+            item.strip() for item in self.uploads_allowed_mime_types.split(",") if item.strip()
+        )
 
     @property
     def dashboard_origin_list(self) -> tuple[str, ...]:

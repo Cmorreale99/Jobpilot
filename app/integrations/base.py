@@ -232,6 +232,57 @@ class JobSource(Protocol):
 
 
 # =================================================================================
+# Uploads (local career artifacts)
+# =================================================================================
+
+
+class UploadsConfigurationError(RuntimeError):
+    """Raised when an uploads client points at a directory that does not exist."""
+
+
+@dataclass(frozen=True)
+class UploadCandidate:
+    """A file discovered in the uploads directory, before its body is read.
+
+    ``upload_ref`` is the file name relative to the uploads directory — the handle
+    passed to :meth:`UploadsClient.read_upload`.
+    """
+
+    upload_ref: str
+    title: str
+    mime_type: str
+    modified_time: datetime | None = None
+
+
+@dataclass(frozen=True)
+class UploadDocument:
+    """An uploaded file with its extracted plain-text body."""
+
+    upload_ref: str
+    title: str
+    mime_type: str
+    text: str
+    modified_time: datetime | None = None
+
+
+@runtime_checkable
+class UploadsClient(Protocol):
+    """Read-only view of user-supplied career artifacts (a local uploads directory).
+
+    Same narrow contract as Drive/GitHub: discover candidates, read text. Async for
+    interface symmetry even though the default implementation is local disk.
+    """
+
+    async def list_candidate_uploads(self) -> list[UploadCandidate]:
+        """List candidate files. Suffix *policy* is applied by the service layer."""
+        ...
+
+    async def read_upload(self, upload_ref: str) -> UploadDocument:
+        """Read and return the text of a single uploaded file."""
+        ...
+
+
+# =================================================================================
 # Contact research (outreach)
 # =================================================================================
 

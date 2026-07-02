@@ -1,0 +1,4 @@
+Engineering Excellence Award, 2025
+
+- Recognized for designing the exactly-once payment retry layer adopted by three product teams
+- Selected from 120 engineers by the architecture review board
