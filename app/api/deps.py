@@ -15,8 +15,12 @@ from starlette.requests import Request
 from app.config import Settings, get_settings
 from app.db.application_repository import SqlApplicationRepository
 from app.db.credentials_store import SqlOAuthCredentialStore
+from app.db.job_repository import SqlJobRepository
+from app.db.master_cv_repository import SqlMasterCvRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.domain.applications import ApplicationRepository
+from app.domain.cv import MasterCvRepository
+from app.domain.jobs import JobRepository
 from app.integrations.oauth.base import OAuthError
 from app.integrations.oauth.factory import create_oauth_providers
 from app.security.crypto import TokenCipher, TokenEncryptionError
@@ -73,4 +77,30 @@ def get_application_repository(request: Request) -> ApplicationRepository:
     settings = getattr(request.app.state, "settings", None) or get_settings()
     repository = build_default_application_repository(settings)
     request.app.state.application_repository = repository
+    return repository
+
+
+def get_job_repository(request: Request) -> JobRepository:
+    """Return the app's job repository, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "job_repository", None)
+    if isinstance(existing, JobRepository):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    repository = SqlJobRepository(create_session_factory(engine))
+    request.app.state.job_repository = repository
+    return repository
+
+
+def get_master_cv_repository(request: Request) -> MasterCvRepository:
+    """Return the app's Master CV repository, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "master_cv_repository", None)
+    if isinstance(existing, MasterCvRepository):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    repository = SqlMasterCvRepository(create_session_factory(engine))
+    request.app.state.master_cv_repository = repository
     return repository

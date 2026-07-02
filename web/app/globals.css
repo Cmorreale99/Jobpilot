@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/* JobPilot ledger tokens — cool paper, blue-black ink, carmine for items awaiting
+   the operator's decision, viridian for posted/approved entries. */
+@theme {
+  --color-paper: #f6f7f4;
+  --color-ink: #1c2126;
+  --color-annotation: #5d6a70;
+  --color-rule: #d9ddd4;
+  --color-carmine: #a81f2d;
+  --color-carmine-wash: #f6e9ea;
+  --color-viridian: #2e6b4f;
+  --color-viridian-wash: #e7efea;
+  --color-manila: #efeee6;
+
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+  --font-masthead: var(--font-newsreader), georgia, serif;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-feature-settings: "tnum";
+}
+
+/* Dotted leader line between a row's label and its figure, ledger-style. */
+.leader {
+  flex: 1 1 auto;
+  min-width: 2rem;
+  border-bottom: 1.5px dotted var(--color-rule);
+  margin: 0 0.5rem;
+  transform: translateY(-0.3em);
+}
+
+/* Ink-stamp controls: the page's one indulgence. */
+.stamp {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.7rem;
+  border-radius: 3px;
+  border: 1.5px solid currentColor;
+  background: transparent;
+  cursor: pointer;
+  transition: transform 60ms ease, background-color 60ms ease;
+}
+.stamp:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.stamp:active {
+  transform: translateY(1px) scale(0.98);
+}
+.stamp:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+.stamp:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* A posted (acted-on) status, stamped slightly off-true. */
+.stamped {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+  transform: rotate(-1.5deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stamp,
+  .stamp:active {
+    transition: none;
+    transform: none;
+  }
+}

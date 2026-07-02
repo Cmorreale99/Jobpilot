@@ -21,7 +21,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 # --- Provenance ------------------------------------------------------------------
 
@@ -253,6 +253,7 @@ class StoredMasterCv:
     created_at: datetime | None = None
 
 
+@runtime_checkable
 class MasterCvRepository(Protocol):
     """Persistence for versioned Master CVs and their source provenance.
 
