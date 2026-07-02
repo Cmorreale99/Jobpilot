@@ -105,8 +105,15 @@ The `OAuthCredentialStore` protocol (`app/domain/credentials.py`) trades in decr
 `SqlOAuthCredentialStore` (`app/db/credentials_store.py`). The Drive/GitHub factories take
 a `store` + `user_id` and inject decrypted `DriveCredentials`/`GitHubCredentials` into the
 MCP clients — so credentials flow from the encrypted store to the client without the rest
-of the app seeing plaintext or ciphertext. Still to build: the OAuth authorization flow
-that obtains/refreshes tokens, and an Alembic migration for the table.
+of the app seeing plaintext or ciphertext.
+
+**Authorization flow** (`app/integrations/oauth/`, `app/services/oauth_flow.py`): the
+`OAuthProvider` interface (mock + real `GoogleOAuthProvider`/`GitHubOAuthProvider` over
+httpx) plus `OAuthFlowService`, which does `start` (mint anti-CSRF `state`, return consent
+URL) → `complete` (validate single-use `state`, exchange code, encrypted upsert) →
+`get_valid_credential` (auto-refresh near-expiry tokens). Providers do no storage; the
+flow does no HTTP. Still to build: a FastAPI callback route to drive it over HTTP, and an
+Alembic migration for the `oauth_credentials` table.
 
 ## MCP integrations (GitHub + Google Drive)
 

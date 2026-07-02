@@ -83,6 +83,27 @@ class Settings(BaseSettings):
     # --- Mock GitHub fixtures (used when MCP is disabled) --------------------------
     github_mock_fixtures_dir: str = "tests/fixtures/github"
 
+    # --- OAuth authorization flow (obtains tokens for the credential store) --------
+    # Google (Drive). Default scopes: identity (for the account email) + read-only Drive.
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = ""
+    google_oauth_scopes: str = "openid email https://www.googleapis.com/auth/drive.readonly"
+
+    # GitHub. Default scopes: read the user's identity + repositories.
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    github_oauth_redirect_uri: str = ""
+    github_oauth_scopes: str = "read:user repo"
+
+    @property
+    def google_oauth_scope_list(self) -> tuple[str, ...]:
+        return tuple(s for s in self.google_oauth_scopes.split() if s)
+
+    @property
+    def github_oauth_scope_list(self) -> tuple[str, ...]:
+        return tuple(s for s in self.github_oauth_scopes.split() if s)
+
     @property
     def gdrive_allowed_mime_types_set(self) -> frozenset[str]:
         """Allowed MIME types as a set, tolerant of surrounding whitespace."""
