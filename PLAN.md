@@ -87,8 +87,11 @@ LlmClient (protocol, app/llm/client.py)
         behind the same `ClaimStructurer` interface — a drop-in for the heuristic. Uses the
         BULK tier via `complete_json`. Enforces **no fabrication** structurally: the model
         must return a verbatim `evidence_text` quote per claim, and any claim whose quote
-        is not found (whitespace-normalized) in the source is dropped. Still wired off by
-        default — ingestion keeps injecting the heuristic until the swap is turned on.
+        is not found (whitespace-normalized) in the source is dropped.
+  - [x] Ingestion swap behind a flag: `create_cv_builder` (`app/services/cv_builder_factory.py`)
+        picks heuristic vs. LLM structurer from `MASTER_CV_LLM_STRUCTURING`; `build_master_cv`
+        / `build_master_cv_from_drive` default through it. Off by default; on-without-a-real-client
+        logs and falls back to the heuristic rather than crashing.
 - [~] **M2 — Jobs + two-stage matching (mocked)**
   - [x] `JobSource` interface + `MockJobSource` + `tests/fixtures/jobs/`.
   - [x] `jobs` + `job_matches` schema (migration `0003`); `JobRepository` protocol with
