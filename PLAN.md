@@ -64,9 +64,16 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
         `OAuthCredentialStore` protocol with `InMemoryOAuthCredentialStore` (mock-first)
         and `SqlOAuthCredentialStore` (SQLAlchemy, tested on SQLite). Factories accept a
         `store` + `user_id` and inject decrypted `DriveCredentials`/`GitHubCredentials`
-        into the MCP clients. **Remaining:** the OAuth *authorization* flow that obtains
-        and refreshes tokens to populate the store; an Alembic migration for the table
-        (tests use `create_all`).
+        into the MCP clients.
+  - [x] **OAuth authorization flow** — `OAuthProvider` interface
+        (`app/integrations/oauth/`) with `MockOAuthProvider` (mock-first) and real
+        `GoogleOAuthProvider` / `GitHubOAuthProvider` (httpx, tested offline via
+        `MockTransport`). `OAuthFlowService` (`app/services/oauth_flow.py`) does
+        start → callback (anti-CSRF `state`, single-use) → encrypted upsert, and
+        `get_valid_credential` transparently refreshes near-expiry tokens.
+        **Remaining:** a web callback route (needs the FastAPI app) to drive
+        start/complete over HTTP; an Alembic migration for the table (tests use
+        `create_all`).
   - [~] **Google Drive MCP** — targets the Google Workspace MCP server
         (taylorwilsdon/google_workspace_mcp). Done: async `McpDriveClient` mapping the
         `DriveClient` interface onto `list_drive_items` / `search_drive_files` /
