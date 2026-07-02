@@ -199,7 +199,7 @@ no issue/PR/write operations.
 
 ## Pipeline (two independent nightly jobs)
 
-**Application pipeline:** refresh Master CV (if sources changed) → fetch jobs (24h) → score all → top `SHORTLIST_SIZE` (~250) → deep re-rank to `TOP_N` (10) with rationale → tailor materials → research contact + draft outreach into the approval queue.
+**Application pipeline:** refresh Master CV (if sources changed) → fetch jobs (24h) → score all → top `SHORTLIST_SIZE` (~250) → deep re-rank to `TOP_N` (10) with rationale → tailor materials → research contact + draft outreach into the approval queue. Implemented as `run_application_pipeline` (`services/pipeline.py`, scheduler-free and Lambda-portable) with `build_default_dependencies` as the composition root; `app/scheduler.py` is the thin APScheduler wrapper (`PIPELINE_HOUR`/`PIPELINE_MINUTE`, default 02:00; `python -m app.scheduler --once` for an immediate run). `run_job_safely` gives each job log-and-swallow isolation.
 
 **Interview scan (separate):** scoped, query-filtered Gmail read for interview invites only → create/update `interviews` → generate prep packet.
 
@@ -255,6 +255,6 @@ A failure in one job never blocks the other.
 - [x] M2 — jobs + two-stage matching (mocked)
 - [x] M3 — tailoring + outreach drafting → approval queue
 - [x] M4 — dashboard
-- [ ] M5 — orchestration (idempotent)
+- [x] M5 — orchestration (idempotent)
 - [ ] M6 — real integrations behind flags
 - [ ] M7 — interview scan + prep packets

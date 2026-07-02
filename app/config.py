@@ -94,6 +94,15 @@ class Settings(BaseSettings):
     top_n: int = 10  # deep-ranked final matches
     jobs_mock_fixtures_dir: str = "tests/fixtures/jobs"
 
+    # --- Nightly orchestration ------------------------------------------------------
+    # The single JobPilot user the nightly pipeline runs for (single-user system).
+    pipeline_user_id: str = "u1"
+    # When the nightly application pipeline fires (local time).
+    pipeline_hour: int = 2
+    pipeline_minute: int = 0
+    # How far back the job fetch looks ("fresh roles" window).
+    jobs_since_hours: int = 24
+
     # --- Dashboard (Next.js dev server origin allowed to call this API) -------------
     dashboard_origins: str = "http://localhost:3000"
 

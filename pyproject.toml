@@ -15,6 +15,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "alembic>=1.13",
+    "apscheduler>=3.11.3",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +49,11 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 # Alembic env/version scripts are executed by Alembic, not imported as typed modules.
 exclude = ['app/db/migrations/']
+
+# APScheduler 3.x ships no type stubs.
+[[tool.mypy.overrides]]
+module = "apscheduler.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
