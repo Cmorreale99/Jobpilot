@@ -163,10 +163,24 @@ LlmClient (protocol, app/llm/client.py)
   - [x] Verified end-to-end offline: seeded SQLite via migrations + the mock pipeline,
         exercised every endpoint (incl. approve/discard/transition + CORS preflight)
         over real HTTP, dashboard + folio routes serve.
-- [ ] **M5 — Orchestration (idempotent nightly jobs)** — includes `app/scheduler.py`
-      (moved from M0): APScheduler triggers kept thin over the existing service
-      functions (`refresh_master_cv` → `run_matching` → `run_drafting`; separate
-      interview-scan job arrives with M7).
+- [x] **M5 — Orchestration (idempotent nightly jobs)**
+  - [x] `run_application_pipeline` (`app/services/pipeline.py`): refresh Master CV →
+        match fresh jobs (`JOBS_SINCE_HOURS` window) → draft outreach into the approval
+        queue, returning a `PipelineResult` summary. No scheduler import — the same
+        function ports to EventBridge→Lambda untouched. Idempotent end to end (verified
+        against SQLite over the real entrypoint: second run adds zero rows, preserves
+        approved/applied decisions).
+  - [x] `PipelineDependencies` + `build_default_dependencies`: the composition root —
+        factory-selected clients (mock by default; MCP/real slot in via existing flags)
+        over SQL repositories. New `create_job_source` / `create_research_client`
+        factories (mock-only until M6).
+  - [x] `app/scheduler.py` (moved from M0), thin: one APScheduler `CronTrigger`
+        (`PIPELINE_HOUR`/`PIPELINE_MINUTE`, default 02:00) → the service function.
+        `run_job_safely` logs-and-swallows so one broken job never takes down the
+        scheduler or blocks another (the M7 interview scan registers alongside).
+        `python -m app.scheduler --once` runs the pipeline immediately (exit code
+        reflects success); no `--once` schedules it nightly. Dependencies build lazily
+        at first fire, so the process starts with zero credentials.
 - [ ] **M6 — Real integrations behind flags**
   - [x] **Encrypted OAuth credential store** — `oauth_credentials` model +
         `TokenCipher` (Fernet, `TOKEN_ENCRYPTION_KEY`); tokens encrypted at rest.
