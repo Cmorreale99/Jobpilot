@@ -136,6 +136,29 @@ write operations.
   ingested-at). The domain `MasterCvBuilder` structures evidence into PAR claims that
   each trace back to a source ref — it never invents experience.
 
+### GitHub integration (Master CV evidence)
+
+Mirrors the Drive design. GitHub is a **read-only career-evidence source**: the user's own
+repositories, their READMEs, and contribution signals. The `GitHubClient` interface
+(`list_candidate_repos`, `read_repo`, `get_repo_metadata`, `list_changed_repos`) exposes
+no issue/PR/write operations.
+
+- **Mocks are the default.** `GITHUB_MCP_ENABLED=false` selects `MockGitHubClient`
+  (`app/integrations/mock/github.py`), backed by `tests/fixtures/github/`.
+- **Real client:** `McpGitHubClient` (`app/integrations/mcp/github.py`) is an async adapter
+  onto the official **github/github-mcp-server**, mapping the interface to
+  `search_repositories` / `get_file_contents` / `list_commits`. Endpoint/transport from
+  config only (`GITHUB_MCP_SERVER`, `GITHUB_MCP_TRANSPORT`, `GITHUB_MCP_ENABLED`); tool
+  names validated via `list_tools`; auth is a PAT (`GitHubCredentials`). Selection via
+  `create_github_client()` (`app/integrations/github_factory.py`).
+- **Repo policy** (`app/services/source_policy.py`, `apply_repo_policy`): scope to
+  `GITHUB_USERNAME` and exclude forks/private unless `GITHUB_INCLUDE_FORKS` /
+  `GITHUB_INCLUDE_PRIVATE` are set. Broad scanning off unless `GITHUB_ALLOW_BROAD_SCAN=true`;
+  with no username and no broad scan, nothing is ingested.
+- **Provenance:** each repo becomes a `CvSource` (`source_type=github`, `repo_ref` ref,
+  README + factual signals footer). `build_master_cv()` merges Drive + GitHub evidence
+  into one PAR-framed Master CV; claims trace to their `repo_ref`.
+
 ## Pipeline (two independent nightly jobs)
 
 **Application pipeline:** refresh Master CV (if sources changed) → fetch jobs (24h) → score all → top `SHORTLIST_SIZE` (~250) → deep re-rank to `TOP_N` (10) with rationale → tailor materials → research contact + draft outreach into the approval queue.

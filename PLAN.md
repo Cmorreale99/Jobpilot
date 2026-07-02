@@ -44,8 +44,11 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
   - [x] `app/config.py` (Drive settings), `.env.example`.
 - [ ] **M1 — Master CV (mocked sources)**
   - [x] Mock Drive ingestion → PAR-framed Master CV with `cv_sources` provenance.
-  - [x] Source policy: MIME allowlist + approved-folder scope; broad scan off by default.
-  - [ ] GitHub + uploads ingestion into the same builder.
+  - [x] Mock GitHub ingestion (README + contribution signals) into the same builder;
+        `build_master_cv` merges Drive + GitHub evidence with per-source provenance.
+  - [x] Source policy: Drive MIME allowlist + folder scope; GitHub owner scope +
+        fork/private exclusion. Broad scan off by default for both.
+  - [ ] Uploads ingestion into the same builder.
   - [ ] Versioning + dedupe across sources; persist `master_cv` / `cv_sources`.
   - [ ] Swap the heuristic PAR structurer for the LLM-backed one behind the same interface.
 - [ ] **M2 — Jobs + two-stage matching (mocked)**
@@ -68,14 +71,29 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
            structured content/JSON), add a parser at `_extract_payload`.
         4. **stdio transport** — only `http` is wired; stdio needs launch command/args
            config (`GDRIVE_MCP_COMMAND`/`GDRIVE_MCP_ARGS`).
-  - [ ] GitHub MCP client; Gmail send behind approval; compliant job-source adapter.
+  - [~] **GitHub MCP** — targets the official github/github-mcp-server. Done: async
+        `McpGitHubClient` mapping the `GitHubClient` interface onto `search_repositories`
+        / `get_file_contents` / `list_commits`; config-driven endpoint; `list_tools`
+        validation; base64 README decode; response→dataclass mapping, unit-tested offline
+        via an injected fake session. **Remaining before it talks to real GitHub:**
+        1. **OAuth/PAT store** — pass a decrypted `GitHubCredentials` from
+           `oauth_credentials`; confirm auth (bearer header for the remote server vs.
+           `GITHUB_PERSONAL_ACCESS_TOKEN` for a locally launched one). See `TODO(mcp-auth)`.
+        2. **Languages breakdown** — no first-class per-repo languages tool; metadata
+           reports the primary language only. Wire a `/languages` equivalent if exposed.
+        3. **Response format / stdio** — same caveats as Drive (text-vs-structured
+           payloads; only `http` transport wired).
+  - [ ] Gmail send behind approval; compliant job-source adapter.
   - [ ] Mocks remain the default for tests.
 - [ ] **M7 — Interview scan + prep packets**
 
 ## Decisions
 
 - **Drive MCP server:** Google Workspace MCP (taylorwilsdon/google_workspace_mcp).
-- **Async model:** `DriveClient` is async; the ingestion service awaits it (mock is async too).
+- **GitHub MCP server:** official github/github-mcp-server
+  (`search_repositories` / `get_file_contents` / `list_commits`).
+- **Async model:** `DriveClient`/`GitHubClient` are async; the ingestion service awaits
+  them (mocks are async too).
 
 ## Open questions
 

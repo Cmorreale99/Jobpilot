@@ -114,3 +114,97 @@ class DriveClient(Protocol):
     async def list_changed_sources(self, user_id: str, since: datetime) -> list[DriveSource]:
         """List candidate sources modified since ``since`` (for incremental refresh)."""
         ...
+
+
+# =================================================================================
+# GitHub
+# =================================================================================
+
+
+class GitHubConfigurationError(RuntimeError):
+    """Raised when a GitHub client is asked to run without valid configuration."""
+
+
+class GitHubResponseError(RuntimeError):
+    """Raised when a GitHub MCP tool returns a payload we can't map to our contract."""
+
+
+@dataclass(frozen=True)
+class GitHubCredentials:
+    """GitHub access for the MCP server: a personal access token (never logged).
+
+    Decrypted on read from ``oauth_credentials``; forwarded to the GitHub MCP server.
+    """
+
+    access_token: str
+
+
+@dataclass(frozen=True)
+class GitHubRepo:
+    """A candidate repository, before its README/signals are read.
+
+    ``repo_ref`` is ``"owner/name"`` — the handle passed to :meth:`GitHubClient.read_repo`.
+    """
+
+    repo_ref: str
+    name: str
+    owner: str
+    description: str | None = None
+    primary_language: str | None = None
+    is_fork: bool = False
+    is_private: bool = False
+    stars: int = 0
+    pushed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class GitHubRepoMetadata:
+    """Contribution signals for a repository (no README body)."""
+
+    repo_ref: str
+    name: str
+    owner: str
+    primary_language: str | None = None
+    languages: tuple[str, ...] = ()
+    stars: int = 0
+    forks: int = 0
+    commit_count: int | None = None
+    pushed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class GitHubDocument:
+    """A repository's extracted README text (career evidence)."""
+
+    repo_ref: str
+    title: str
+    text: str
+    primary_language: str | None = None
+    pushed_at: datetime | None = None
+
+
+@runtime_checkable
+class GitHubClient(Protocol):
+    """Read-only, career-evidence view of GitHub.
+
+    Narrow by design: list the user's repositories, read a repo's README, and fetch
+    contribution signals. No issue/PR/write operations. Async because the real client
+    talks to the GitHub MCP server; the mock is trivially async.
+    """
+
+    async def list_candidate_repos(self, user_id: str) -> list[GitHubRepo]:
+        """List candidate repositories. Repo *policy* (owner scope, fork/private
+        exclusion) is applied by the service layer so the rule lives in one place."""
+        ...
+
+    async def read_repo(self, repo_ref: str) -> GitHubDocument:
+        """Read and return the README text of a single repository."""
+        ...
+
+    async def get_repo_metadata(self, repo_ref: str) -> GitHubRepoMetadata:
+        """Return contribution signals for a single repository."""
+        ...
+
+    async def list_changed_repos(self, user_id: str, since: datetime) -> list[GitHubRepo]:
+        """List repositories pushed to since ``since`` (for incremental refresh)."""
+        ...
