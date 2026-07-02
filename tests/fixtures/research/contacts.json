@@ -1,0 +1,26 @@
+{
+  "description": "Fixture outreach contacts for offline drafting, keyed by company. Companies missing here (e.g. Northwind, Glowbrand) exercise the honest no-contact path.",
+  "contacts": [
+    {
+      "company": "Ledgerline",
+      "name": "Priya Raman",
+      "title": "Engineering Manager, Payments",
+      "email": "priya.raman@ledgerline.example",
+      "source": "company careers page (fixture)"
+    },
+    {
+      "company": "Sentinel Pay",
+      "name": "Marcus Webb",
+      "title": "Head of Risk Engineering",
+      "email": "m.webb@sentinelpay.example",
+      "source": "conference talk bio (fixture)"
+    },
+    {
+      "company": "Streamforge",
+      "name": "Ana Sofia Duarte",
+      "title": "Technical Recruiter",
+      "email": null,
+      "source": "public team page (fixture)"
+    }
+  ]
+}

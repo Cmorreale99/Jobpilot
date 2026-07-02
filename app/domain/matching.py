@@ -90,7 +90,8 @@ _STOPWORDS = frozenset(
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#.\-]{1,}")
 
 
-def _tokenize(text: str) -> list[str]:
+def tokenize(text: str) -> list[str]:
+    """Lowercase keyword tokens with stopwords removed — shared by matching and tailoring."""
     return [t for t in _TOKEN_RE.findall(text.lower()) if len(t) >= 3 and t not in _STOPWORDS]
 
 
@@ -121,7 +122,7 @@ def build_profile(master_cv: MasterCv) -> CvProfile:
         if claim.result:
             segments.append(f"Result: {claim.result}")
         lines.append(" | ".join(segments))
-    return CvProfile(tokens=frozenset(_tokenize(" ".join(parts))), summary="\n".join(lines))
+    return CvProfile(tokens=frozenset(tokenize(" ".join(parts))), summary="\n".join(lines))
 
 
 class JobScorer(Protocol):
@@ -142,11 +143,11 @@ class HeuristicJobScorer:
     """Keyword-overlap scorer, with a small bonus for title matches."""
 
     def score(self, profile: CvProfile, job: Job) -> ScoredJob:
-        job_tokens = set(_tokenize(f"{job.title} {job.description}"))
+        job_tokens = set(tokenize(f"{job.title} {job.description}"))
         if not job_tokens:
             return ScoredJob(job=job, score=0.0)
         overlap = profile.tokens & job_tokens
-        title_overlap = profile.tokens & set(_tokenize(job.title))
+        title_overlap = profile.tokens & set(tokenize(job.title))
         base = len(overlap) / len(job_tokens)
         score = min(1.0, round(base + 0.1 * len(title_overlap), 4))
         return ScoredJob(job=job, score=score, matched_terms=tuple(sorted(overlap)))

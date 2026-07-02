@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     top_n: int = 10  # deep-ranked final matches
     jobs_mock_fixtures_dir: str = "tests/fixtures/jobs"
 
+    # --- Tailoring + outreach (approval queue) --------------------------------------
+    # When false (the default and the safe path), approved drafts wait in the approval
+    # queue; nothing is ever sent automatically. Sending itself lands with the real
+    # mail client in M6 — until then this flag only logs a warning if enabled.
+    outreach_auto_send: bool = False
+    research_mock_fixtures_dir: str = "tests/fixtures/research"
+
     # --- LLM layer (Anthropic) ----------------------------------------------------
     # Mock-first: with ``llm_enabled=false`` the factory returns the fake client, so the
     # whole pipeline runs offline with no API key. Set true (and an API key) to call the
@@ -103,6 +110,9 @@ class Settings(BaseSettings):
     # stage-2 DEEP reranker). Off by default; same real-client requirement/fallback as
     # ``master_cv_llm_structuring``.
     matching_llm_ranking: bool = False
+    # Swap the heuristic tailorer + outreach drafter for the LLM-backed ones (DEEP tier).
+    # Off by default; same real-client requirement/fallback as the other LLM flags.
+    tailoring_llm_drafting: bool = False
     anthropic_api_key: str = ""
     anthropic_model_bulk: str = "claude-sonnet-5"
     anthropic_model_deep: str = "claude-opus-4-8"

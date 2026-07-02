@@ -10,18 +10,25 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app.api.oauth import router as oauth_router
+from app.api.outreach import router as outreach_router
 from app.config import Settings, get_settings
+from app.domain.applications import ApplicationRepository
 from app.services.oauth_flow import OAuthFlowService
 
 
 def create_app(
-    *, settings: Settings | None = None, flow: OAuthFlowService | None = None
+    *,
+    settings: Settings | None = None,
+    flow: OAuthFlowService | None = None,
+    application_repository: ApplicationRepository | None = None,
 ) -> FastAPI:
-    """Build the FastAPI app. Tests inject a mock-backed ``flow``; prod builds one lazily."""
+    """Build the FastAPI app. Tests inject mock-backed services; prod builds them lazily."""
     app = FastAPI(title="JobPilot", version="0.1.0")
     app.state.settings = settings or get_settings()
     app.state.flow = flow
+    app.state.application_repository = application_repository
     app.include_router(oauth_router)
+    app.include_router(outreach_router)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

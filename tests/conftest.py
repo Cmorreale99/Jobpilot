@@ -12,10 +12,12 @@ from app.config import Settings
 from app.integrations.mock.drive import MockDriveClient
 from app.integrations.mock.github import MockGitHubClient
 from app.integrations.mock.jobs import MockJobSource
+from app.integrations.mock.research import MockResearchClient
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "drive"
 GITHUB_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "github"
 JOBS_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "jobs"
+RESEARCH_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "research"
 APPROVED_FOLDER_ID = "career_docs"
 GITHUB_USERNAME = "jordanrivera"
 
@@ -47,6 +49,7 @@ def settings() -> Settings:
         github_mock_fixtures_dir=str(GITHUB_FIXTURES_DIR),
         github_allow_broad_scan=False,
         jobs_mock_fixtures_dir=str(JOBS_FIXTURES_DIR),
+        research_mock_fixtures_dir=str(RESEARCH_FIXTURES_DIR),
     )
 
 
@@ -63,3 +66,8 @@ def mock_github_client(github_fixtures_dir: Path) -> MockGitHubClient:
 @pytest.fixture
 def mock_job_source() -> MockJobSource:
     return MockJobSource(JOBS_FIXTURES_DIR)
+
+
+@pytest.fixture
+def mock_research_client() -> MockResearchClient:
+    return MockResearchClient(RESEARCH_FIXTURES_DIR)

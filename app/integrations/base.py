@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from app.domain.jobs import Job
+from app.domain.outreach import Contact
 
 
 class DriveConfigurationError(RuntimeError):
@@ -227,4 +228,23 @@ class JobSource(Protocol):
 
     async def fetch_recent_jobs(self, since: datetime | None = None) -> list[Job]:
         """Fetch postings, optionally only those posted after ``since``."""
+        ...
+
+
+# =================================================================================
+# Contact research (outreach)
+# =================================================================================
+
+
+@runtime_checkable
+class ResearchClient(Protocol):
+    """Finds a real outreach contact for a job posting — or honestly returns none.
+
+    Narrow by design: one lookup, read-only. Returning ``None`` is the correct answer
+    when no contact can be verified; downstream drafting then addresses the hiring team
+    generically. Implementations must never fabricate a person.
+    """
+
+    async def find_contact(self, job: Job) -> Contact | None:
+        """Return a researched contact for ``job``'s company/role, or ``None``."""
         ...
