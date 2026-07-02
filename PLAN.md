@@ -43,7 +43,8 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
   - [x] Drive + GitHub interfaces + fixture-backed mocks + `tests/fixtures/`.
   - [x] `app/config.py`, `.env.example`.
   - [x] DB layer started: SQLAlchemy `Base` + `session` + first model (`oauth_credentials`).
-  - [ ] Alembic env + migrations (tests currently use `create_all`).
+  - [x] Alembic env + first migration (`0001` oauth_credentials); `alembic upgrade head`
+        verified offline. `create_all` remains a dev/test convenience.
   - [x] FastAPI entrypoint (`app/main.py`, app factory + `/health`) with the OAuth
         router (`app/api/`). Lazy, injectable flow wiring; imports with zero creds.
   - [ ] `app/scheduler.py`, `web/`.
@@ -77,8 +78,7 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
         `/callback` (validate single-use state, exchange, encrypted upsert) on the
         FastAPI app (`app/api/oauth.py`), tested end-to-end with `TestClient` +
         mock providers. Misconfiguration (e.g. no `TOKEN_ENCRYPTION_KEY`) → HTTP 503.
-        **Remaining:** an Alembic migration for `oauth_credentials` (tests use
-        `create_all`); a small UI to launch the connect flow (part of M4).
+        **Remaining:** a small UI to launch the connect flow (part of M4).
   - [~] **Google Drive MCP** — targets the Google Workspace MCP server
         (taylorwilsdon/google_workspace_mcp). Done: async `McpDriveClient` mapping the
         `DriveClient` interface onto `list_drive_items` / `search_drive_files` /

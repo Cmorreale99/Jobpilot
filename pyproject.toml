@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.27",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +45,8 @@ packages = ["app"]
 strict = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
+# Alembic env/version scripts are executed by Alembic, not imported as typed modules.
+exclude = ['app/db/migrations/']
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
