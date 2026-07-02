@@ -92,6 +92,22 @@ Tiered models, env-configurable, never hardcoded:
 - `ANTHROPIC_MODEL_BULK` — stage-1 scoring + bulk extraction (cheap/fast).
 - `ANTHROPIC_MODEL_DEEP` — top-10 re-rank, outreach drafting, prep packets (strong).
 
+## Secrets & OAuth credential store
+
+OAuth tokens are **encrypted at rest**. `app/security/crypto.py` (`TokenCipher`, Fernet,
+keyed by `TOKEN_ENCRYPTION_KEY` — generate with `python -m app.security.crypto`) is the
+only place tokens are encrypted/decrypted. The `oauth_credentials` table
+(`app/db/models.py`) stores ciphertext only.
+
+The `OAuthCredentialStore` protocol (`app/domain/credentials.py`) trades in decrypted
+`OAuthCredential` values; implementations encrypt on write. Two exist:
+`InMemoryOAuthCredentialStore` (mock-first, `app/services/credentials.py`) and
+`SqlOAuthCredentialStore` (`app/db/credentials_store.py`). The Drive/GitHub factories take
+a `store` + `user_id` and inject decrypted `DriveCredentials`/`GitHubCredentials` into the
+MCP clients — so credentials flow from the encrypted store to the client without the rest
+of the app seeing plaintext or ciphertext. Still to build: the OAuth authorization flow
+that obtains/refreshes tokens, and an Alembic migration for the table.
+
 ## MCP integrations (GitHub + Google Drive)
 
 GitHub and Google Drive are accessed through their **MCP servers**, not hand-rolled REST clients. The `real/` implementations of `GitHubClient` and `DriveClient` open an MCP client session (code in `integrations/mcp/`) and call the server's tools to list/read repos, READMEs, contribution signals, and Drive docs/PDFs; extracted content is then handed to `llm/` for PAR structuring. The same tools can also be surfaced directly to the agent for exploratory extraction — either way the boundary is the same.
