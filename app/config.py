@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # --- Mock GitHub fixtures (used when MCP is disabled) --------------------------
     github_mock_fixtures_dir: str = "tests/fixtures/github"
 
+    # --- Jobs + two-stage matching ------------------------------------------------
+    shortlist_size: int = 250  # stage-1 shortlist size
+    top_n: int = 10  # deep-ranked final matches
+    jobs_mock_fixtures_dir: str = "tests/fixtures/jobs"
+
     # --- OAuth authorization flow (obtains tokens for the credential store) --------
     # Google (Drive). Default scopes: identity (for the account email) + read-only Drive.
     google_oauth_client_id: str = ""

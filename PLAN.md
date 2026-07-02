@@ -61,7 +61,17 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
         and sources dedupe on `(user_id, source_type, external_ref)`.
   - [ ] Uploads ingestion into the same builder.
   - [ ] Swap the heuristic PAR structurer for the LLM-backed one behind the same interface.
-- [ ] **M2 — Jobs + two-stage matching (mocked)**
+- [~] **M2 — Jobs + two-stage matching (mocked)**
+  - [x] `JobSource` interface + `MockJobSource` + `tests/fixtures/jobs/`.
+  - [x] `jobs` + `job_matches` schema (migration `0003`); `JobRepository` protocol with
+        in-memory + SQL impls. Jobs dedupe on `(source, external_id)`; matches stored per
+        `(user_id, master_cv_version)` with replace semantics.
+  - [x] Two-stage matching (`app/domain/matching.py`, pure): stage-1 bulk keyword scorer
+        → shortlist (`SHORTLIST_SIZE`) → stage-2 deep re-rank (`TOP_N`) with rationale,
+        both behind `JobScorer`/`JobReranker` protocols. `run_matching` orchestrates
+        fetch → persist jobs → rank → persist matches; deterministic + idempotent.
+  - [ ] Swap the heuristic scorer/reranker for the LLM-backed stages behind the same
+        interfaces (bulk model for stage 1, deep model for stage 2).
 - [ ] **M3 — Tailoring + outreach drafting → approval queue**
 - [ ] **M4 — Dashboard**
 - [ ] **M5 — Orchestration (idempotent nightly jobs)**

@@ -84,6 +84,7 @@ CLAUDE.md
 - `interviews.stage` and `outreach.status`: explicit state machines with validated transitions in `domain/`.
 - Dedupe jobs on `(source, external_id)`. Nightly jobs are **idempotent** — re-running never double-applies, double-sends, or duplicates rows.
 - **Master CV persistence** (`MasterCvRepository`, in-memory + `SqlMasterCvRepository`): each save writes a new `master_cv` version, but idempotently — a content fingerprint that excludes volatile timestamps (`ingested_at`) means an unchanged refresh adds no version. `cv_sources` dedupe on `(user_id, source_type, external_ref)`. `refresh_master_cv` (`services/master_cv_ingestion.py`) is the build-and-persist entrypoint.
+- **Jobs + matching**: `JobSource` (mock + future real) feeds `jobs` (deduped on `(source, external_id)`). Two-stage matching (`domain/matching.py`, pure + deterministic) scores every job (stage 1) → shortlists `SHORTLIST_SIZE` → deep re-ranks `TOP_N` with a rationale (stage 2), both behind `JobScorer`/`JobReranker` protocols (heuristic now, LLM later). `run_matching` (`services/matching.py`) persists results to `job_matches` per `(user_id, master_cv_version)` with replace semantics.
 
 ## LLM layer
 

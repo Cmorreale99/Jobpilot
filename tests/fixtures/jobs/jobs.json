@@ -1,0 +1,115 @@
+{
+  "description": "Fixture job postings for offline matching. Mix of strong, medium, and irrelevant fits against the fixture Master CV (payments / distributed systems / fraud / Python / Go).",
+  "jobs": [
+    {
+      "source": "mock",
+      "external_id": "job-1001",
+      "title": "Staff Backend Engineer, Payments",
+      "company": "Ledgerline",
+      "location": "Remote (US)",
+      "remote": true,
+      "posted_at": "2026-06-28T09:00:00Z",
+      "url": "https://example.com/jobs/1001",
+      "description": "Own our payment settlement pipeline. You will build idempotent, sharded workers over a Kafka event log, in Go and Python on PostgreSQL, and drive reliability with distributed tracing and observability. Payments or fintech background strongly preferred."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1002",
+      "title": "Senior Engineer, Fraud Detection",
+      "company": "Sentinel Pay",
+      "location": "New York, NY",
+      "remote": false,
+      "posted_at": "2026-06-27T09:00:00Z",
+      "url": "https://example.com/jobs/1002",
+      "description": "Build realtime fraud scoring on a streaming platform. Compute velocity features with Flink over Kafka, serve them from a low-latency feature store, and backtest models against historical fraud. Python and gRPC experience valued."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1003",
+      "title": "Platform Engineer, Payments Ledger",
+      "company": "Northwind",
+      "location": "Remote",
+      "remote": true,
+      "posted_at": "2026-06-20T09:00:00Z",
+      "url": "https://example.com/jobs/1003",
+      "description": "Work on a high-volume settlement ledger in Go backed by PostgreSQL. Guarantee exactly-once payouts with idempotency keys and a replayable log. Care about correctness and merchant payout reliability."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1004",
+      "title": "Backend Engineer, Data Platform",
+      "company": "Cirrus",
+      "location": "Austin, TX",
+      "remote": false,
+      "posted_at": "2026-06-15T09:00:00Z",
+      "url": "https://example.com/jobs/1004",
+      "description": "Scale our analytics API. Add read-through caching and query-planner hints, move heavy aggregations to a columnar store, and keep p99 latency low under peak reporting load. Distributed systems and gRPC a plus."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1005",
+      "title": "Site Reliability Engineer",
+      "company": "Uptime Co",
+      "location": "Remote",
+      "remote": true,
+      "posted_at": "2026-06-10T09:00:00Z",
+      "url": "https://example.com/jobs/1005",
+      "description": "Own reliability across services. Kubernetes, distributed tracing, incident response, and observability. Reduce mean time to resolution and improve on-call quality."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1006",
+      "title": "Full-Stack Engineer",
+      "company": "Brightside",
+      "location": "Remote",
+      "remote": true,
+      "posted_at": "2026-06-05T09:00:00Z",
+      "url": "https://example.com/jobs/1006",
+      "description": "Build product features end to end with React, TypeScript, and Tailwind on the frontend and a Node backend. Ship polished UI and delightful user experiences."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1007",
+      "title": "Marketing Manager",
+      "company": "Glowbrand",
+      "location": "Los Angeles, CA",
+      "remote": false,
+      "posted_at": "2026-06-02T09:00:00Z",
+      "url": "https://example.com/jobs/1007",
+      "description": "Lead brand campaigns, manage social channels, run SEO and email marketing, and grow our audience. Creative storytelling and analytics-informed campaign optimization."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1008",
+      "title": "Product Designer",
+      "company": "Formwork",
+      "location": "Remote",
+      "remote": true,
+      "posted_at": "2026-05-30T09:00:00Z",
+      "url": "https://example.com/jobs/1008",
+      "description": "Design intuitive product flows in Figma, run usability research, and craft a cohesive design system. Partner with engineering on delightful, accessible experiences."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1009",
+      "title": "Junior Frontend Developer",
+      "company": "Pixelworks",
+      "location": "Remote",
+      "remote": true,
+      "posted_at": "2026-05-25T09:00:00Z",
+      "url": "https://example.com/jobs/1009",
+      "description": "Entry-level role building web pages with HTML, CSS, and a bit of JavaScript. Learn from senior developers and grow your frontend skills."
+    },
+    {
+      "source": "mock",
+      "external_id": "job-1010",
+      "title": "Distributed Systems Engineer",
+      "company": "Streamforge",
+      "location": "Seattle, WA",
+      "remote": false,
+      "posted_at": "2026-05-20T09:00:00Z",
+      "url": "https://example.com/jobs/1010",
+      "description": "Design fault-tolerant distributed systems with Kafka streaming, sharding, and replayable event logs. Strong Go and Python skills; care deeply about throughput and correctness."
+    }
+  ]
+}

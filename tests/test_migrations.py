@@ -60,6 +60,13 @@ def test_upgrade_creates_master_cv_and_cv_sources(tmp_path: Path) -> None:
     assert {"master_cv", "cv_sources"} <= tables
 
 
+def test_upgrade_creates_jobs_and_matches(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "jobs.db")
+    command.upgrade(_config(url), "head")
+    tables = set(sa.inspect(sa.create_engine(url)).get_table_names())
+    assert {"jobs", "job_matches"} <= tables
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")
