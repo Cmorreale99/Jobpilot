@@ -56,6 +56,24 @@ class Settings(BaseSettings):
     # --- Mock Drive fixtures (used when MCP is disabled) ---------------------------
     gdrive_mock_fixtures_dir: str = "tests/fixtures/drive"
 
+    # --- GitHub MCP wiring (real integration; off by default) ---------------------
+    github_mcp_enabled: bool = False
+    github_mcp_server: str = ""
+    github_mcp_transport: str = "http"
+    # Dev-only PAT fallback. In production the token comes from the encrypted
+    # ``oauth_credentials`` store, decrypted per request — not from static config.
+    github_mcp_access_token: str = ""
+
+    # --- GitHub source scoping / safety -------------------------------------------
+    # Scope to the user's own repositories; do not scan all of GitHub by default.
+    github_username: str = ""
+    github_include_forks: bool = False
+    github_include_private: bool = False
+    github_allow_broad_scan: bool = False
+
+    # --- Mock GitHub fixtures (used when MCP is disabled) --------------------------
+    github_mock_fixtures_dir: str = "tests/fixtures/github"
+
     @property
     def gdrive_allowed_mime_types_set(self) -> frozenset[str]:
         """Allowed MIME types as a set, tolerant of surrounding whitespace."""

@@ -1,0 +1,81 @@
+{
+  "description": "Fixture GitHub account for offline Master CV ingestion. Includes repos that must be excluded by policy (fork, private, other owner).",
+  "username": "jordanrivera",
+  "repos": [
+    {
+      "repo_ref": "jordanrivera/fraud-stream",
+      "name": "fraud-stream",
+      "owner": "jordanrivera",
+      "description": "Realtime card-fraud scoring over a Kafka event stream.",
+      "primary_language": "Python",
+      "languages": ["Python", "HCL", "Dockerfile"],
+      "is_fork": false,
+      "is_private": false,
+      "stars": 128,
+      "forks": 14,
+      "commit_count": 342,
+      "pushed_at": "2026-06-10T12:00:00Z",
+      "readme": "fraud-stream.md"
+    },
+    {
+      "repo_ref": "jordanrivera/payments-ledger",
+      "name": "payments-ledger",
+      "owner": "jordanrivera",
+      "description": "Idempotent, sharded settlement ledger.",
+      "primary_language": "Go",
+      "languages": ["Go", "SQL"],
+      "is_fork": false,
+      "is_private": false,
+      "stars": 57,
+      "forks": 6,
+      "commit_count": 511,
+      "pushed_at": "2026-05-22T09:15:00Z",
+      "readme": "payments-ledger.md"
+    },
+    {
+      "repo_ref": "jordanrivera/awesome-lists-fork",
+      "name": "awesome-lists-fork",
+      "owner": "jordanrivera",
+      "description": "A fork of someone else's list; not original work.",
+      "primary_language": "Markdown",
+      "languages": ["Markdown"],
+      "is_fork": true,
+      "is_private": false,
+      "stars": 0,
+      "forks": 0,
+      "commit_count": 2,
+      "pushed_at": "2026-01-05T00:00:00Z",
+      "readme": "awesome-lists-fork.md"
+    },
+    {
+      "repo_ref": "jordanrivera/private-scratch",
+      "name": "private-scratch",
+      "owner": "jordanrivera",
+      "description": "Private scratchpad; excluded unless private repos are opted in.",
+      "primary_language": "Python",
+      "languages": ["Python"],
+      "is_fork": false,
+      "is_private": true,
+      "stars": 0,
+      "forks": 0,
+      "commit_count": 40,
+      "pushed_at": "2026-06-25T18:00:00Z",
+      "readme": "private-scratch.md"
+    },
+    {
+      "repo_ref": "acme-corp/internal-tool",
+      "name": "internal-tool",
+      "owner": "acme-corp",
+      "description": "Owned by another account; out of scope for this user.",
+      "primary_language": "Java",
+      "languages": ["Java"],
+      "is_fork": false,
+      "is_private": false,
+      "stars": 3,
+      "forks": 1,
+      "commit_count": 12,
+      "pushed_at": "2026-06-01T00:00:00Z",
+      "readme": "internal-tool.md"
+    }
+  ]
+}
