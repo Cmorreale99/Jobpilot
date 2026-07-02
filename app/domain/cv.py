@@ -15,11 +15,13 @@ Two invariants this module enforces:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 # --- Provenance ------------------------------------------------------------------
 
@@ -169,6 +171,102 @@ class MasterCv:
                 for s in self.sources
             ],
         }
+
+    @classmethod
+    def from_content_json(cls, data: dict[str, Any]) -> MasterCv:
+        """Rebuild a Master CV from stored ``content_json``.
+
+        Source ``raw_text`` is not carried in ``content_json`` (it lives authoritatively
+        in the ``cv_sources`` table), so reconstructed sources have empty ``raw_text``.
+        """
+        claims = [
+            ParClaim(
+                action=c["action"],
+                source_ref=c["source_ref"],
+                source_type=c.get("source_type", "gdrive"),
+                problem=c.get("problem"),
+                result=c.get("result"),
+                evidence_text=c.get("evidence_text", ""),
+            )
+            for c in data.get("claims", [])
+        ]
+        sources = [
+            CvSource(
+                source_type=s["source_type"],
+                external_ref=s["external_ref"],
+                title=s["title"],
+                mime_type=s["mime_type"],
+                raw_text="",
+                ingested_at=datetime.fromisoformat(s["ingested_at"]),
+                modified_time=(
+                    datetime.fromisoformat(s["modified_time"]) if s.get("modified_time") else None
+                ),
+            )
+            for s in data.get("sources", [])
+        ]
+        return cls(claims=claims, sources=sources, version=int(data.get("version", 1)))
+
+    def content_fingerprint(self) -> str:
+        """Stable hash of the substantive CV content for idempotent versioning.
+
+        Excludes volatile fields (``ingested_at``, ``version``) so re-running ingestion
+        with unchanged evidence produces the same fingerprint — and thus no new version.
+        """
+        material = {
+            "claims": [
+                {
+                    "problem": c.problem,
+                    "action": c.action,
+                    "result": c.result,
+                    "source_type": c.source_type,
+                    "source_ref": c.source_ref,
+                }
+                for c in self.claims
+            ],
+            "sources": sorted(
+                (
+                    {
+                        "source_type": s.source_type,
+                        "external_ref": s.external_ref,
+                        "title": s.title,
+                        "mime_type": s.mime_type,
+                        "raw_text": s.raw_text,
+                        "modified_time": s.modified_time.isoformat() if s.modified_time else None,
+                    }
+                    for s in self.sources
+                ),
+                key=lambda d: (d["source_type"] or "", d["external_ref"] or ""),
+            ),
+        }
+        blob = json.dumps(material, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class StoredMasterCv:
+    """A persisted Master CV version (what a repository returns)."""
+
+    user_id: str
+    version: int
+    content_hash: str
+    master_cv: MasterCv
+    created_at: datetime | None = None
+
+
+class MasterCvRepository(Protocol):
+    """Persistence for versioned Master CVs and their source provenance.
+
+    ``save`` is **idempotent**: re-saving content whose fingerprint matches the latest
+    version returns that version instead of creating a duplicate.
+    """
+
+    def save(self, user_id: str, master_cv: MasterCv) -> StoredMasterCv: ...
+
+    def get_latest(self, user_id: str) -> StoredMasterCv | None: ...
+
+    def get_version(self, user_id: str, version: int) -> StoredMasterCv | None: ...
+
+    def list_versions(self, user_id: str) -> list[int]: ...
 
 
 class MasterCvBuilder:

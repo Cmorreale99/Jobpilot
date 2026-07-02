@@ -53,6 +53,13 @@ def test_upgrade_creates_schema_then_downgrade_drops_it(tmp_path: Path) -> None:
     assert "oauth_credentials" not in sa.inspect(sa.create_engine(url)).get_table_names()
 
 
+def test_upgrade_creates_master_cv_and_cv_sources(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "cv.db")
+    command.upgrade(_config(url), "head")
+    tables = set(sa.inspect(sa.create_engine(url)).get_table_names())
+    assert {"master_cv", "cv_sources"} <= tables
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")
