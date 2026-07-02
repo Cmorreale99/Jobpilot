@@ -6,12 +6,26 @@ on read, so the ``oauth_credentials`` table only ever holds ciphertext.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import OAuthCredentialRow
 from app.domain.credentials import OAuthCredential
 from app.security.crypto import TokenCipher
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Re-attach UTC to datetimes SQLite hands back naive.
+
+    ``DateTime(timezone=True)`` columns lose tzinfo on the SQLite round trip; a naive
+    ``expires_at`` then crashes any comparison with an aware ``now`` (seen live in the
+    token-refresh check). Values are stored as UTC, so re-tagging is lossless.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
 
 
 class SqlOAuthCredentialStore:
@@ -42,7 +56,7 @@ class SqlOAuthCredentialStore:
                     else None
                 ),
                 scopes=tuple(row.scopes.split()) if row.scopes else (),
-                expires_at=row.expires_at,
+                expires_at=_as_utc(row.expires_at),
             )
 
     def upsert(self, credential: OAuthCredential) -> None:

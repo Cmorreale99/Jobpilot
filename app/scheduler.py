@@ -63,19 +63,21 @@ def create_scheduler(
     settings = settings or get_settings()
     scheduler = AsyncIOScheduler()
 
-    async def application_pipeline_job() -> None:
+    async def _run_pipeline() -> object:
+        # Dependency building happens INSIDE the safe wrapper: a configuration error
+        # (bad credential, unreachable server) is a failed job, not a dead scheduler.
         deps = dependencies or build_default_dependencies(settings)
-        await run_job_safely(
-            APPLICATION_PIPELINE_JOB_ID,
-            lambda: run_application_pipeline(deps, settings),
-        )
+        return await run_application_pipeline(deps, settings)
+
+    async def _run_scan() -> object:
+        deps = interview_dependencies or build_default_interview_dependencies(settings)
+        return await run_interview_scan(deps, settings)
+
+    async def application_pipeline_job() -> None:
+        await run_job_safely(APPLICATION_PIPELINE_JOB_ID, _run_pipeline)
 
     async def interview_scan_job() -> None:
-        deps = interview_dependencies or build_default_interview_dependencies(settings)
-        await run_job_safely(
-            INTERVIEW_SCAN_JOB_ID,
-            lambda: run_interview_scan(deps, settings),
-        )
+        await run_job_safely(INTERVIEW_SCAN_JOB_ID, _run_scan)
 
     scheduler.add_job(
         application_pipeline_job,
@@ -113,18 +115,21 @@ async def _run_once(
     job: str,
 ) -> int:
     """Run the selected job(s) immediately; exit 0 only if everything succeeded."""
+
+    async def _run_pipeline() -> object:
+        deps = dependencies or build_default_dependencies(settings)
+        return await run_application_pipeline(deps, settings)
+
+    async def _run_scan() -> object:
+        ideps = interview_dependencies or build_default_interview_dependencies(settings)
+        return await run_interview_scan(ideps, settings)
+
     ok = True
     if job in ("pipeline", "all"):
-        deps = dependencies or build_default_dependencies(settings)
-        result = await run_job_safely(
-            APPLICATION_PIPELINE_JOB_ID, lambda: run_application_pipeline(deps, settings)
-        )
+        result = await run_job_safely(APPLICATION_PIPELINE_JOB_ID, _run_pipeline)
         ok = ok and result is not None
     if job in ("interviews", "all"):
-        ideps = interview_dependencies or build_default_interview_dependencies(settings)
-        scan_result = await run_job_safely(
-            INTERVIEW_SCAN_JOB_ID, lambda: run_interview_scan(ideps, settings)
-        )
+        scan_result = await run_job_safely(INTERVIEW_SCAN_JOB_ID, _run_scan)
         ok = ok and scan_result is not None
     return 0 if ok else 1
 

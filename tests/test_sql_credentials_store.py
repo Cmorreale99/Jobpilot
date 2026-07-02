@@ -72,3 +72,44 @@ def test_get_missing_returns_none(store: SqlOAuthCredentialStore) -> None:
 
 def test_model_table_name() -> None:
     assert OAuthCredentialRow.__tablename__ == "oauth_credentials"
+
+
+def test_expires_at_survives_sqlite_round_trip_timezone_aware() -> None:
+    """SQLite strips tzinfo from DateTime columns; the store must re-tag UTC so the
+    token-refresh comparison never mixes naive and aware datetimes (seen live)."""
+    from datetime import UTC, datetime, timedelta
+
+    import sqlalchemy as sa
+    from app.db.credentials_store import SqlOAuthCredentialStore
+    from app.db.session import create_all, create_session_factory
+    from app.domain.credentials import PROVIDER_GDRIVE, OAuthCredential
+    from app.integrations.oauth.mock import MockOAuthProvider
+    from app.security.crypto import TokenCipher
+    from app.services.oauth_flow import InMemoryStateStore, OAuthFlowService
+
+    engine = sa.create_engine("sqlite+pysqlite:///:memory:")
+    create_all(engine)
+    store = SqlOAuthCredentialStore(
+        create_session_factory(engine), TokenCipher(TokenCipher.generate_key())
+    )
+    store.upsert(
+        OAuthCredential(
+            user_id="u1",
+            provider=PROVIDER_GDRIVE,
+            account_label="jordan@example.com",
+            access_token="tok",
+            refresh_token="refresh-me",
+            expires_at=datetime.now(tz=UTC) - timedelta(minutes=5),
+        )
+    )
+
+    credential = store.get("u1", PROVIDER_GDRIVE)
+    assert credential is not None
+    assert credential.expires_at is not None and credential.expires_at.tzinfo is not None
+
+    # The refresh path that crashed live: must renew, not raise.
+    flow = OAuthFlowService(
+        store, {PROVIDER_GDRIVE: MockOAuthProvider(PROVIDER_GDRIVE)}, InMemoryStateStore()
+    )
+    refreshed = flow.get_valid_credential("u1", PROVIDER_GDRIVE)
+    assert refreshed is not None and refreshed.access_token != "tok"
