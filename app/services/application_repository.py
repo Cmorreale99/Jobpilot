@@ -117,12 +117,11 @@ class InMemoryApplicationRepository:
         return self._outreach.get(outreach_id) if outreach_id is not None else None
 
     def list_pending_outreach(self, user_id: str) -> list[OutreachRecord]:
+        return self.list_outreach_by_status(user_id, OutreachStatus.DRAFTED)
+
+    def list_outreach_by_status(self, user_id: str, status: OutreachStatus) -> list[OutreachRecord]:
         return sorted(
-            (
-                o
-                for o in self._outreach.values()
-                if o.user_id == user_id and o.status is OutreachStatus.DRAFTED
-            ),
+            (o for o in self._outreach.values() if o.user_id == user_id and o.status is status),
             key=lambda o: o.id,
         )
 

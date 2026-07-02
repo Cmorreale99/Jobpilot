@@ -22,24 +22,27 @@ from app.db.application_repository import SqlApplicationRepository
 from app.db.job_repository import SqlJobRepository
 from app.db.master_cv_repository import SqlMasterCvRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
-from app.domain.applications import ApplicationRepository
+from app.domain.applications import ApplicationRepository, OutreachStatus
 from app.domain.cv import MasterCvRepository
 from app.domain.jobs import JobRepository
 from app.integrations.base import (
     DriveClient,
     GitHubClient,
     JobSource,
+    MailClient,
     ResearchClient,
     UploadsClient,
 )
 from app.integrations.drive_factory import create_drive_client
 from app.integrations.github_factory import create_github_client
 from app.integrations.jobs_factory import create_job_source
+from app.integrations.mail_factory import create_mail_client
 from app.integrations.research_factory import create_research_client
 from app.integrations.uploads import create_uploads_client
 from app.services.master_cv_ingestion import refresh_master_cv
 from app.services.matching import run_matching
 from app.services.outreach import run_drafting
+from app.services.outreach_send import send_approved_outreach
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,7 @@ class PipelineDependencies:
     github_client: GitHubClient
     job_source: JobSource
     research_client: ResearchClient
+    mail_client: MailClient
     master_cv_repository: MasterCvRepository
     job_repository: JobRepository
     application_repository: ApplicationRepository
@@ -67,6 +71,7 @@ class PipelineResult:
     master_cv_changed: bool
     match_count: int
     drafts_queued: int
+    drafts_sent: int = 0  # only ever non-zero with OUTREACH_AUTO_SEND=true
 
 
 def build_default_dependencies(settings: Settings | None = None) -> PipelineDependencies:
@@ -79,11 +84,21 @@ def build_default_dependencies(settings: Settings | None = None) -> PipelineDepe
     engine = create_db_engine(settings)
     create_all(engine)
     session_factory = create_session_factory(engine)
+
+    # The real mail client needs the encrypted credential store; the mock needs nothing.
+    store = None
+    if settings.gmail_enabled:
+        from app.db.credentials_store import SqlOAuthCredentialStore
+        from app.security.crypto import TokenCipher
+
+        store = SqlOAuthCredentialStore(session_factory, TokenCipher.from_settings(settings))
+
     return PipelineDependencies(
         drive_client=create_drive_client(settings),
         github_client=create_github_client(settings),
         job_source=create_job_source(settings),
         research_client=create_research_client(settings),
+        mail_client=create_mail_client(settings, store=store, user_id=settings.pipeline_user_id),
         master_cv_repository=SqlMasterCvRepository(session_factory),
         job_repository=SqlJobRepository(session_factory),
         application_repository=SqlApplicationRepository(session_factory),
@@ -142,10 +157,32 @@ async def run_application_pipeline(
     )
     logger.info("pipeline[%s]: %d outreach drafts in the approval queue", user_id, len(records))
 
+    # Auto-send is opt-in and explicit: the fresh drafts are approved programmatically
+    # and every approved draft with a researched address is sent. With the default mock
+    # mail client nothing leaves the process; real sends additionally require
+    # GMAIL_ENABLED plus a stored Google credential with the gmail.send scope.
+    sent = 0
+    if settings.outreach_auto_send:
+        for record in records:
+            if record.status is OutreachStatus.DRAFTED:
+                deps.application_repository.transition_outreach(record.id, OutreachStatus.APPROVED)
+        report = await send_approved_outreach(
+            user_id, deps.application_repository, deps.mail_client
+        )
+        sent = len(report.sent)
+        logger.info(
+            "pipeline[%s]: auto-send sent %d, skipped %d (no address), failed %d",
+            user_id,
+            sent,
+            len(report.skipped_no_address),
+            len(report.failed),
+        )
+
     return PipelineResult(
         user_id=user_id,
         master_cv_version=stored.version,
         master_cv_changed=changed,
         match_count=len(matches),
         drafts_queued=len(records),
+        drafts_sent=sent,
     )

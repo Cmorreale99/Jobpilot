@@ -283,6 +283,46 @@ class UploadsClient(Protocol):
 
 
 # =================================================================================
+# Mail (outreach sending — always behind approval)
+# =================================================================================
+
+
+class MailConfigurationError(RuntimeError):
+    """Raised when a mail client is asked to send without valid configuration."""
+
+
+class MailSendError(RuntimeError):
+    """Raised when a send attempt fails (the draft stays approved for retry)."""
+
+
+@dataclass(frozen=True)
+class MailCredentials:
+    """Sending identity resolved from the encrypted token store (never logged)."""
+
+    sender_email: str
+    access_token: str
+
+
+@dataclass(frozen=True)
+class OutgoingEmail:
+    """One approved outreach message, ready to send."""
+
+    to: str
+    subject: str
+    body: str
+
+
+@runtime_checkable
+class MailClient(Protocol):
+    """Sends one email. Deliberately the narrowest possible surface — no reading,
+    no drafts, no threads. Inbox *reading* is a separate, flag-gated concern (M7)."""
+
+    async def send_email(self, email: OutgoingEmail) -> str:
+        """Send and return the provider's message id."""
+        ...
+
+
+# =================================================================================
 # Contact research (outreach)
 # =================================================================================
 

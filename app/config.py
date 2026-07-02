@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     gdrive_mcp_enabled: bool = False
     gdrive_mcp_server: str = ""
     gdrive_mcp_transport: str = "http"
+    # stdio transport: the command (+ space-separated args) that launches the server.
+    gdrive_mcp_command: str = ""
+    gdrive_mcp_args: str = ""
 
     # Dev-only credential fallback. In production these come from the encrypted
     # ``oauth_credentials`` store (decrypted per request), NOT from static config.
@@ -69,6 +72,9 @@ class Settings(BaseSettings):
     github_mcp_enabled: bool = False
     github_mcp_server: str = ""
     github_mcp_transport: str = "http"
+    # stdio transport: the command (+ space-separated args) that launches the server.
+    github_mcp_command: str = ""
+    github_mcp_args: str = ""
     # Dev-only PAT fallback. In production the token comes from the encrypted
     # ``oauth_credentials`` store, decrypted per request — not from static config.
     github_mcp_access_token: str = ""
@@ -93,6 +99,19 @@ class Settings(BaseSettings):
     shortlist_size: int = 250  # stage-1 shortlist size
     top_n: int = 10  # deep-ranked final matches
     jobs_mock_fixtures_dir: str = "tests/fixtures/jobs"
+    # Which job source feeds the pipeline: "mock" (fixtures, default) or "remotive"
+    # (compliant public API — keyless, documented, permits listing reuse).
+    job_source_provider: str = "mock"
+    remotive_api_url: str = "https://remotive.com/api/remote-jobs"
+    remotive_search: str = ""  # optional keyword filter passed to the API
+    remotive_limit: int = 200
+
+    # --- Mail (Gmail send; only ever behind approval) --------------------------------
+    # False (default) selects the in-process mock outbox — nothing can leave the
+    # machine. True selects the real Gmail client; the stored Google credential must
+    # then carry the gmail.send scope.
+    gmail_enabled: bool = False
+    gmail_send_url: str = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
     # --- Nightly orchestration ------------------------------------------------------
     # The single JobPilot user the nightly pipeline runs for (single-user system).

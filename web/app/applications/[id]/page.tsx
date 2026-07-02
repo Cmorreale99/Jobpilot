@@ -133,6 +133,15 @@ export default function ApplicationFolio() {
                       </button>
                     </>
                   )}
+                  {application.outreach.status === "approved" && (
+                    <button
+                      className="stamp text-carmine"
+                      disabled={busy}
+                      onClick={() => act(() => api.sendDraft(application.outreach!.id))}
+                    >
+                      Send
+                    </button>
+                  )}
                 </div>
                 <p className="mt-3 font-mono text-xs text-annotation">
                   to:{" "}
@@ -149,8 +158,9 @@ export default function ApplicationFolio() {
                   {application.outreach.body}
                 </pre>
                 <p className="mt-2 font-mono text-xs text-annotation/80">
-                  Approving queues it for sending once the mail client lands — nothing sends
-                  automatically.
+                  Nothing sends without your approval. Send requires a researched contact
+                  email and delivers via the configured mail client (a local outbox unless
+                  Gmail is enabled).
                 </p>
               </div>
             )}

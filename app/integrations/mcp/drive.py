@@ -94,10 +94,16 @@ class McpDriveClient:
                 "McpDriveClient constructed while GDRIVE_MCP_ENABLED is false. "
                 "Use the mock client, or set GDRIVE_MCP_ENABLED=true."
             )
-        if not self._settings.gdrive_mcp_server:
+        transport = self._settings.gdrive_mcp_transport
+        if transport == "http" and not self._settings.gdrive_mcp_server:
             raise DriveConfigurationError(
                 "GDRIVE_MCP_ENABLED is true but GDRIVE_MCP_SERVER is empty. "
                 "Set GDRIVE_MCP_SERVER to the Google Workspace MCP endpoint."
+            )
+        if transport == "stdio" and not self._settings.gdrive_mcp_command:
+            raise DriveConfigurationError(
+                "GDRIVE_MCP_TRANSPORT is stdio but GDRIVE_MCP_COMMAND is empty. "
+                "Set GDRIVE_MCP_COMMAND (and GDRIVE_MCP_ARGS) to launch the server."
             )
         if (
             not self._settings.gdrive_source_folder_id
@@ -145,11 +151,30 @@ class McpDriveClient:
                 await self._verify_tools(session)
                 yield session
         elif transport == "stdio":
-            # TODO(mcp): stdio needs the server launch command/args (add
-            # GDRIVE_MCP_COMMAND / GDRIVE_MCP_ARGS), then use stdio_client(...).
-            raise DriveConfigurationError(
-                "GDRIVE_MCP_TRANSPORT=stdio is not wired yet; use transport=http."
+            from mcp import StdioServerParameters
+            from mcp.client.stdio import stdio_client
+
+            if not self._settings.gdrive_mcp_command:
+                raise DriveConfigurationError(
+                    "GDRIVE_MCP_TRANSPORT is stdio but GDRIVE_MCP_COMMAND is empty."
+                )
+            # A locally launched server reads its auth from the environment; the token
+            # never appears on the command line (visible in process listings).
+            params = StdioServerParameters(
+                command=self._settings.gdrive_mcp_command,
+                args=self._settings.gdrive_mcp_args.split(),
+                env={
+                    "GOOGLE_ACCESS_TOKEN": creds.access_token,
+                    "USER_GOOGLE_EMAIL": creds.user_email,
+                },
             )
+            async with (
+                stdio_client(params) as (read, write),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                await self._verify_tools(session)
+                yield session
         else:
             raise DriveConfigurationError(
                 f"Unsupported GDRIVE_MCP_TRANSPORT: {transport!r} (expected http/stdio)."

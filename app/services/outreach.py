@@ -41,14 +41,10 @@ async def run_drafting(
     """Draft tailored outreach for every match; return the resulting queue records.
 
     Matches whose application is no longer ``drafted`` are skipped entirely (the user
-    has already applied to / ignored that job).
+    has already applied to / ignored that job). Nothing here sends — sending is
+    :mod:`app.services.outreach_send`, gated on approval.
     """
     settings = settings or get_settings()
-    if settings.outreach_auto_send:
-        logger.warning(
-            "OUTREACH_AUTO_SEND is enabled but sending is not implemented until M6; "
-            "drafts remain in the approval queue."
-        )
     if tailorer is None or drafter is None:
         default_tailorer, default_drafter = create_drafters(settings)
         tailorer = tailorer or default_tailorer

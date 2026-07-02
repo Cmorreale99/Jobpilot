@@ -17,6 +17,7 @@ from app.config import Settings, get_settings
 from app.domain.applications import ApplicationRepository
 from app.domain.cv import MasterCvRepository
 from app.domain.jobs import JobRepository
+from app.integrations.base import MailClient
 from app.services.oauth_flow import OAuthFlowService
 
 
@@ -27,6 +28,7 @@ def create_app(
     application_repository: ApplicationRepository | None = None,
     job_repository: JobRepository | None = None,
     master_cv_repository: MasterCvRepository | None = None,
+    mail_client: MailClient | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Tests inject mock-backed services; prod builds them lazily."""
     app = FastAPI(title="JobPilot", version="0.1.0")
@@ -35,6 +37,7 @@ def create_app(
     app.state.application_repository = application_repository
     app.state.job_repository = job_repository
     app.state.master_cv_repository = master_cv_repository
+    app.state.mail_client = mail_client
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(app.state.settings.dashboard_origin_list),

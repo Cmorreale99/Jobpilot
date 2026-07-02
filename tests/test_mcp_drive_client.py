@@ -193,3 +193,26 @@ async def test_pipeline_runs_through_mcp_client() -> None:
     claim = cv.claims[0]
     assert claim.problem and claim.result
     assert claim.source_ref == "1AbC"
+
+
+def test_stdio_transport_requires_a_launch_command() -> None:
+    from app.integrations.base import DriveConfigurationError
+
+    with pytest.raises(DriveConfigurationError, match="GDRIVE_MCP_COMMAND"):
+        McpDriveClient(
+            _mcp_settings(gdrive_mcp_transport="stdio", gdrive_mcp_server=""),
+            credentials=DriveCredentials(user_email="jordan@example.com", access_token="tok"),
+        )
+
+
+def test_stdio_transport_needs_no_server_url() -> None:
+    client = McpDriveClient(
+        _mcp_settings(
+            gdrive_mcp_transport="stdio",
+            gdrive_mcp_server="",
+            gdrive_mcp_command="uvx",
+            gdrive_mcp_args="workspace-mcp --tools drive",
+        ),
+        credentials=DriveCredentials(user_email="jordan@example.com", access_token="tok"),
+    )
+    assert isinstance(client, McpDriveClient)

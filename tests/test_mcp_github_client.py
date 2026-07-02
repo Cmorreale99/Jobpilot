@@ -180,3 +180,19 @@ async def test_mcp_client_without_credentials_fails_clearly() -> None:
     client = McpGitHubClient(_mcp_settings())  # no token in settings, none injected
     with pytest.raises(GitHubConfigurationError):
         await client.read_repo("jordanrivera/fraud-stream")
+
+
+def test_stdio_transport_requires_a_launch_command() -> None:
+    with pytest.raises(GitHubConfigurationError, match="GITHUB_MCP_COMMAND"):
+        McpGitHubClient(_mcp_settings(github_mcp_transport="stdio", github_mcp_server=""))
+
+
+def test_stdio_transport_needs_no_server_url() -> None:
+    client = McpGitHubClient(
+        _mcp_settings(
+            github_mcp_transport="stdio",
+            github_mcp_server="",
+            github_mcp_command="github-mcp-server",
+        )
+    )
+    assert isinstance(client, McpGitHubClient)

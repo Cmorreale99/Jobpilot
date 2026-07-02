@@ -201,6 +201,8 @@ no issue/PR/write operations.
 
 **Application pipeline:** refresh Master CV (if sources changed) → fetch jobs (24h) → score all → top `SHORTLIST_SIZE` (~250) → deep re-rank to `TOP_N` (10) with rationale → tailor materials → research contact + draft outreach into the approval queue. Implemented as `run_application_pipeline` (`services/pipeline.py`, scheduler-free and Lambda-portable) with `build_default_dependencies` as the composition root; `app/scheduler.py` is the thin APScheduler wrapper (`PIPELINE_HOUR`/`PIPELINE_MINUTE`, default 02:00; `python -m app.scheduler --once` for an immediate run). `run_job_safely` gives each job log-and-swallow isolation.
 
+**Sending** (`services/outreach_send.py`): the only exit point. `approved → sent` through the state machine only; a draft without a researched contact email is skipped (never guessed); failures stay approved for retry; re-runs never re-send. Manual path: approve → `POST /outreach/{id}/send` (Send stamp on the folio). Auto path: `OUTREACH_AUTO_SEND=true` in the pipeline. `MailClient` = mock outbox by default; `GMAIL_ENABLED=true` selects the real Gmail client (`integrations/real/gmail.py`). Job source: `JOB_SOURCE_PROVIDER` picks mock (default) or the compliant Remotive API (`integrations/real/jobs_remotive.py`).
+
 **Interview scan (separate):** scoped, query-filtered Gmail read for interview invites only → create/update `interviews` → generate prep packet.
 
 A failure in one job never blocks the other.
@@ -217,7 +219,9 @@ A failure in one job never blocks the other.
 | Env var | Default | Effect |
 |---|---|---|
 | `ENABLE_LINKEDIN_SOURCE` | `false` | LinkedIn scraping (violates their ToS; they block aggressively). Use the compliant source instead. |
-| `OUTREACH_AUTO_SEND` | `false` | When false, approved-quality drafts wait in the approval queue. When true, they auto-send. |
+| `OUTREACH_AUTO_SEND` | `false` | When false, drafts wait in the approval queue (send via `POST /outreach/{id}/send` after approving). When true, the nightly pipeline auto-approves fresh drafts and sends those with a researched contact email. |
+| `GMAIL_ENABLED` | `false` | When false, the in-process mock outbox is used — nothing can leave the machine. True selects the real Gmail client (stored Google credential must carry the gmail.send scope). |
+| `JOB_SOURCE_PROVIDER` | `mock` | `mock` = fixture-backed job source; `remotive` = the compliant public Remotive API. |
 | `INTERVIEW_INBOX_SCAN` | `true` | Set false to disable all inbox reads. |
 | `SHORTLIST_SIZE` | `250` | Stage-1 shortlist size. |
 | `TOP_N` | `10` | Deep-ranked final matches. |
@@ -256,5 +260,5 @@ A failure in one job never blocks the other.
 - [x] M3 — tailoring + outreach drafting → approval queue
 - [x] M4 — dashboard
 - [x] M5 — orchestration (idempotent)
-- [ ] M6 — real integrations behind flags
+- [~] M6 — real integrations behind flags (built + offline-tested; MCP live verification pending real credentials)
 - [ ] M7 — interview scan + prep packets
