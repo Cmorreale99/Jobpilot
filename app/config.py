@@ -88,6 +88,22 @@ class Settings(BaseSettings):
     top_n: int = 10  # deep-ranked final matches
     jobs_mock_fixtures_dir: str = "tests/fixtures/jobs"
 
+    # --- LLM layer (Anthropic) ----------------------------------------------------
+    # Mock-first: with ``llm_enabled=false`` the factory returns the fake client, so the
+    # whole pipeline runs offline with no API key. Set true (and an API key) to call the
+    # real Messages API. Models are two tiers, env-configurable, never hardcoded in code:
+    # BULK = cheap/fast (stage-1 scoring, bulk extraction); DEEP = strong (top-N re-rank,
+    # outreach drafting, prep packets).
+    llm_enabled: bool = False
+    anthropic_api_key: str = ""
+    anthropic_model_bulk: str = "claude-sonnet-5"
+    anthropic_model_deep: str = "claude-opus-4-8"
+    # Ceiling on output tokens per call; individual calls may request fewer.
+    anthropic_max_tokens: int = 4096
+    # Per-request timeout and transient-error retry budget (handled by the SDK).
+    anthropic_timeout_seconds: float = 60.0
+    anthropic_max_retries: int = 2
+
     # --- OAuth authorization flow (obtains tokens for the credential store) --------
     # Google (Drive). Default scopes: identity (for the account email) + read-only Drive.
     google_oauth_client_id: str = ""

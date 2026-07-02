@@ -37,6 +37,29 @@ DriveClient (interface, app/integrations/base.py)
 The domain layer never sees a `DriveClient`; the service converts `DriveDocument` →
 `CvSource` and hands provenance records to the builder.
 
+## LLM layer (`app/llm/`) — implemented
+
+The single boundary for Anthropic Messages API calls. Same mock-first shape as the rest:
+
+```
+LlmClient (protocol, app/llm/client.py)
+   ├── FakeLlmClient   (app/llm/fake.py)     ← default; scriptable, offline, no API key
+   └── AnthropicClient (app/llm/client.py)   ← real; SDK imported lazily
+                    │
+        create_llm_client()  (app/llm/factory.py)  ← fake unless LLM_ENABLED=true
+```
+
+- Callers pick a `ModelTier` (`BULK`/`DEEP`), never a model id; the concrete model,
+  timeouts, and retries resolve from `app/config.py`.
+- `complete_json()` (`app/llm/json_completion.py`) is the structured-step helper: strip
+  ``` fences → `json.loads` → optional `validator` → **retry once** with a corrective
+  nudge before raising `LlmJsonError`. Decodes at `temperature=0`.
+- `CostTracker` (`app/llm/cost.py`) logs per-call tokens + estimated USD and accumulates
+  totals; prices are configurable estimates keyed by model substring.
+- `domain/` still imports nothing from here; LLM-backed `ClaimStructurer`/`JobScorer`/
+  `JobReranker` implementations will live in `app/llm/` and inject through the existing
+  protocols.
+
 ## Milestones
 
 - [ ] **M0 — Scaffold**: repo structure, `uv`/ruff/mypy/pytest, `.env.example`, interfaces + mocks, fixtures.
@@ -137,5 +160,7 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
   (Determines whether `_extract_payload` needs a text parser.)
 - Auth handshake for the Workspace MCP server: bearer header vs. server-side token.
 - Do we export Google Docs as text or Markdown for best PAR extraction fidelity?
-- LLM-backed PAR structurer: prompt + JSON schema for turning raw evidence into claims
-  without fabrication.
+- LLM-backed PAR structurer: the `app/llm/` boundary + `complete_json` retry loop are in
+  place; still open is the exact prompt + JSON schema for turning raw evidence into claims
+  without fabrication (and the parallel prompts for stage-1/stage-2 matching).
+- Verify the real per-model prices in `app/llm/cost.py` (currently public-price estimates).
