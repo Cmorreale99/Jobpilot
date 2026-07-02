@@ -54,8 +54,12 @@ The domain layer never sees a `DriveClient`; the service converts `DriveDocument
         `build_master_cv` merges Drive + GitHub evidence with per-source provenance.
   - [x] Source policy: Drive MIME allowlist + folder scope; GitHub owner scope +
         fork/private exclusion. Broad scan off by default for both.
+  - [x] Persist `master_cv` (versioned `content_json`) + deduped `cv_sources`
+        (migration `0002`). `MasterCvRepository` protocol with in-memory + SQL impls;
+        `refresh_master_cv` builds and saves. Versioning is idempotent — a fingerprint
+        that excludes volatile timestamps means an unchanged re-run adds no new version,
+        and sources dedupe on `(user_id, source_type, external_ref)`.
   - [ ] Uploads ingestion into the same builder.
-  - [ ] Versioning + dedupe across sources; persist `master_cv` / `cv_sources`.
   - [ ] Swap the heuristic PAR structurer for the LLM-backed one behind the same interface.
 - [ ] **M2 — Jobs + two-stage matching (mocked)**
 - [ ] **M3 — Tailoring + outreach drafting → approval queue**

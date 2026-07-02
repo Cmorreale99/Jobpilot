@@ -16,7 +16,13 @@ import logging
 from datetime import UTC, datetime
 
 from app.config import Settings, get_settings
-from app.domain.cv import CvSource, MasterCv, MasterCvBuilder
+from app.domain.cv import (
+    CvSource,
+    MasterCv,
+    MasterCvBuilder,
+    MasterCvRepository,
+    StoredMasterCv,
+)
 from app.integrations.base import DriveClient, GitHubClient, GitHubRepoMetadata
 from app.services.source_policy import apply_repo_policy, apply_source_policy
 
@@ -142,3 +148,24 @@ async def build_master_cv(
     github_sources = await ingest_github_sources(github_client, user_id, settings, now=now)
     builder = builder or MasterCvBuilder()
     return builder.build([*drive_sources, *github_sources])
+
+
+async def refresh_master_cv(
+    drive_client: DriveClient,
+    github_client: GitHubClient,
+    user_id: str,
+    repository: MasterCvRepository,
+    settings: Settings | None = None,
+    builder: MasterCvBuilder | None = None,
+    *,
+    now: datetime | None = None,
+) -> StoredMasterCv:
+    """Build the Master CV from all sources and persist it as a (possibly new) version.
+
+    Idempotent: if the rebuilt content matches the latest stored version, no new version
+    is created — the existing one is returned.
+    """
+    master_cv = await build_master_cv(
+        drive_client, github_client, user_id, settings, builder, now=now
+    )
+    return repository.save(user_id, master_cv)
