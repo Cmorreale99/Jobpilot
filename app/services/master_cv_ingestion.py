@@ -26,8 +26,10 @@ from app.domain.cv import (
 )
 from app.integrations.base import (
     DriveClient,
+    DriveResponseError,
     GitHubClient,
     GitHubRepoMetadata,
+    GitHubResponseError,
     UploadsClient,
 )
 from app.integrations.uploads import create_uploads_client
@@ -64,7 +66,12 @@ async def ingest_drive_sources(
 
     records: list[CvSource] = []
     for source in allowed:
-        document = await client.read_source(source.source_ref)
+        try:
+            document = await client.read_source(source.source_ref)
+        except DriveResponseError as exc:
+            # One unreadable document is skipped evidence, not a failed nightly.
+            logger.warning("skipping Drive source %s: %s", source.title, exc)
+            continue
         records.append(
             CvSource(
                 source_type="gdrive",
@@ -129,8 +136,14 @@ async def ingest_github_sources(
 
     records: list[CvSource] = []
     for repo in allowed:
-        document = await client.read_repo(repo.repo_ref)
-        metadata = await client.get_repo_metadata(repo.repo_ref)
+        try:
+            document = await client.read_repo(repo.repo_ref)
+            metadata = await client.get_repo_metadata(repo.repo_ref)
+        except GitHubResponseError as exc:
+            # A repo without a README (or an unreadable one) is skipped evidence,
+            # not a failed nightly — seen live on real repositories.
+            logger.warning("skipping GitHub repo %s: %s", repo.repo_ref, exc)
+            continue
         raw_text = document.text + _render_repo_signals(metadata)
         records.append(
             CvSource(

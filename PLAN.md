@@ -181,9 +181,9 @@ LlmClient (protocol, app/llm/client.py)
         `python -m app.scheduler --once` runs the pipeline immediately (exit code
         reflects success); no `--once` schedules it nightly. Dependencies build lazily
         at first fire, so the process starts with zero credentials.
-- [~] **M6 — Real integrations behind flags** — all code paths built and offline-tested;
-      what remains is live verification of the two MCP servers against real deployments
-      (auth contract, tool names, payload format), which requires real credentials.
+- [x] **M6 — Real integrations behind flags** — built, offline-tested, and **live-verified
+      against real deployments** with real credentials (`python -m app.tools.verify_mcp`,
+      the repeatable read-only check: connect → tool names → list → read → metadata).
   - [x] **Encrypted OAuth credential store** — `oauth_credentials` model +
         `TokenCipher` (Fernet, `TOKEN_ENCRYPTION_KEY`); tokens encrypted at rest.
         `OAuthCredentialStore` protocol with `InMemoryOAuthCredentialStore` (mock-first)
@@ -210,12 +210,21 @@ LlmClient (protocol, app/llm/client.py)
         Both transports wired: http (bearer header) and stdio
         (`GDRIVE_MCP_COMMAND`/`GDRIVE_MCP_ARGS`; token passed via the child process env,
         never the command line).
-        **Remaining — needs a live deployment + real credentials to verify:**
-        1. Confirm the server's auth contract (bearer header vs. server-side token).
-        2. **Live tool-name verification** — `list_tools` will confirm/deny the four names
-           against the actual deployment; override `DriveToolNames` if they differ.
-        3. **Response format** — if the server returns human-formatted text (not
-           structured content/JSON), add a parser at `_extract_payload`.
+        **Live-verified** against workspace-mcp over streamable-http
+        (`uv tool run workspace-mcp --tools drive --transport streamable-http`, with
+        `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET` in the server's env):
+        1. **Auth contract**: the server runs its own per-user OAuth keyed by
+           `user_google_email` (our bearer header is ignored). When unauthorized, tools
+           return an error whose text contains the authorization URL; after browser
+           consent the server stores credentials itself. `GDRIVE_MCP_ACCESS_TOKEN` only
+           satisfies our client's non-empty check in this mode.
+        2. **Tool names**: all four confirmed as shipped (`list_drive_items`,
+           `search_drive_files`, `get_drive_file_content`, `get_drive_file_permissions`).
+        3. **Response format**: human-formatted text wrapped as FastMCP
+           `structuredContent={"result": "<text>"}` — unwrapped in `_extract_payload`
+           and parsed by `_parse_listing_text` / `_parse_content_text` (shapes locked in
+           unit tests). The server extracts PDF/Docs text itself. Error results
+           (`isError`) now raise instead of parsing as empty.
   - [~] **GitHub MCP** — targets the official github/github-mcp-server. Done: async
         `McpGitHubClient` mapping the `GitHubClient` interface onto `search_repositories`
         / `get_file_contents` / `list_commits`; config-driven endpoint; `list_tools`
@@ -224,11 +233,20 @@ LlmClient (protocol, app/llm/client.py)
         Both transports wired: http (bearer header) and stdio
         (`GITHUB_MCP_COMMAND`/`GITHUB_MCP_ARGS`; PAT passed via
         `GITHUB_PERSONAL_ACCESS_TOKEN` in the child process env).
-        **Remaining — needs a live deployment + real credentials to verify:**
-        1. Confirm auth (bearer header for the remote server vs. env for local).
-        2. **Languages breakdown** — no first-class per-repo languages tool; metadata
-           reports the primary language only. Wire a `/languages` equivalent if exposed.
-        3. **Response format** — same caveat as Drive (text-vs-structured payloads).
+        **Live-verified** against github/github-mcp-server v1.5.0 via Docker stdio
+        (`GITHUB_MCP_COMMAND=docker`, args
+        `run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server`):
+        1. **Auth contract**: fine-grained PAT via the child-process env works; stdio
+           env is merged with the SDK defaults (a bare env strips PATH/SystemRoot and
+           breaks docker on Windows).
+        2. **Tool names**: `search_repositories` / `get_file_contents` / `list_commits`
+           confirmed. Search results omit `owner.login` — owner now falls back to the
+           `full_name` prefix so the scope policy applies.
+        3. **Response format**: file reads arrive as a status line + the body in an
+           `EmbeddedResource` (`TextResourceContents`), handled in `_extract_payload`
+           and locked in unit tests. Repos without a README error on read — ingestion
+           now skips such sources instead of failing the nightly (Drive too).
+        Languages breakdown remains primary-language-only (no first-class tool).
   - [x] **Gmail send behind approval** — `MailClient` interface (send-only, deliberately
         no read surface) with `MockMailClient` (in-process outbox, the default) and
         `GmailMailClient` (`integrations/real/gmail.py`, Gmail REST `messages.send`,
@@ -260,10 +278,15 @@ LlmClient (protocol, app/llm/client.py)
 
 ## Open questions
 
-- Does the chosen server return structured content/JSON or only human-formatted text?
-  (Determines whether `_extract_payload` needs a text parser.)
-- Auth handshake for the Workspace MCP server: bearer header vs. server-side token.
+- ~~Does the chosen server return structured content/JSON or only human-formatted text?~~
+  **Answered (live)**: formatted text wrapped as FastMCP `{"result": …}`; parsers added.
+- ~~Auth handshake for the Workspace MCP server?~~ **Answered (live)**: server-side
+  per-user OAuth keyed by `user_google_email`; our bearer header is ignored.
 - Do we export Google Docs as text or Markdown for best PAR extraction fidelity?
+- **Heuristic PAR structuring yields ~0 claims on real PDF prose** (verified on the real
+  resume): extraction on real documents effectively requires
+  `MASTER_CV_LLM_STRUCTURING=true` + an API key. The heuristic remains the offline/test
+  default.
 - LLM-backed PAR structurer: **done** (`LlmClaimStructurer`) — verbatim-quote grounding is
   the no-fabrication guard. Still open: the parallel prompts/schemas for stage-1/stage-2
   matching, and validating extraction quality on real docs (grounding is enforced, but

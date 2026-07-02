@@ -33,6 +33,7 @@ that needs to match your server's serialization.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
@@ -152,18 +153,21 @@ class McpDriveClient:
                 yield session
         elif transport == "stdio":
             from mcp import StdioServerParameters
-            from mcp.client.stdio import stdio_client
+            from mcp.client.stdio import get_default_environment, stdio_client
 
             if not self._settings.gdrive_mcp_command:
                 raise DriveConfigurationError(
                     "GDRIVE_MCP_TRANSPORT is stdio but GDRIVE_MCP_COMMAND is empty."
                 )
             # A locally launched server reads its auth from the environment; the token
-            # never appears on the command line (visible in process listings).
+            # never appears on the command line (visible in process listings). Merge
+            # with the SDK defaults — a bare env would strip PATH/SystemRoot and break
+            # launchers like docker/uvx.
             params = StdioServerParameters(
                 command=self._settings.gdrive_mcp_command,
                 args=self._settings.gdrive_mcp_args.split(),
                 env={
+                    **get_default_environment(),
                     "GOOGLE_ACCESS_TOKEN": creds.access_token,
                     "USER_GOOGLE_EMAIL": creds.user_email,
                 },
@@ -194,29 +198,42 @@ class McpDriveClient:
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         async with self._session_factory() as session:
             result = await session.call_tool(tool_name, arguments)
+        if getattr(result, "isError", False):
+            detail = ""
+            for block in getattr(result, "content", []) or []:
+                detail = getattr(block, "text", "") or detail
+            raise DriveResponseError(
+                f"Drive MCP tool {tool_name!r} returned an error: {detail[:500]}"
+            )
         return self._extract_payload(result)
 
     @staticmethod
     def _extract_payload(result: Any) -> Any:
-        """Return structured data from a CallToolResult.
+        """Return data from a CallToolResult.
 
-        Prefers ``structuredContent``; otherwise parses the first text block as JSON.
-        Raises :class:`DriveResponseError` rather than guessing if neither is available —
-        this is where a server that returns only formatted text would need a text parser.
+        Prefers ``structuredContent``, then a JSON text block. The Google Workspace MCP
+        server (verified live) returns **human-formatted text only** — that comes back
+        as a plain ``str`` here and is parsed by the format-specific ``_parse_*_text``
+        helpers at each call site.
         """
         structured = getattr(result, "structuredContent", None)
         if structured:
+            # FastMCP servers wrap plain-text tool returns as {"result": "<text>"}
+            # (verified live against workspace-mcp) — unwrap to the text itself.
+            if (
+                isinstance(structured, dict)
+                and set(structured) == {"result"}
+                and isinstance(structured["result"], str)
+            ):
+                return structured["result"]
             return structured
         for block in getattr(result, "content", []) or []:
             text = getattr(block, "text", None)
             if text:
                 try:
                     return json.loads(text)
-                except json.JSONDecodeError as exc:
-                    raise DriveResponseError(
-                        "Drive MCP tool returned non-JSON text; add a parser for this "
-                        "server's format in McpDriveClient._extract_payload."
-                    ) from exc
+                except json.JSONDecodeError:
+                    return text  # formatted-text server response
         raise DriveResponseError("Drive MCP tool returned an empty/unsupported payload.")
 
     # --- DriveClient interface ----------------------------------------------------
@@ -238,6 +255,8 @@ class McpDriveClient:
             self._tools.read_content,
             {"user_google_email": creds.user_email, "file_id": source_ref},
         )
+        if isinstance(payload, str):
+            payload = _parse_content_text(payload)
         return _map_document(payload, source_ref)
 
     async def get_source_metadata(self, source_ref: str) -> DriveSourceMetadata:
@@ -246,6 +265,8 @@ class McpDriveClient:
             self._tools.metadata,
             {"user_google_email": creds.user_email, "file_id": source_ref},
         )
+        if isinstance(payload, str):
+            payload = _parse_content_text(payload)
         return _map_metadata(payload, source_ref)
 
     async def list_changed_sources(self, user_id: str, since: datetime) -> list[DriveSource]:
@@ -283,7 +304,79 @@ def _as_items(payload: Any) -> list[dict[str, Any]]:
         return list(items) if isinstance(items, list) else []
     if isinstance(payload, list):
         return payload
+    if isinstance(payload, str):
+        return _parse_listing_text(payload)
     raise DriveResponseError(f"Unexpected Drive listing payload type: {type(payload)!r}")
+
+
+# --- formatted-text parsing (Google Workspace MCP server) --------------------------
+#
+# Shapes verified live against workspace-mcp (streamable-http). Listing:
+#
+#   Found 6 items in folder '1Mc…' for user@example.com:
+#   - Name: "resume.pdf" (ID: 1RK…, Type: application/pdf, Size: 95181,
+#     Created: 2026-07-02T16:26:09.857Z, Modified: 2026-07-01T00:05:16.000Z,
+#     Last Edited By: …) Link: https://drive.google.com/…
+#
+# File content:
+#
+#   File: "resume.pdf" (ID: 1RK…, Type: application/pdf)
+#   Link: https://drive.google.com/…
+#
+#   --- CONTENT ---
+#   <extracted text — the server extracts PDF/Docs text itself>
+
+_LISTING_HEADER_RE = re.compile(r"in folder '(?P<folder>[^']+)'")
+_LISTING_ITEM_RE = re.compile(r'^- Name: "(?P<name>.*?)" \((?P<attrs>.*)\)(?: Link: \S+)?\s*$')
+_CONTENT_SPLIT = "--- CONTENT ---"
+
+
+def _attr(attrs: str, key: str) -> str | None:
+    match = re.search(rf"{key}: ([^,)]+)", attrs)
+    return match.group(1).strip() if match else None
+
+
+def _parse_listing_text(text: str) -> list[dict[str, Any]]:
+    """Parse the server's formatted listing into Drive-REST-shaped items."""
+    header = _LISTING_HEADER_RE.search(text)
+    folder = header.group("folder") if header else None
+    items: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        match = _LISTING_ITEM_RE.match(line.strip())
+        if match is None:
+            continue
+        attrs = match.group("attrs")
+        file_id = _attr(attrs, "ID")
+        if not file_id:
+            continue
+        items.append(
+            {
+                "id": file_id,
+                "name": match.group("name"),
+                "mimeType": _attr(attrs, "Type") or "",
+                "modifiedTime": _attr(attrs, "Modified"),
+                "parents": [folder] if folder else [],
+            }
+        )
+    return items
+
+
+def _parse_content_text(text: str) -> dict[str, Any]:
+    """Parse the server's formatted file-content response into a document dict."""
+    head, sep, body = text.partition(_CONTENT_SPLIT)
+    item: dict[str, Any] = {"content": body.strip() if sep else ""}
+    first_line = head.strip().splitlines()[0] if head.strip() else ""
+    # The header packs attrs as `(ID: …, Type: …)`; normalize the comma for _attr.
+    match = re.match(r'^File: "(?P<name>.*?)" \((?P<attrs>[^)]*)\)', first_line)
+    if match:
+        item["name"] = match.group("name")
+        item["mimeType"] = _attr(match.group("attrs"), "Type") or ""
+    if not item["content"] and not match:
+        raise DriveResponseError(
+            "Drive MCP returned formatted text in an unrecognized shape; "
+            f"first line: {first_line[:120]!r}"
+        )
+    return item
 
 
 def _parse_time(value: Any) -> datetime | None:

@@ -136,18 +136,23 @@ class McpGitHubClient:
                 yield session
         elif transport == "stdio":
             from mcp import StdioServerParameters
-            from mcp.client.stdio import stdio_client
+            from mcp.client.stdio import get_default_environment, stdio_client
 
             if not self._settings.github_mcp_command:
                 raise GitHubConfigurationError(
                     "GITHUB_MCP_TRANSPORT is stdio but GITHUB_MCP_COMMAND is empty."
                 )
             # github/github-mcp-server reads its PAT from the environment when launched
-            # locally; the token never appears on the command line.
+            # locally; the token never appears on the command line. Merge with the SDK
+            # defaults — a bare env would strip PATH/SystemRoot and break launchers
+            # like docker.
             params = StdioServerParameters(
                 command=self._settings.github_mcp_command,
                 args=self._settings.github_mcp_args.split(),
-                env={"GITHUB_PERSONAL_ACCESS_TOKEN": creds.access_token},
+                env={
+                    **get_default_environment(),
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": creds.access_token,
+                },
             )
             async with (
                 stdio_client(params) as (read, write),
@@ -174,24 +179,54 @@ class McpGitHubClient:
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         async with self._session_factory() as session:
             result = await session.call_tool(tool_name, arguments)
+        if getattr(result, "isError", False):
+            detail = ""
+            for block in getattr(result, "content", []) or []:
+                detail = getattr(block, "text", "") or detail
+            raise GitHubResponseError(
+                f"GitHub MCP tool {tool_name!r} returned an error: {detail[:500]}"
+            )
         return self._extract_payload(result)
 
     @staticmethod
     def _extract_payload(result: Any) -> Any:
-        """Return structured data from a CallToolResult (structuredContent or JSON text)."""
+        """Return data from a CallToolResult.
+
+        Precedence, verified against github/github-mcp-server v1.5.0:
+
+        1. ``structuredContent`` (structured tool results).
+        2. An ``EmbeddedResource`` text body → returned as a plain ``str``. This is how
+           the real server delivers file contents: a human status line in the first
+           text block ("successfully downloaded text file (SHA: …)") followed by the
+           file body as a ``TextResourceContents`` resource.
+        3. The first JSON-parsable text block (REST-passthrough style responses).
+        """
         structured = getattr(result, "structuredContent", None)
         if structured:
+            # FastMCP-style servers wrap plain-text tool returns as {"result": "<text>"}.
+            if (
+                isinstance(structured, dict)
+                and set(structured) == {"result"}
+                and isinstance(structured["result"], str)
+            ):
+                return structured["result"]
             return structured
-        for block in getattr(result, "content", []) or []:
+        blocks = list(getattr(result, "content", []) or [])
+        for block in blocks:
+            resource = getattr(block, "resource", None)
+            resource_text = getattr(resource, "text", None)
+            if isinstance(resource_text, str):
+                return resource_text
+        plain_text: str | None = None
+        for block in blocks:
             text = getattr(block, "text", None)
             if text:
                 try:
                     return json.loads(text)
-                except json.JSONDecodeError as exc:
-                    raise GitHubResponseError(
-                        "GitHub MCP tool returned non-JSON text; add a parser for this "
-                        "server's format in McpGitHubClient._extract_payload."
-                    ) from exc
+                except json.JSONDecodeError:
+                    plain_text = plain_text or text  # may be the file body itself
+        if plain_text is not None:
+            return plain_text  # listing paths reject str payloads in _as_items
         raise GitHubResponseError("GitHub MCP tool returned an empty/unsupported payload.")
 
     # --- GitHubClient interface ---------------------------------------------------
@@ -218,6 +253,9 @@ class McpGitHubClient:
             self._tools.file_contents,
             {"owner": owner, "repo": repo, "path": _README_PATH},
         )
+        if isinstance(payload, str):
+            # Real-server shape: the file body arrives as embedded-resource text.
+            return GitHubDocument(repo_ref=repo_ref, title=repo, text=payload)
         return _map_document(payload, repo_ref, repo)
 
     async def get_repo_metadata(self, repo_ref: str) -> GitHubRepoMetadata:
@@ -285,10 +323,13 @@ def _owner_login(item: dict[str, Any]) -> str:
 
 def _map_repo(item: dict[str, Any]) -> GitHubRepo:
     full_name = str(item.get("full_name", item.get("name", "")))
+    # The real server's search results omit owner.login; fall back to the full_name
+    # prefix ("owner/repo") so the owner-scope policy still applies (verified live).
+    owner = _owner_login(item) or (full_name.partition("/")[0] if "/" in full_name else "")
     return GitHubRepo(
         repo_ref=full_name,
         name=str(item.get("name", full_name.split("/")[-1])),
-        owner=_owner_login(item),
+        owner=owner,
         description=item.get("description"),
         primary_language=item.get("language"),
         is_fork=bool(item.get("fork", False)),

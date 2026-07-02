@@ -24,14 +24,25 @@ TOOLS = GitHubToolNames()
 
 
 class _FakeResult:
-    def __init__(self, structured: Any = None, text: str | None = None) -> None:
+    def __init__(
+        self, structured: Any = None, text: str | None = None, resource_text: str | None = None
+    ) -> None:
         self.structuredContent = structured
-        self.content = [_TextBlock(text)] if text is not None else []
+        self.content: list[object] = [_TextBlock(text)] if text is not None else []
+        if resource_text is not None:
+            self.content.append(_ResourceBlock(resource_text))
 
 
 class _TextBlock:
     def __init__(self, text: str | None) -> None:
         self.text = text
+
+
+class _ResourceBlock:
+    """Mimics an EmbeddedResource carrying TextResourceContents (real-server file reads)."""
+
+    def __init__(self, text: str) -> None:
+        self.resource = _TextBlock(text)
 
 
 class _FakeSession:
@@ -110,6 +121,21 @@ async def test_read_repo_decodes_base64_readme() -> None:
     assert args == {"owner": "jordanrivera", "repo": "fraud-stream", "path": "README.md"}
 
 
+async def test_read_repo_handles_embedded_resource_readme() -> None:
+    """The real github-mcp-server (v1.5.0): a status text line, then the file body as an
+    embedded TextResourceContents — verified live against the Docker stdio server."""
+    result = _FakeResult(
+        text="successfully downloaded text file (SHA: 6fd1e0cc)",
+        resource_text="# fraud-stream\nRealtime scoring over Kafka.",
+    )
+    client, _ = _client({TOOLS.file_contents: result})
+
+    doc = await client.read_repo("jordanrivera/fraud-stream")
+
+    assert "Realtime scoring over Kafka." in doc.text
+    assert doc.title == "fraud-stream"
+
+
 async def test_get_repo_metadata_combines_search_and_commits() -> None:
     repo_payload = {
         "items": [
@@ -138,10 +164,17 @@ async def test_get_repo_metadata_combines_search_and_commits() -> None:
     assert meta.commit_count == 3
 
 
-async def test_non_json_text_payload_raises() -> None:
-    client, _ = _client({TOOLS.file_contents: _FakeResult(text="not json")})
+async def test_plain_text_file_payload_becomes_document_text() -> None:
+    # Non-JSON text from a file read is the file body itself, not an error.
+    client, _ = _client({TOOLS.file_contents: _FakeResult(text="# readme as plain text")})
+    doc = await client.read_repo("jordanrivera/fraud-stream")
+    assert doc.text == "# readme as plain text"
+
+
+async def test_non_json_text_listing_raises() -> None:
+    client, _ = _client({TOOLS.search: _FakeResult(text="not a listing")})
     with pytest.raises(GitHubResponseError):
-        await client.read_repo("jordanrivera/fraud-stream")
+        await client.list_candidate_repos("jordanrivera")
 
 
 async def test_invalid_repo_ref_raises() -> None:
@@ -196,3 +229,20 @@ def test_stdio_transport_needs_no_server_url() -> None:
         )
     )
     assert isinstance(client, McpGitHubClient)
+
+
+async def test_search_owner_falls_back_to_full_name_prefix() -> None:
+    """The real server's search results omit owner.login (verified live); the owner
+    scope policy must still see the right owner from the full_name prefix."""
+    payload = {"items": [{"full_name": "jordanrivera/fraud-stream", "name": "fraud-stream"}]}
+    client, _ = _client({TOOLS.search: _FakeResult(structured=payload)})
+    (repo,) = await client.list_candidate_repos("jordanrivera")
+    assert repo.owner == "jordanrivera"
+
+
+async def test_error_results_raise_clearly() -> None:
+    error = _FakeResult(text="Failed to get file contents.")
+    error.isError = True
+    client, _ = _client({TOOLS.file_contents: error})
+    with pytest.raises(GitHubResponseError, match="returned an error"):
+        await client.read_repo("jordanrivera/fraud-stream")

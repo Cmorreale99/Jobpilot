@@ -260,5 +260,5 @@ A failure in one job never blocks the other.
 - [x] M3 — tailoring + outreach drafting → approval queue
 - [x] M4 — dashboard
 - [x] M5 — orchestration (idempotent)
-- [~] M6 — real integrations behind flags (built + offline-tested; MCP live verification pending real credentials)
+- [x] M6 — real integrations behind flags (live-verified: `python -m app.tools.verify_mcp`)
 - [ ] M7 — interview scan + prep packets
