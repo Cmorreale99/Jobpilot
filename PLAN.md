@@ -92,7 +92,7 @@ LlmClient (protocol, app/llm/client.py)
         picks heuristic vs. LLM structurer from `MASTER_CV_LLM_STRUCTURING`; `build_master_cv`
         / `build_master_cv_from_drive` default through it. Off by default; on-without-a-real-client
         logs and falls back to the heuristic rather than crashing.
-- [~] **M2 — Jobs + two-stage matching (mocked)**
+- [x] **M2 — Jobs + two-stage matching (mocked)**
   - [x] `JobSource` interface + `MockJobSource` + `tests/fixtures/jobs/`.
   - [x] `jobs` + `job_matches` schema (migration `0003`); `JobRepository` protocol with
         in-memory + SQL impls. Jobs dedupe on `(source, external_id)`; matches stored per
@@ -101,8 +101,16 @@ LlmClient (protocol, app/llm/client.py)
         → shortlist (`SHORTLIST_SIZE`) → stage-2 deep re-rank (`TOP_N`) with rationale,
         both behind `JobScorer`/`JobReranker` protocols. `run_matching` orchestrates
         fetch → persist jobs → rank → persist matches; deterministic + idempotent.
-  - [ ] Swap the heuristic scorer/reranker for the LLM-backed stages behind the same
-        interfaces (bulk model for stage 1, deep model for stage 2).
+  - [x] LLM-backed stages (`app/llm/matching.py`) behind the same `JobScorer`/`JobReranker`
+        interfaces: `LlmJobScorer` (stage-1, BULK, one cheap call per job) and
+        `LlmJobReranker` (stage-2, DEEP, one call over the shortlist, addressing jobs by a
+        positional id so hallucinated/duplicate ids are dropped). Both degrade gracefully —
+        a failed score → 0.0, a failed rerank → heuristic order — so a flaky call never sinks
+        the nightly batch. `CvProfile` gained a PAR-rendered `summary` so the protocols stay
+        unchanged across heuristic and LLM.
+  - [x] Matching swap behind a flag: `create_matchers` (`app/services/matching_factory.py`)
+        picks heuristic vs. LLM matchers from `MATCHING_LLM_RANKING`; `run_matching` defaults
+        through it. Off by default; on-without-a-real-client logs and falls back.
 - [ ] **M3 — Tailoring + outreach drafting → approval queue**
 - [ ] **M4 — Dashboard**
 - [ ] **M5 — Orchestration (idempotent nightly jobs)**

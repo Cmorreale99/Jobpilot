@@ -22,6 +22,7 @@ from app.llm.errors import (
 from app.llm.factory import create_llm_client
 from app.llm.fake import FakeLlmClient
 from app.llm.json_completion import complete_json, parse_json, strip_code_fences
+from app.llm.matching import LlmJobReranker, LlmJobScorer
 from app.llm.types import LlmMessage, LlmResponse, ModelTier, TokenUsage
 
 __all__ = [
@@ -32,6 +33,8 @@ __all__ = [
     "LlmClient",
     "LlmConfigurationError",
     "LlmError",
+    "LlmJobReranker",
+    "LlmJobScorer",
     "LlmJsonError",
     "LlmMessage",
     "LlmResponse",
