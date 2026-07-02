@@ -83,7 +83,12 @@ LlmClient (protocol, app/llm/client.py)
         that excludes volatile timestamps means an unchanged re-run adds no new version,
         and sources dedupe on `(user_id, source_type, external_ref)`.
   - [ ] Uploads ingestion into the same builder.
-  - [ ] Swap the heuristic PAR structurer for the LLM-backed one behind the same interface.
+  - [x] LLM-backed PAR structurer (`LlmClaimStructurer`, `app/llm/claim_structurer.py`)
+        behind the same `ClaimStructurer` interface — a drop-in for the heuristic. Uses the
+        BULK tier via `complete_json`. Enforces **no fabrication** structurally: the model
+        must return a verbatim `evidence_text` quote per claim, and any claim whose quote
+        is not found (whitespace-normalized) in the source is dropped. Still wired off by
+        default — ingestion keeps injecting the heuristic until the swap is turned on.
 - [~] **M2 — Jobs + two-stage matching (mocked)**
   - [x] `JobSource` interface + `MockJobSource` + `tests/fixtures/jobs/`.
   - [x] `jobs` + `job_matches` schema (migration `0003`); `JobRepository` protocol with
@@ -160,7 +165,8 @@ LlmClient (protocol, app/llm/client.py)
   (Determines whether `_extract_payload` needs a text parser.)
 - Auth handshake for the Workspace MCP server: bearer header vs. server-side token.
 - Do we export Google Docs as text or Markdown for best PAR extraction fidelity?
-- LLM-backed PAR structurer: the `app/llm/` boundary + `complete_json` retry loop are in
-  place; still open is the exact prompt + JSON schema for turning raw evidence into claims
-  without fabrication (and the parallel prompts for stage-1/stage-2 matching).
+- LLM-backed PAR structurer: **done** (`LlmClaimStructurer`) — verbatim-quote grounding is
+  the no-fabrication guard. Still open: the parallel prompts/schemas for stage-1/stage-2
+  matching, and validating extraction quality on real docs (grounding is enforced, but
+  claim *usefulness* isn't measured yet).
 - Verify the real per-model prices in `app/llm/cost.py` (currently public-price estimates).
