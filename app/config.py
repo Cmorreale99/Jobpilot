@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     # BULK = cheap/fast (stage-1 scoring, bulk extraction); DEEP = strong (top-N re-rank,
     # outreach drafting, prep packets).
     llm_enabled: bool = False
+    # Swap the deterministic heuristic PAR structurer for the LLM-backed one during Master
+    # CV ingestion. Off by default (heuristic). Needs a real client (``llm_enabled=true``)
+    # to be useful; with it off, ingestion logs a warning and stays on the heuristic.
+    master_cv_llm_structuring: bool = False
     anthropic_api_key: str = ""
     anthropic_model_bulk: str = "claude-sonnet-5"
     anthropic_model_deep: str = "claude-opus-4-8"

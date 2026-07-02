@@ -220,6 +220,8 @@ A failure in one job never blocks the other.
 | `TOP_N` | `10` | Deep-ranked final matches. |
 | `ANTHROPIC_MODEL_BULK` | (sonnet 5 high) | Bulk scoring/extraction. |
 | `ANTHROPIC_MODEL_DEEP` | (opus 4.8 high) | Deep ranking/drafting. |
+| `LLM_ENABLED` | `false` | When false, the deterministic fake LLM client is used (no API key). True selects the real Anthropic client. |
+| `MASTER_CV_LLM_STRUCTURING` | `false` | When false, ingestion uses the heuristic PAR structurer. True selects the LLM-backed one (needs `LLM_ENABLED`; else it warns and stays heuristic). |
 | `GDRIVE_MCP_ENABLED` | `false` | When false, the fixture-backed mock Drive client is used (no OAuth/MCP). True selects the MCP-backed client. |
 | `GDRIVE_SOURCE_FOLDER_ID` | (empty) | Approved career-docs folder. With no folder and no broad scan, nothing is ingested. |
 | `GDRIVE_ALLOW_BROAD_SCAN` | `false` | Never scan the whole Drive by default. True is required to look outside the approved folder. |

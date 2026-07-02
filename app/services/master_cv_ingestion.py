@@ -24,6 +24,7 @@ from app.domain.cv import (
     StoredMasterCv,
 )
 from app.integrations.base import DriveClient, GitHubClient, GitHubRepoMetadata
+from app.services.cv_builder_factory import create_cv_builder
 from app.services.source_policy import apply_repo_policy, apply_source_policy
 
 logger = logging.getLogger(__name__)
@@ -76,8 +77,9 @@ async def build_master_cv_from_drive(
     now: datetime | None = None,
 ) -> MasterCv:
     """End-to-end: ingest Drive sources and build a PAR-framed Master CV."""
+    settings = settings or get_settings()
     sources = await ingest_drive_sources(client, user_id, settings, now=now)
-    builder = builder or MasterCvBuilder()
+    builder = builder or create_cv_builder(settings)
     return builder.build(sources)
 
 
@@ -146,7 +148,7 @@ async def build_master_cv(
     settings = settings or get_settings()
     drive_sources = await ingest_drive_sources(drive_client, user_id, settings, now=now)
     github_sources = await ingest_github_sources(github_client, user_id, settings, now=now)
-    builder = builder or MasterCvBuilder()
+    builder = builder or create_cv_builder(settings)
     return builder.build([*drive_sources, *github_sources])
 
 
