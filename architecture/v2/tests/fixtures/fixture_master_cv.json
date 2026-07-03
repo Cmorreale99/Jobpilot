@@ -1,0 +1,38 @@
+{
+  "name": "Cam Morreale",
+  "tagline": "Reverse-engineers broken data systems into scalable decision infrastructure",
+  "contact_line": "Worcester, MA \u2022 cmorreale@wpi.edu \u2022 774-277-1205 \u2022 linkedin.com/in/cam-morreale \u2022 github.com/Cmorreale99",
+  "education": [
+    {"institution": "Worcester Polytechnic Institute", "detail": "MS Data Science (May 2026), BS Data Science (May 2025)"}
+  ],
+  "skills": [
+    {"name": "Languages & Development", "skill_list": ["Python", "Pandas", "NumPy", "SQL", "R", "Bash", "React", "TypeScript", "Git"]},
+    {"name": "Data Engineering & Systems", "skill_list": ["ETL/ELT Pipelines", "Data Modeling", "Schema Design", "Async I/O (aiohttp)"]},
+    {"name": "Cloud & Infrastructure", "skill_list": ["AWS (Lambda, API Gateway, RDS, S3, IAM)", "Oracle Database", "Docker", "REST APIs"]}
+  ],
+  "experiences": [
+    {"name": "Wellington Management", "subtitle": "Data Architecture & Engineering Intern | Boston, MA", "dates": "Jun\u2013Aug 2025",
+     "bullets": [
+       "Reconstructed the data architecture powering a Python-based investment decision platform supporting $153B in insurance assets, enabling ~$8M in annual operational efficiency gains.",
+       "Reverse-engineered an undocumented Oracle environment (~250 tables), mapping business logic to the data layer under incomplete visibility.",
+       "Diagnosed and resolved a missing upstream dataset as the root cause of system-wide pipeline failures."
+     ]},
+    {"name": "MassDEP", "subtitle": "Machine Learning Engineer (NLP/LLM Systems) | Worcester, MA", "dates": "Jan\u2013May 2025",
+     "bullets": [
+       "Owned retrieval, extraction, and validation layers of an LLM pipeline, reducing manual reporting effort by ~40% across 50+ projects.",
+       "Reduced hallucinated outputs by implementing a retrieval-based grounding system using embeddings and semantic search."
+     ]}
+  ],
+  "projects_and_hackathons": [
+    {"name": "OneWorld", "subtitle": "EasyA x HackBoston (3rd place) | System Architecture & Strategy Lead", "dates": "Oct 2022",
+     "bullets": [
+       "Spearheaded a blockchain-based carbon market modeling emissions permits as tokenized financial assets with enforced lifecycle constraints.",
+       "Enabled real-time auditability of emissions issuance, trading, and retirement by architecting on-chain infrastructure."
+     ]},
+    {"name": "BoardGameGeek Platform", "subtitle": "Data Engineering & System Development (WPI)", "dates": "Aug\u2013Dec 2025",
+     "bullets": [
+       "Improved reliability of API-constrained ingestion by engineering a 3-stage asynchronous ELT pipeline across ~150 entities.",
+       "Integrated backend pipelines with AWS Lambda services and a React-based frontend."
+     ]}
+  ]
+}
