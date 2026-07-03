@@ -187,6 +187,21 @@ class GitHubDocument:
     pushed_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class GitHubCommit:
+    """One commit message from the user's repository (career evidence).
+
+    Commit messages are legal Result evidence under the V2 content gate — what is
+    validated is whether the text is an outcome statement, not where it came from.
+    ``sha`` is the evidence ``source_ref``.
+    """
+
+    repo_ref: str
+    sha: str
+    message: str
+    authored_at: datetime | None = None
+
+
 @runtime_checkable
 class GitHubClient(Protocol):
     """Read-only, career-evidence view of GitHub.
@@ -203,6 +218,15 @@ class GitHubClient(Protocol):
 
     async def read_repo(self, repo_ref: str) -> GitHubDocument:
         """Read and return the README text of a single repository."""
+        ...
+
+    async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:
+        """List commit messages for a repository (read-only career evidence).
+
+        Fuels V2 claim extraction: commit messages are searched for work statements
+        (Action evidence) and outcome statements (Result evidence). Still no
+        issue/PR/write operations.
+        """
         ...
 
     async def get_repo_metadata(self, repo_ref: str) -> GitHubRepoMetadata:

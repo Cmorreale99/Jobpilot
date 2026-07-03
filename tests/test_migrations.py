@@ -87,6 +87,42 @@ def test_upgrade_creates_applications_and_outreach(tmp_path: Path) -> None:
     assert "uq_outreach_application" in outreach_uniques
 
 
+def test_upgrade_creates_claims_schema_and_downgrade_drops_it(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "claims.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+
+    inspector = sa.inspect(sa.create_engine(url))
+    v2_tables = {"evidence", "claims", "claim_evidence", "experiences"}
+    assert v2_tables <= set(inspector.get_table_names())
+
+    claims_columns = {c["name"] for c in inspector.get_columns("claims")}
+    assert {
+        "status",
+        "problem_cost_dimension",
+        "problem_inefficiency",  # v2.2 delta
+        "action_tools",
+        "result_kind",
+        "result_status",
+        "result_metric_json",
+        "validation_flags",
+        "review_note",
+    } <= claims_columns
+    experience_columns = {c["name"] for c in inspector.get_columns("experiences")}
+    assert {"section", "sort_order"} <= experience_columns  # v2.2 delta
+    link_columns = {c["name"] for c in inspector.get_columns("claim_evidence")}
+    assert "outcome_quote" in link_columns  # v2.2 delta
+
+    evidence_uniques = {u["name"] for u in inspector.get_unique_constraints("evidence")}
+    assert "uq_evidence_user_source" in evidence_uniques
+    experience_uniques = {u["name"] for u in inspector.get_unique_constraints("experiences")}
+    assert "uq_experiences_user_name" in experience_uniques
+
+    command.downgrade(cfg, "0005")
+    remaining = set(sa.inspect(sa.create_engine(url)).get_table_names())
+    assert not (v2_tables & remaining)
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")

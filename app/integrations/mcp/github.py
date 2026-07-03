@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config import Settings
 from app.integrations.base import (
+    GitHubCommit,
     GitHubConfigurationError,
     GitHubCredentials,
     GitHubDocument,
@@ -258,6 +259,12 @@ class McpGitHubClient:
             return GitHubDocument(repo_ref=repo_ref, title=repo, text=payload)
         return _map_document(payload, repo_ref, repo)
 
+    async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:
+        self._require_credentials()
+        owner, repo = _split_ref(repo_ref)
+        payload = await self._call(self._tools.commits, {"owner": owner, "repo": repo})
+        return [_map_commit(item, repo_ref) for item in _as_commit_items(payload)]
+
     async def get_repo_metadata(self, repo_ref: str) -> GitHubRepoMetadata:
         self._require_credentials()
         owner, repo = _split_ref(repo_ref)
@@ -296,6 +303,30 @@ def _as_items(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return payload
     raise GitHubResponseError(f"Unexpected GitHub listing payload type: {type(payload)!r}")
+
+
+def _as_commit_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        commits = payload.get("commits", payload.get("items", []))
+        if isinstance(commits, list):
+            return [item for item in commits if isinstance(item, dict)]
+    raise GitHubResponseError(f"Unexpected GitHub commits payload type: {type(payload)!r}")
+
+
+def _map_commit(item: dict[str, Any], repo_ref: str) -> GitHubCommit:
+    """Map a REST-passthrough commit object ({sha, commit: {message, author: {date}}})."""
+    raw_commit = item.get("commit")
+    commit: dict[str, Any] = raw_commit if isinstance(raw_commit, dict) else {}
+    raw_author = commit.get("author")
+    author: dict[str, Any] = raw_author if isinstance(raw_author, dict) else {}
+    return GitHubCommit(
+        repo_ref=repo_ref,
+        sha=str(item.get("sha", "")),
+        message=str(commit.get("message", item.get("message", ""))),
+        authored_at=_parse_time(author.get("date")),
+    )
 
 
 def _count(payload: Any) -> int | None:

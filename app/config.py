@@ -158,6 +158,11 @@ class Settings(BaseSettings):
     # CV ingestion. Off by default (heuristic). Needs a real client (``llm_enabled=true``)
     # to be useful; with it off, ingestion logs a warning and stays on the heuristic.
     master_cv_llm_structuring: bool = False
+    # Swap the deterministic heuristic two-pass claim extractor for the LLM-backed one
+    # (BULK tier; pass 1 work statements -> Actions, pass 2 outcome statements ->
+    # Results). Off by default; same real-client requirement/fallback as the other
+    # LLM flags. Either way the PAR validator gates every extracted claim.
+    claims_llm_extraction: bool = False
     # Swap the heuristic two-stage matchers for the LLM-backed ones (stage-1 BULK scorer,
     # stage-2 DEEP reranker). Off by default; same real-client requirement/fallback as
     # ``master_cv_llm_structuring``.

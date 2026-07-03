@@ -78,7 +78,7 @@ CLAUDE.md
 
 ## Data model (source of truth: migrations)
 
-`users`, `oauth_credentials` (tokens encrypted at rest), `cv_sources` (provenance), `master_cv` (versioned `content_json`, all PAR-framed), `jobs`, `job_matches`, `applications`, `outreach`, `interviews`, `prep_packets`.
+`users`, `oauth_credentials` (tokens encrypted at rest), `cv_sources` (provenance), `master_cv` (versioned `content_json`, all PAR-framed), `jobs`, `job_matches`, `applications`, `outreach`, `interviews`, `prep_packets` — plus the V2 claims layer: `experiences` (user-assigned `section` + `sort_order`), `evidence` (one citable chunk per commit/README/Drive doc, deduped on `(user_id, source_type, source_ref)`; source types documented, deliberately no CHECK constraint), `claims` (strict PAR: `status`, `problem_cost_dimension`, `problem_inefficiency`, `result_kind`, `result_status`, `result_metric_json` with `resolves`, `validation_flags`), and `claim_evidence` (`field` per link; `outcome_quote` required when `field='result'`).
 
 - `applications.status`: `drafted | applied | interviewing | rejected | offer | ignored`
 - `interviews.stage` and `outreach.status`: explicit state machines with validated transitions in `domain/`.
@@ -86,6 +86,7 @@ CLAUDE.md
 - **Master CV persistence** (`MasterCvRepository`, in-memory + `SqlMasterCvRepository`): each save writes a new `master_cv` version, but idempotently — a content fingerprint that excludes volatile timestamps (`ingested_at`) means an unchanged refresh adds no version. `cv_sources` dedupe on `(user_id, source_type, external_ref)`. `refresh_master_cv` (`services/master_cv_ingestion.py`) is the build-and-persist entrypoint.
 - **Uploads** (third evidence source alongside Drive + GitHub): `UploadsClient` interface with `LocalUploadsClient` (`integrations/uploads.py`) over a configured `UPLOADS_DIR` — empty by default, meaning disabled. Text/markdown allowlist (`apply_upload_policy`) filters before any read; ingestion records `CvSource(source_type="upload")` and `build_master_cv` merges all three source types.
 - **Jobs + matching**: `JobSource` (mock + future real) feeds `jobs` (deduped on `(source, external_id)`). Two-stage matching (`domain/matching.py`, pure + deterministic) scores every job (stage 1) → shortlists `SHORTLIST_SIZE` → deep re-ranks `TOP_N` with a rationale (stage 2), both behind `JobScorer`/`JobReranker` protocols with heuristic (default) and LLM-backed (`llm/matching.py`, flag `MATCHING_LLM_RANKING`) implementations. `run_matching` (`services/matching.py`) persists results to `job_matches` per `(user_id, master_cv_version)` with replace semantics.
+- **Claims (V2)**: the claim state machine is `extracted → pending_review → approved | rejected` (rejection requires a reason; decisions are terminal and retained — they are V3 golden-set data). Extraction (`services/claim_extraction.py`) is two-pass per experience group (pass 1 work statements → Actions, pass 2 outcome statements → Results), always lands claims as `pending_review`, and bounces PAR-validator failures (`domain/par_validation.py`) to re-extraction once — second failure is queued flagged. The validator encodes the non-negotiables: Problem must declare a cost dimension and/or inefficiency; Action must name tools; Results are content-gated (quantified → verbatim metric in cited chunk; qualitative → verbatim `outcome_quote`; missing → never filled) and must resolve a declared pain point (`resolves` coupling, flagged "result does not address stated problem"). Extractors sit behind `ClaimExtractor` — heuristic default, LLM two-pass (`llm/extraction.py`, flag `CLAIMS_LLM_EXTRACTION`, BULK tier, grounding-filtered). Repos: `InMemoryClaimRepository` + `SqlClaimRepository` (migration `0006`); re-runs replace unreviewed claims only and never re-queue content a human decided on.
 - **Dashboard**: `web/` (Next.js app router + Tailwind v4, TypeScript) renders one "pipeline ledger" page (approval queue → matches → applications → connect accounts) plus an application detail view; it talks to the read API in `app/api/dashboard.py` (`/master-cv/latest`, `/matches`, `/applications[/{id}]`, `POST /applications/{id}/transition`) with repos injected in tests and lazily built over SQL in prod. CORS is restricted to `DASHBOARD_ORIGINS` (default `http://localhost:3000`); the web app reads `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_USER_ID` (see `web/.env.example`).
 - **Tailoring + outreach (approval queue)**: state machines live in `domain/applications.py` — `applications.status` (`drafted → applied → interviewing → rejected|offer`, `drafted → ignored`) and `outreach.status` (`drafted → approved → sent`, `drafted → discarded`), transitions validated everywhere (`InvalidTransitionError`). Tailoring (`domain/tailoring.py`) and drafting (`domain/outreach.py`) sit behind `MaterialsTailorer`/`OutreachDrafter` protocols — heuristic defaults render Master CV claims verbatim; LLM-backed versions (`llm/drafting.py`, flag `TAILORING_LLM_DRAFTING`, DEEP tier) ground highlights by claim id (hallucinated ids dropped) and fall back to the heuristics on failure. Contacts come from the `ResearchClient` interface (mock fixture-backed) or are honestly absent — never invented. `ApplicationRepository` (in-memory + SQL, migration `0004`) keeps one application per `(user_id, job)` and one outreach row per application; re-runs refresh *drafted* rows only and never overwrite a human decision. `run_drafting` (`services/outreach.py`) orchestrates; the approval queue is served by `GET /outreach/queue` + `POST /outreach/{id}/approve|discard` (`api/outreach.py`).
 
@@ -177,9 +178,10 @@ write operations.
 ### GitHub integration (Master CV evidence)
 
 Mirrors the Drive design. GitHub is a **read-only career-evidence source**: the user's own
-repositories, their READMEs, and contribution signals. The `GitHubClient` interface
-(`list_candidate_repos`, `read_repo`, `get_repo_metadata`, `list_changed_repos`) exposes
-no issue/PR/write operations.
+repositories, their READMEs, commit messages, and contribution signals. The `GitHubClient`
+interface (`list_candidate_repos`, `read_repo`, `list_commits`, `get_repo_metadata`,
+`list_changed_repos`) exposes no issue/PR/write operations. `list_commits` (V2) feeds claim
+extraction — commit messages are legal Action *and* Result evidence under the content gate.
 
 - **Mocks are the default.** `GITHUB_MCP_ENABLED=false` selects `MockGitHubClient`
   (`app/integrations/mock/github.py`), backed by `tests/fixtures/github/`.
@@ -231,6 +233,7 @@ A failure in one job never blocks the other (`run_job_safely` — observed live)
 | `LLM_ENABLED` | `false` | When false, the deterministic fake LLM client is used (no API key). True selects the real Anthropic client. |
 | `MASTER_CV_LLM_STRUCTURING` | `false` | When false, ingestion uses the heuristic PAR structurer. True selects the LLM-backed one (needs `LLM_ENABLED`; else it warns and stays heuristic). |
 | `MATCHING_LLM_RANKING` | `false` | When false, matching uses the heuristic scorer/reranker. True selects the LLM-backed stages (needs `LLM_ENABLED`; else it warns and stays heuristic). |
+| `CLAIMS_LLM_EXTRACTION` | `false` | When false, claim extraction uses the deterministic heuristic two-pass extractor. True selects the LLM-backed one (needs `LLM_ENABLED`; else it warns and stays heuristic). The PAR validator gates every claim either way. |
 | `TAILORING_LLM_DRAFTING` | `false` | When false, tailoring + outreach use the deterministic template drafters. True selects the LLM-backed ones (needs `LLM_ENABLED`; else it warns and stays heuristic). |
 | `GDRIVE_MCP_ENABLED` | `false` | When false, the fixture-backed mock Drive client is used (no OAuth/MCP). True selects the MCP-backed client. |
 | `UPLOADS_DIR` | (empty) | Local folder of user-supplied career artifacts (text/markdown). Empty disables uploads ingestion. |
@@ -263,3 +266,4 @@ A failure in one job never blocks the other (`run_job_safely` — observed live)
 - [x] M5 — orchestration (idempotent)
 - [x] M6 — real integrations behind flags (live-verified: `python -m app.tools.verify_mcp`)
 - [x] M7 — interview scan + prep packets
+- [ ] M8 — V2 schema + two-pass extraction + PAR validator (built; awaiting review)
