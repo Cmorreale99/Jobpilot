@@ -1,0 +1,55 @@
+{
+  "model_id": "intfloat/e5-base-v2",
+  "slot": "bi_encoder",
+  "params_millions": null,
+  "embedding_dim": 768,
+  "max_seq_length": 512,
+  "benchmark_scores": [
+    {
+      "benchmark": "BEIR (average over benchmark datasets, nDCG@10)",
+      "value": 50.3,
+      "source_url": "https://github.com/microsoft/unilm/blob/master/e5/README.md",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB AmazonCounterfactualClassification (en) accuracy",
+      "value": 77.776,
+      "source_url": "https://huggingface.co/intfloat/e5-base-v2",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB AmazonPolarityClassification accuracy",
+      "value": 92.81,
+      "source_url": "https://huggingface.co/intfloat/e5-base-v2",
+      "self_reported": true
+    }
+  ],
+  "license": "mit",
+  "usage_requirements": [
+    "Every input MUST be prefixed: 'query: ' for queries and 'passage: ' for passages in retrieval; use 'query: ' on BOTH sides for symmetric tasks (semantic similarity, paraphrase, clustering). Card FAQ: 'this is how the model is trained, otherwise you will see a performance degradation.'",
+    "Pooling: average (mean) pooling over the last hidden state using the attention mask (card provides an explicit average_pool function); do not use CLS pooling.",
+    "Normalize embeddings (L2) and score with cosine similarity, per the card's usage examples.",
+    "Standard BERT architecture (12 layers), loadable via AutoModel/sentence-transformers with no trust_remote_code flag in the card's usage examples.",
+    "English-only model ('This model only works for English texts').",
+    "Long texts are truncated to at most 512 tokens."
+  ],
+  "known_issues": [
+    "Cosine similarity scores are compressed into roughly the 0.7-1.0 range (a consequence of the low InfoNCE temperature of 0.01 used in training), so absolute similarity thresholds are unreliable; only relative ranking is meaningful.",
+    "Omitting the 'query: '/'passage: ' prefixes degrades quality silently -- the model still returns embeddings with no error.",
+    "English-only; non-English input is out of distribution."
+  ],
+  "maintenance": {
+    "last_updated": "2025-02-17",
+    "hf_downloads_last_month": 2069914
+  },
+  "sources": [
+    "https://huggingface.co/intfloat/e5-base-v2",
+    "https://huggingface.co/api/models/intfloat/e5-base-v2",
+    "https://github.com/microsoft/unilm/blob/master/e5/README.md",
+    "https://arxiv.org/abs/2212.03533"
+  ],
+  "unknowns": [
+    "params_millions (HF card and API response inspected did not expose a total parameter count; card states only '12 layers and the embedding size is 768')",
+    "mteb_average_score (no aggregate MTEB average found on the model card, the E5 GitHub README, or accessible leaderboard data; only per-task scores are published)"
+  ]
+}

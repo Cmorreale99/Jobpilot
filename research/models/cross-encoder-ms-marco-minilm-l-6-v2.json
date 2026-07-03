@@ -1,0 +1,60 @@
+{
+  "model_id": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+  "slot": "reranker",
+  "params_millions": 22.7,
+  "embedding_dim": null,
+  "max_seq_length": 512,
+  "benchmark_scores": [
+    {
+      "benchmark": "TREC DL 19 NDCG@10",
+      "value": 74.3,
+      "source_url": "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MS MARCO Passage Dev MRR@10",
+      "value": 39.01,
+      "source_url": "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2",
+      "self_reported": true
+    },
+    {
+      "benchmark": "Throughput docs/sec (V100 GPU)",
+      "value": 1800,
+      "source_url": "https://sbert.net/docs/cross_encoder/pretrained_models.html",
+      "self_reported": true
+    }
+  ],
+  "license": "apache-2.0",
+  "usage_requirements": [
+    "No query:/passage: prefixes — input is raw (query, passage) text pairs via sentence_transformers CrossEncoder.predict() or transformers AutoModelForSequenceClassification",
+    "Default activation is Identity (config sbert_ce_default_activation_function = torch.nn.modules.linear.Identity): predict() returns raw logits roughly in [-10, 10], NOT probabilities; pass activation_fn=torch.nn.Sigmoid() to CrossEncoder if 0-1 scores are needed",
+    "Single-label sequence classification head (num_labels=1) — one relevance score per pair; no embeddings are produced (pooling not applicable)",
+    "Max sequence length 512 tokens (BERT max_position_embeddings); query+passage pairs longer than that must be truncated (tokenize with truncation=True)",
+    "trust_remote_code not required (standard BertForSequenceClassification)",
+    "Canonical repo id is now cross-encoder/ms-marco-MiniLM-L6-v2 (no dash before 6); the old id cross-encoder/ms-marco-MiniLM-L-6-v2 resolves to it"
+  ],
+  "known_issues": [
+    "Repo renamed: the HF API resolves cross-encoder/ms-marco-MiniLM-L-6-v2 to cross-encoder/ms-marco-MiniLM-L6-v2 — pin the new id to avoid tooling that fails on redirects",
+    "Community reports of low scores on fairly similar short texts outside the MS MARCO query-passage distribution (sentence-transformers issue #2874)",
+    "Original training hyperparameters are not documented, complicating faithful fine-tuning reproduction (sentence-transformers issue #3505)",
+    "Inputs beyond 512 tokens are silently truncated, dropping late-passage evidence; CPU throughput on long lists is a recurring complaint (sentence-transformers issue #2482)",
+    "Trained only on English MS MARCO passage ranking; scores are relative relevance logits, not calibrated probabilities, unless a sigmoid is applied"
+  ],
+  "maintenance": {
+    "last_updated": "2025-08-29T14:36:10.000Z",
+    "hf_downloads_last_month": 80360315
+  },
+  "sources": [
+    "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2",
+    "https://huggingface.co/api/models/cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/raw/main/config.json",
+    "https://sbert.net/docs/cross_encoder/pretrained_models.html",
+    "https://github.com/UKPLab/sentence-transformers/issues/2874",
+    "https://github.com/huggingface/sentence-transformers/issues/3505",
+    "https://github.com/huggingface/sentence-transformers/issues/2482"
+  ],
+  "unknowns": [
+    "embedding_dim (not applicable: cross-encoder emits a single relevance score, not embeddings; hidden_size is 384 but no embedding output exists)",
+    "independent (non-author) benchmark verification — all scores trace to the model card / SBERT docs maintained by the model authors"
+  ]
+}

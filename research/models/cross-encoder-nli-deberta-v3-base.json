@@ -1,0 +1,50 @@
+{
+  "model_id": "cross-encoder/nli-deberta-v3-base",
+  "slot": "nli",
+  "params_millions": 184,
+  "embedding_dim": null,
+  "max_seq_length": 512,
+  "benchmark_scores": [
+    {
+      "benchmark": "SNLI test accuracy",
+      "value": 92.38,
+      "source_url": "https://huggingface.co/cross-encoder/nli-deberta-v3-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MNLI mismatched accuracy",
+      "value": 90.04,
+      "source_url": "https://huggingface.co/cross-encoder/nli-deberta-v3-base",
+      "self_reported": true
+    }
+  ],
+  "license": "apache-2.0",
+  "usage_requirements": [
+    "Cross-encoder sequence-pair classifier: input is a (premise, hypothesis) pair, output is 3 logits with label order id 0=contradiction, 1=entailment, 2=neutral (per config.json id2label)",
+    "Load via sentence_transformers.CrossEncoder('cross-encoder/nli-deberta-v3-base') or transformers AutoModelForSequenceClassification; no trust_remote_code needed",
+    "No query:/passage: text prefixes; no pooling choice (classification head, not an embedding model)",
+    "Tokenizer is a DeBERTa-v2 SentencePiece tokenizer: the `sentencepiece` package must be installed or tokenizer instantiation fails",
+    "config.json model_type is 'deberta-v2' (DebertaV2ForSequenceClassification) despite the v3 name; max_position_embeddings=512 with relative position buckets",
+    "Usable for zero-shot classification via the transformers zero-shot-classification pipeline (entailment label present)"
+  ],
+  "known_issues": [
+    "DeBERTa-v3 tokenizer loading has a history of failures ('This tokenizer cannot be instantiated. Please make sure you have sentencepiece installed') where installing sentencepiece alone was not always sufficient on older transformers versions (huggingface/transformers#14470)",
+    "Repo maintainer re-pushed the tokenizer files in April 2025 ('Push tokenizer again' commit), indicating past tokenizer-file problems; use a recent snapshot of the repo"
+  ],
+  "maintenance": {
+    "last_updated": "2025-04-11",
+    "hf_downloads_last_month": 378060
+  },
+  "sources": [
+    "https://huggingface.co/cross-encoder/nli-deberta-v3-base",
+    "https://huggingface.co/cross-encoder/nli-deberta-v3-base/resolve/main/config.json",
+    "https://huggingface.co/cross-encoder/nli-deberta-v3-base/commits/main",
+    "https://huggingface.co/microsoft/deberta-v3-base",
+    "https://github.com/huggingface/transformers/issues/14470"
+  ],
+  "unknowns": [
+    "embedding_dim (not applicable: classification cross-encoder, no sentence embedding output)",
+    "MNLI matched-set accuracy (model card reports only the mismatched set)",
+    "exact effective max_seq_length used at fine-tuning time (512 is the config max_position_embeddings; card does not state a training truncation length)"
+  ]
+}

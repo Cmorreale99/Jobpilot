@@ -1,0 +1,87 @@
+{
+  "model_id": "BAAI/bge-reranker-base",
+  "slot": "reranker",
+  "params_millions": 278.04,
+  "embedding_dim": null,
+  "max_seq_length": 512,
+  "benchmark_scores": [
+    {
+      "benchmark": "C-MTEB Reranking / T2Reranking (map)",
+      "value": 67.28,
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "C-MTEB Reranking / T2Reranking (mrr)",
+      "value": 77.132,
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "C-MTEB Reranking / CMedQAv1 (map)",
+      "value": 81.272,
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "C-MTEB Reranking / CMedQAv1 (mrr)",
+      "value": 84.142,
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "C-MTEB Reranking / CMedQAv2 (map)",
+      "value": 84.104,
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "C-MTEB Reranking / CMedQAv2 (mrr)",
+      "value": 86.794,
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "C-MTEB Reranking / MMarcoReranking (map)",
+      "value": 35.46,
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "C-MTEB Reranking / MMarcoReranking (mrr)",
+      "value": 34.602,
+      "source_url": "https://huggingface.co/BAAI/bge-reranker-base",
+      "self_reported": true
+    }
+  ],
+  "license": "MIT",
+  "usage_requirements": [
+    "Cross-encoder: input is (query, passage) text pairs; outputs a scalar relevance score directly, not embeddings",
+    "No query/passage prefixes or instructions needed ('no instruction needs to be added to passages')",
+    "Raw scores are unbounded (trained with cross-entropy loss); pass normalize=True to FlagReranker.compute_score (or apply sigmoid manually) to map scores to [0,1]",
+    "Max input length 512 tokens per pair (XLM-RoBERTa base, max_position_embeddings=514)",
+    "Loadable via FlagEmbedding FlagReranker, sentence-transformers CrossEncoder, or transformers AutoModelForSequenceClassification (num_labels=1); trust_remote_code NOT required",
+    "use_fp16=True recommended for faster inference with minimal quality loss",
+    "Languages: Chinese and English only"
+  ],
+  "known_issues": [
+    "Score range confusion is a recurring user issue: raw logits fluctuate widely and are not comparable to a 0-1 scale without sigmoid normalization (FlagOpen/FlagEmbedding issue #965)",
+    "Only supports Chinese and English; BAAI recommends the bge-reranker-v2 series (e.g. bge-reranker-v2-m3) for multilingual or newer use cases — this model is a prior generation",
+    "Cross-encoder design is 'more accurate but less efficient' than bi-encoders; intended only for re-ranking a top-k candidate set, not full-corpus scoring"
+  ],
+  "maintenance": {
+    "last_updated": "2024-06-24",
+    "hf_downloads_last_month": 4317605
+  },
+  "sources": [
+    "https://huggingface.co/BAAI/bge-reranker-base",
+    "https://huggingface.co/api/models/BAAI/bge-reranker-base",
+    "https://huggingface.co/BAAI/bge-reranker-base/blob/main/config.json",
+    "https://github.com/FlagOpen/FlagEmbedding/issues/965",
+    "https://github.com/FlagOpen/FlagEmbedding"
+  ],
+  "unknowns": [
+    "embedding_dim (not applicable: cross-encoder outputs a scalar score, no embedding output; hidden size is 768 but that is not an embedding dimension)",
+    "independent (non-BAAI) benchmark verification: all C-MTEB reranking numbers trace to BAAI's own model card/leaderboard submission"
+  ]
+}

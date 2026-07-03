@@ -1,0 +1,85 @@
+{
+  "model_id": "BAAI/bge-small-en-v1.5",
+  "slot": "bi_encoder",
+  "params_millions": 33.4,
+  "embedding_dim": 384,
+  "max_seq_length": 512,
+  "benchmark_scores": [
+    {
+      "benchmark": "MTEB (English, 56 datasets) - Average",
+      "value": 62.17,
+      "source_url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB - Retrieval (nDCG@10 avg)",
+      "value": 51.68,
+      "source_url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB - STS",
+      "value": 81.59,
+      "source_url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB - Classification",
+      "value": 74.14,
+      "source_url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB - Clustering",
+      "value": 43.82,
+      "source_url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB - Pair Classification",
+      "value": 84.92,
+      "source_url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB - Reranking",
+      "value": 58.36,
+      "source_url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB - Summarization",
+      "value": 30.12,
+      "source_url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+      "self_reported": true
+    }
+  ],
+  "license": "MIT",
+  "usage_requirements": [
+    "Pooling: CLS token (first token) — NOT mean pooling; verified in repo 1_Pooling/config.json (pooling_mode_cls_token=true, pooling_mode_mean_tokens=false). Using mean pooling silently degrades quality.",
+    "Normalize embeddings (L2) before cosine/dot-product similarity (normalize_embeddings=True in FlagEmbedding/sentence-transformers).",
+    "Optional query-side instruction for short-query retrieval: prepend 'Represent this sentence for searching relevant passages: ' to queries only; passages/documents never get a prefix. v1.5 works without the instruction with only a slight performance trade-off — pick whichever performs better on your task.",
+    "trust_remote_code NOT required (standard BERT architecture).",
+    "Max input 512 tokens; longer inputs must be truncated/chunked.",
+    "English-only model."
+  ],
+  "known_issues": [
+    "Absolute similarity scores are not calibrated: model card advises relying on relative score ordering for ranking/filtering, not fixed absolute thresholds. v1.5 was specifically released to fix the overly narrow similarity distribution of bge-*-en v1.0.",
+    "Asymmetric usage (query prefix on queries only) is easy to get wrong in pipelines; inconsistent prefixing between indexing and querying degrades retrieval silently.",
+    "FlagEmbedding GitHub issues for this model family are mostly about fine-tuning/training (e.g., loss plateau #744, multi-GPU hang #1482) rather than inference-time defects; no widely reported inference bugs specific to bge-small-en-v1.5 found."
+  ],
+  "maintenance": {
+    "last_updated": "2024-02-22",
+    "hf_downloads_last_month": 61811303
+  },
+  "sources": [
+    "https://huggingface.co/BAAI/bge-small-en-v1.5",
+    "https://huggingface.co/api/models/BAAI/bge-small-en-v1.5",
+    "https://huggingface.co/BAAI/bge-small-en-v1.5/blob/main/1_Pooling/config.json",
+    "https://github.com/FlagOpen/FlagEmbedding",
+    "https://github.com/FlagOpen/FlagEmbedding/issues?q=bge-small-en-v1.5"
+  ],
+  "unknowns": [
+    "independent_mteb_leaderboard_verification (benchmark numbers taken from the model card's own model-index metadata; the current MTEB leaderboard app could not be independently fetched, so all scores are flagged self_reported)"
+  ]
+}

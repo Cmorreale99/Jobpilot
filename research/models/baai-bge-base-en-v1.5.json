@@ -1,0 +1,47 @@
+{
+  "model_id": "BAAI/bge-base-en-v1.5",
+  "slot": "bi_encoder",
+  "params_millions": 109.48,
+  "embedding_dim": 768,
+  "max_seq_length": 512,
+  "benchmark_scores": [
+    {
+      "benchmark": "MTEB (English, 56 datasets) average",
+      "value": 63.55,
+      "source_url": "https://huggingface.co/BAAI/bge-base-en-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB Retrieval (BEIR, 15 datasets) average nDCG@10",
+      "value": 53.25,
+      "source_url": "https://huggingface.co/BAAI/bge-base-en-v1.5",
+      "self_reported": true
+    }
+  ],
+  "license": "MIT",
+  "usage_requirements": [
+    "CLS-token pooling (last hidden state of [CLS]), NOT mean pooling — mean pooling causes a significant performance drop",
+    "L2-normalize embeddings and compare with cosine similarity / inner product",
+    "For short query -> long passage retrieval, prepend the query prefix 'Represent this sentence for searching relevant passages: ' to queries only (never to passages); in v1.5 the prefix is optional with only slight retrieval degradation, and no prefix is needed for symmetric similarity tasks",
+    "No trust_remote_code required (standard BERT architecture, works with sentence-transformers and vanilla transformers)",
+    "Max input 512 tokens; longer inputs are truncated",
+    "English-only model"
+  ],
+  "known_issues": [
+    "Similarity scores are compressed into roughly [0.6, 1.0] because of contrastive training with temperature 0.01 — a score above 0.5 does not imply similarity; only relative ranking is meaningful, and any absolute threshold must be calibrated on your own data (typically 0.8-0.9)",
+    "Using mean pooling instead of CLS pooling silently degrades quality (documented by FlagEmbedding maintainers)",
+    "v1.5 was released specifically to alleviate the v1.0 similarity-distribution issue and improve no-instruction retrieval, but the compressed score range still applies"
+  ],
+  "maintenance": {
+    "last_updated": "2024-02-21T03:00:19.000Z",
+    "hf_downloads_last_month": 8250509
+  },
+  "sources": [
+    "https://huggingface.co/BAAI/bge-base-en-v1.5",
+    "https://huggingface.co/api/models/BAAI/bge-base-en-v1.5?expand[]=safetensors&expand[]=downloads&expand[]=lastModified",
+    "https://github.com/FlagOpen/FlagEmbedding"
+  ],
+  "unknowns": [
+    "benchmark_scores independent verification (MTEB leaderboard entries for this model are ingested from the model card's own model-index metadata, so no non-self-reported source was found; both scores are flagged self_reported)"
+  ]
+}
