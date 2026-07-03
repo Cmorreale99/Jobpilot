@@ -1,0 +1,182 @@
+"""In-memory :class:`ClaimRepository` — the mock-first default for dev and tests.
+
+Implements the shared write semantics documented on the protocol
+(``app/domain/claims.py``): experience dedupe on ``(user_id, name)``, evidence dedupe
+on ``(user_id, source_type, source_ref)``, and the idempotency rule that re-extraction
+replaces only ``extracted``/``pending_review`` claims — a human decision (approved or
+rejected) is never deleted, and a re-extracted claim whose content matches a reviewed
+one is never re-queued.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import replace
+from datetime import UTC, datetime
+
+from app.domain.claims import (
+    Claim,
+    ClaimEvidenceLink,
+    ClaimRepository,
+    ClaimStatus,
+    EvidenceChunk,
+    Experience,
+    ExperienceSeed,
+    StorableClaim,
+    StoredEvidence,
+    claim_content_fingerprint,
+    validate_claim_transition,
+)
+
+
+class InMemoryClaimRepository(ClaimRepository):
+    """Dict-backed claims persistence with the same semantics as the SQL version."""
+
+    def __init__(self) -> None:
+        self._experiences: dict[int, Experience] = {}
+        self._evidence: dict[int, StoredEvidence] = {}
+        self._claims: dict[int, Claim] = {}
+        self._next_experience_id = 1
+        self._next_evidence_id = 1
+        self._next_claim_id = 1
+
+    # --- experiences ---------------------------------------------------------------
+
+    def upsert_experience(self, user_id: str, seed: ExperienceSeed) -> Experience:
+        for experience in self._experiences.values():
+            if experience.user_id == user_id and experience.name == seed.name:
+                # Existing row wins: section/sort_order are user-assigned in review
+                # and re-extraction never overrides them.
+                return experience
+        experience = Experience(
+            id=self._next_experience_id,
+            user_id=user_id,
+            name=seed.name,
+            section=seed.section,
+            subtitle=seed.subtitle,
+            dates=seed.dates,
+            sort_order=sum(1 for e in self._experiences.values() if e.user_id == user_id),
+        )
+        self._experiences[experience.id] = experience
+        self._next_experience_id += 1
+        return experience
+
+    def list_experiences(self, user_id: str) -> list[Experience]:
+        rows = [e for e in self._experiences.values() if e.user_id == user_id]
+        return sorted(rows, key=lambda e: (e.sort_order, e.id))
+
+    # --- evidence --------------------------------------------------------------------
+
+    def upsert_evidence(self, user_id: str, chunk: EvidenceChunk) -> StoredEvidence:
+        for stored in self._evidence.values():
+            if (
+                stored.user_id == user_id
+                and stored.source_type == chunk.source_type
+                and stored.source_ref == chunk.source_ref
+            ):
+                if stored.chunk_text != chunk.chunk_text:
+                    stored = replace(stored, chunk_text=chunk.chunk_text)
+                    self._evidence[stored.id] = stored
+                return stored
+        stored = StoredEvidence(
+            id=self._next_evidence_id,
+            user_id=user_id,
+            source_type=chunk.source_type,
+            source_ref=chunk.source_ref,
+            chunk_text=chunk.chunk_text,
+            created_at=datetime.now(tz=UTC),
+        )
+        self._evidence[stored.id] = stored
+        self._next_evidence_id += 1
+        return stored
+
+    def get_evidence(self, evidence_id: int) -> StoredEvidence | None:
+        return self._evidence.get(evidence_id)
+
+    # --- claims ----------------------------------------------------------------------
+
+    def replace_unreviewed_claims(
+        self, user_id: str, experience_id: int, claims: Sequence[StorableClaim]
+    ) -> list[Claim]:
+        reviewed_fingerprints = set()
+        for claim in list(self._claims.values()):
+            if claim.user_id != user_id or claim.experience_id != experience_id:
+                continue
+            if claim.status in (ClaimStatus.EXTRACTED, ClaimStatus.PENDING_REVIEW):
+                del self._claims[claim.id]
+            else:
+                reviewed_fingerprints.add(
+                    claim_content_fingerprint(
+                        claim.problem_text, claim.action_text, claim.result_text
+                    )
+                )
+
+        inserted: list[Claim] = []
+        for storable in claims:
+            draft = storable.draft
+            fingerprint = claim_content_fingerprint(
+                draft.problem_text, draft.action_text, draft.result_text
+            )
+            if fingerprint in reviewed_fingerprints:
+                continue  # a human already decided on this content; never re-queue it
+            links = tuple(
+                ClaimEvidenceLink(
+                    evidence_id=self.upsert_evidence(user_id, ref.chunk).id,
+                    field=ref.field,
+                    outcome_quote=ref.outcome_quote,
+                )
+                for ref in draft.evidence
+            )
+            claim = Claim(
+                id=self._next_claim_id,
+                user_id=user_id,
+                experience_id=experience_id,
+                status=storable.status,
+                action_text=draft.action_text,
+                action_tools=draft.action_tools,
+                problem_text=draft.problem_text,
+                problem_cost_dimension=draft.problem_cost_dimension,
+                problem_inefficiency=draft.problem_inefficiency,
+                result_text=draft.result_text,
+                result_kind=draft.result_kind,
+                result_status=storable.result_status,
+                result_metric_json=draft.result_metric_json,
+                validation_flags=storable.validation_flags,
+                evidence=links,
+            )
+            self._claims[claim.id] = claim
+            self._next_claim_id += 1
+            inserted.append(claim)
+        return inserted
+
+    def get_claim(self, claim_id: int) -> Claim | None:
+        return self._claims.get(claim_id)
+
+    def list_claims(self, user_id: str, status: ClaimStatus | None = None) -> list[Claim]:
+        rows = [
+            c
+            for c in self._claims.values()
+            if c.user_id == user_id and (status is None or c.status is status)
+        ]
+        return sorted(rows, key=lambda c: c.id)
+
+    def transition_claim(
+        self,
+        claim_id: int,
+        new_status: ClaimStatus,
+        *,
+        review_note: str | None = None,
+        reviewed_at: datetime | None = None,
+    ) -> Claim:
+        claim = self._claims.get(claim_id)
+        if claim is None:
+            raise LookupError(f"no claim with id {claim_id}")
+        validate_claim_transition(claim.status, new_status, review_note=review_note)
+        updated = replace(
+            claim,
+            status=new_status,
+            review_note=review_note if review_note is not None else claim.review_note,
+            reviewed_at=reviewed_at or datetime.now(tz=UTC),
+        )
+        self._claims[claim_id] = updated
+        return updated

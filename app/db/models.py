@@ -183,6 +183,94 @@ class PrepPacketRow(Base):
     )
 
 
+class ExperienceRow(Base):
+    """An experience grouping claims; ``section``/``sort_order`` are user-assigned."""
+
+    __tablename__ = "experiences"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_experiences_user_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    name: Mapped[str] = mapped_column(String(512))
+    subtitle: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    dates: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    section: Mapped[str] = mapped_column(String(32), default="professional_experience")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EvidenceRow(Base):
+    """One citable evidence chunk, deduped per user on ``(source_type, source_ref)``.
+
+    ``source_type`` values are documented (drive|github_commit|github_pr|github_readme|
+    upload|user_attestation) but deliberately NOT a CHECK constraint — the content gate
+    lives in the PAR validator, where it belongs.
+    """
+
+    __tablename__ = "evidence"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_type", "source_ref", name="uq_evidence_user_source"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_ref: Mapped[str] = mapped_column(String(512))
+    chunk_text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ClaimRow(Base):
+    """One PAR claim; status follows the claim state machine in ``domain/claims.py``."""
+
+    __tablename__ = "claims"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    experience_id: Mapped[int] = mapped_column(Integer, index=True)
+    status: Mapped[str] = mapped_column(String(16))
+    problem_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    problem_cost_dimension: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    problem_inefficiency: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    action_text: Mapped[str] = mapped_column(Text)
+    action_tools: Mapped[list[str]] = mapped_column(JSON, default=list)
+    result_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_kind: Mapped[str] = mapped_column(String(32))
+    result_status: Mapped[str] = mapped_column(String(16))
+    result_metric_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    validation_flags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ClaimEvidenceRow(Base):
+    """Which evidence chunk supports which PAR field of a claim.
+
+    ``outcome_quote`` is required when ``field='result'`` (enforced by the PAR
+    validator, matching the no-CHECK-constraint convention above).
+    """
+
+    __tablename__ = "claim_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "claim_id", "evidence_id", "field", name="uq_claim_evidence_claim_evidence_field"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    claim_id: Mapped[int] = mapped_column(Integer, index=True)
+    evidence_id: Mapped[int] = mapped_column(Integer)
+    field: Mapped[str] = mapped_column(String(16))
+    outcome_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class JobMatchRow(Base):
     """A deep-ranked match of a job against a user's Master CV version."""
 

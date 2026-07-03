@@ -1,0 +1,21 @@
+{
+  "description": "Fixture Drive folder for V2 claim extraction. One writeup passes every PAR gate; one declares a 'slow' Problem with a revenue Result and must trip the coupling rule.",
+  "sources": [
+    {
+      "id": "drv_recon_001",
+      "name": "Shipment Reconciliation Writeup",
+      "mime_type": "text/markdown",
+      "folder_id": "career_docs",
+      "modified_time": "2026-05-14T09:30:00Z",
+      "path": "shipment_reconciliation.md"
+    },
+    {
+      "id": "drv_ci_002",
+      "name": "CI Throughput Project",
+      "mime_type": "text/markdown",
+      "folder_id": "career_docs",
+      "modified_time": "2026-06-01T10:00:00Z",
+      "path": "ci_throughput.md"
+    }
+  ]
+}

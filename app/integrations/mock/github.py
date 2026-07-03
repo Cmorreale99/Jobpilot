@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.integrations.base import (
+    GitHubCommit,
     GitHubDocument,
     GitHubRepo,
     GitHubRepoMetadata,
@@ -92,6 +93,21 @@ class MockGitHubClient:
             primary_language=_opt_str(entry.get("primary_language")),
             pushed_at=_parse_time(entry.get("pushed_at")),
         )
+
+    async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:
+        entry = self._entry(repo_ref)
+        commits = entry.get("commits", [])
+        if not isinstance(commits, list):
+            return []
+        return [
+            GitHubCommit(
+                repo_ref=repo_ref,
+                sha=str(commit["sha"]),
+                message=str(commit["message"]),
+                authored_at=_parse_time(commit.get("authored_at")),
+            )
+            for commit in commits
+        ]
 
     async def get_repo_metadata(self, repo_ref: str) -> GitHubRepoMetadata:
         entry = self._entry(repo_ref)

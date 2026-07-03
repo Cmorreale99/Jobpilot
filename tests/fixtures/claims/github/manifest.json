@@ -1,0 +1,33 @@
+{
+  "description": "Fixture GitHub account for V2 claim extraction. Commits are deliberately split: one carries only a work statement (must yield result_kind=missing), one carries a quantified outcome statement (must yield result_kind=quantified with a verbatim metric).",
+  "username": "jordanrivera",
+  "repos": [
+    {
+      "repo_ref": "jordanrivera/carrier-etl",
+      "name": "carrier-etl",
+      "owner": "jordanrivera",
+      "description": "Multi-carrier shipment ingestion pipeline.",
+      "primary_language": "Python",
+      "languages": ["Python", "SQL"],
+      "is_fork": false,
+      "is_private": false,
+      "stars": 12,
+      "forks": 1,
+      "commit_count": 87,
+      "pushed_at": "2026-06-15T12:00:00Z",
+      "readme": "carrier-etl.md",
+      "commits": [
+        {
+          "sha": "c001workonly",
+          "message": "Fixed dedup key mismatch across four carriers in the Kafka ingest path",
+          "authored_at": "2026-06-01T10:00:00Z"
+        },
+        {
+          "sha": "c002outcome",
+          "message": "Backfilled the missing upstream dataset behind nightly scoring\n\nCut ingestion failure rate from 12% to 0.5% across the Python scoring jobs.",
+          "authored_at": "2026-06-10T10:00:00Z"
+        }
+      ]
+    }
+  ]
+}

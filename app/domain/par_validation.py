@@ -1,0 +1,209 @@
+"""The PAR validator: deterministic checks over a draft claim and its cited evidence.
+
+Encodes the non-negotiable rules (see ``app/domain/claims.py`` for the definitions):
+
+* **Problem gate** - a Problem is valid only if it declares a cost dimension, an
+  inefficiency, or both. A task description is NOT a problem.
+* **Action gate** - an Action must name concrete tools/tech.
+* **Outcome-statement rule** (content gate; there is NO source-type ban):
+  ``quantified``  -> ``result_metric_json`` populated AND the metric text appears
+  verbatim in the cited evidence chunk. ``qualitative_evidenced`` -> the
+  ``outcome_quote`` on the claim_evidence link appears verbatim in the cited chunk.
+  ``missing`` -> NEVER invent: no result text, no metric, no result links (the claim
+  routes to the Missing-Results queue instead).
+* **Coupling rule** - ``result_metric_json.resolves`` must appear among the claim's
+  declared ``problem_cost_dimension`` / ``problem_inefficiency`` values. A mismatch is
+  flagged ``"result does not address stated problem"``.
+
+Verbatim means an exact, case-sensitive substring after collapsing whitespace runs
+(quotes must survive text reflowing, nothing else).
+
+Pure logic, no I/O: the caller supplies the claim with its evidence refs attached.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from app.domain.claims import (
+    ClaimField,
+    CostDimension,
+    DraftClaim,
+    Inefficiency,
+    ResultKind,
+)
+
+# The exact coupling-failure flag text (asserted in tests; shown on review cards).
+COUPLING_FLAG = "result does not address stated problem"
+
+
+@dataclass(frozen=True)
+class Violation:
+    """One specific validator finding, machine-readable code + human message."""
+
+    code: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.code}: {self.message}"
+
+
+def verbatim_in(needle: str, haystack: str) -> bool:
+    """Exact substring match, tolerant only of whitespace reflow (case-sensitive).
+
+    Shared by the validator and the LLM extractor's grounding filter so "verbatim"
+    means exactly one thing everywhere.
+    """
+    collapse = " ".join
+    return bool(needle.strip()) and collapse(needle.split()) in collapse(haystack.split())
+
+
+def _validate_problem(claim: DraftClaim) -> list[Violation]:
+    if not (claim.problem_text or "").strip():
+        return [
+            Violation(
+                "problem_missing",
+                "claim declares no Problem; a pain point costing business value is required",
+            )
+        ]
+    if claim.problem_cost_dimension is None and claim.problem_inefficiency is None:
+        return [
+            Violation(
+                "problem_not_pain_point",
+                "a task description is not a problem: the Problem must declare a "
+                "cost_dimension (money|time|risk|quality|revenue), an inefficiency "
+                "(manual|slow|not_working|integration_difficulty|not_user_friendly), or both",
+            )
+        ]
+    return []
+
+
+def _validate_action(claim: DraftClaim) -> list[Violation]:
+    violations: list[Violation] = []
+    if not claim.action_text.strip():
+        violations.append(Violation("action_missing", "claim has no Action text"))
+        return violations
+    if not claim.action_tools:
+        violations.append(
+            Violation(
+                "action_names_no_tools",
+                "the Action must name concrete tools/tech; none were identified",
+            )
+        )
+    else:
+        lowered = claim.action_text.lower()
+        for tool in claim.action_tools:
+            if tool.lower() not in lowered:
+                violations.append(
+                    Violation(
+                        "action_tool_not_in_text",
+                        f"declared tool {tool!r} does not appear in the Action text",
+                    )
+                )
+    return violations
+
+
+def _validate_result(claim: DraftClaim) -> list[Violation]:
+    result_links = [ref for ref in claim.evidence if ref.field is ClaimField.RESULT]
+
+    if claim.result_kind is ResultKind.MISSING:
+        if (claim.result_text or "").strip() or claim.result_metric_json or result_links:
+            return [
+                Violation(
+                    "missing_result_filled",
+                    "result_kind=missing must never carry a Result: no text, no metric, "
+                    "no result evidence - the claim routes to the Missing-Results queue",
+                )
+            ]
+        return []
+
+    violations: list[Violation] = []
+    if not (claim.result_text or "").strip():
+        violations.append(
+            Violation("result_text_missing", f"result_kind={claim.result_kind} needs Result text")
+        )
+
+    if not result_links:
+        violations.append(
+            Violation(
+                "result_evidence_missing",
+                "a non-missing Result must cite at least one evidence chunk (field=result)",
+            )
+        )
+
+    # Every result link must carry an outcome quote found verbatim in its chunk -
+    # this is what makes the evidence an OUTCOME statement, not a WORK statement.
+    for ref in result_links:
+        if not (ref.outcome_quote or "").strip():
+            violations.append(
+                Violation(
+                    "outcome_quote_missing",
+                    "claim_evidence.outcome_quote is required when field=result",
+                )
+            )
+        elif not verbatim_in(ref.outcome_quote or "", ref.chunk.chunk_text):
+            violations.append(
+                Violation(
+                    "outcome_quote_not_verbatim",
+                    "the outcome_quote does not appear verbatim in the cited evidence chunk",
+                )
+            )
+
+    if claim.result_kind is ResultKind.QUANTIFIED:
+        metric_text = (claim.result_metric_json or {}).get("metric_text")
+        if not isinstance(metric_text, str) or not metric_text.strip():
+            violations.append(
+                Violation(
+                    "result_metric_json_missing",
+                    "result_kind=quantified requires result_metric_json with metric_text",
+                )
+            )
+        elif not any(verbatim_in(metric_text, ref.chunk.chunk_text) for ref in result_links):
+            violations.append(
+                Violation(
+                    "result_metric_not_verbatim",
+                    "the metric text does not appear verbatim in any cited evidence chunk",
+                )
+            )
+
+    violations.extend(_validate_coupling(claim))
+    return violations
+
+
+def _validate_coupling(claim: DraftClaim) -> list[Violation]:
+    """The coupling rule: the Result must resolve a pain point declared in the Problem."""
+    resolves = (claim.result_metric_json or {}).get("resolves")
+    declared = {
+        value.value
+        for value in (claim.problem_cost_dimension, claim.problem_inefficiency)
+        if isinstance(value, (CostDimension, Inefficiency))
+    }
+    if not isinstance(resolves, str) or not resolves:
+        return [
+            Violation(
+                "result_problem_coupling",
+                f"{COUPLING_FLAG}: result_metric_json carries no 'resolves' tag naming the "
+                "declared cost dimension or inefficiency the outcome addresses",
+            )
+        ]
+    if resolves not in declared:
+        return [
+            Violation(
+                "result_problem_coupling",
+                f"{COUPLING_FLAG}: resolves={resolves!r} is not among the declared "
+                f"problem values {sorted(declared) or '(none)'}",
+            )
+        ]
+    return []
+
+
+def validate_claim(claim: DraftClaim) -> list[Violation]:
+    """Run every deterministic PAR check; an empty list means the claim passes."""
+    return [
+        *_validate_problem(claim),
+        *_validate_action(claim),
+        *_validate_result(claim),
+    ]
+
+
+__all__ = ["COUPLING_FLAG", "Violation", "validate_claim", "verbatim_in"]
