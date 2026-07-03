@@ -1,0 +1,72 @@
+{
+  "model_id": "thenlper/gte-base",
+  "slot": "bi_encoder",
+  "params_millions": 110,
+  "embedding_dim": 768,
+  "max_seq_length": 512,
+  "benchmark_scores": [
+    {
+      "benchmark": "MTEB average (56 tasks, English)",
+      "value": 62.39,
+      "source_url": "https://huggingface.co/thenlper/gte-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB Retrieval (15 tasks)",
+      "value": 51.14,
+      "source_url": "https://huggingface.co/thenlper/gte-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB STS (10 tasks)",
+      "value": 82.3,
+      "source_url": "https://huggingface.co/thenlper/gte-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB Clustering (11 tasks)",
+      "value": 46.2,
+      "source_url": "https://huggingface.co/thenlper/gte-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB Pair Classification (3 tasks)",
+      "value": 84.57,
+      "source_url": "https://huggingface.co/thenlper/gte-base",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB Reranking (4 tasks)",
+      "value": 58.61,
+      "source_url": "https://huggingface.co/thenlper/gte-base",
+      "self_reported": true
+    }
+  ],
+  "license": "MIT",
+  "usage_requirements": [
+    "No query:/passage: prefixes required (symmetric usage for queries and documents)",
+    "Mean (average) pooling over last hidden states masked by attention_mask; the model card's transformers example implements this manually — do not use CLS pooling",
+    "trust_remote_code NOT required (vanilla BertModel architecture); loads with stock transformers, sentence-transformers, and HF text-embeddings-inference",
+    "English-only; inputs longer than 512 tokens are silently truncated",
+    "Normalize embeddings (F.normalize) before cosine similarity, per the model card usage example"
+  ],
+  "known_issues": [
+    "Cosine similarities are compressed into a high range — unrelated sentences commonly score ~0.7-0.8 (documented for the GTE v1 family in HF discussion thenlper/gte-large/discussions/7); absolute-threshold cutoffs are unreliable, use relative ranking",
+    "512-token hard truncation silently drops the tail of long documents",
+    "Do not confuse with the newer Alibaba-NLP/gte-*-en-v1.5 and gte-multilingual models, which use a custom RoPE architecture requiring trust_remote_code and have various loader-compatibility issues; thenlper/gte-base (v1) is plain BERT and unaffected"
+  ],
+  "maintenance": {
+    "last_updated": "2024-11-16",
+    "hf_downloads_last_month": 439124
+  },
+  "sources": [
+    "https://huggingface.co/thenlper/gte-base",
+    "https://huggingface.co/api/models/thenlper/gte-base",
+    "https://arxiv.org/abs/2308.03281",
+    "https://huggingface.co/thenlper/gte-large/discussions/7",
+    "https://github.com/embeddings-benchmark/results/tree/main/results/thenlper__gte-base"
+  ],
+  "unknowns": [
+    "independent (non-self-reported) MTEB leaderboard verification of the 62.39 average — the embeddings-benchmark/results repo has a thenlper__gte-base entry but its contents could not be loaded, so all benchmark numbers are flagged self_reported"
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "model_id": "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+  "slot": "nli",
+  "params_millions": 184.4,
+  "embedding_dim": null,
+  "max_seq_length": 512,
+  "benchmark_scores": [
+    {
+      "benchmark": "MNLI-m (accuracy)",
+      "value": 0.903,
+      "source_url": "https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MNLI-mm (accuracy)",
+      "value": 0.903,
+      "source_url": "https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+      "self_reported": true
+    },
+    {
+      "benchmark": "FEVER-NLI (accuracy)",
+      "value": 0.777,
+      "source_url": "https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+      "self_reported": true
+    },
+    {
+      "benchmark": "ANLI-all (accuracy)",
+      "value": 0.579,
+      "source_url": "https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+      "self_reported": true
+    },
+    {
+      "benchmark": "ANLI-R3 (accuracy)",
+      "value": 0.495,
+      "source_url": "https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+      "self_reported": true
+    }
+  ],
+  "license": "MIT",
+  "usage_requirements": [
+    "Cross-encoder NLI classifier (AutoModelForSequenceClassification), not an embedding model — takes (premise, hypothesis) pairs; no pooling or query/passage prefixes involved",
+    "Label order from config.json: 0=entailment, 1=neutral, 2=contradiction — differs from some other NLI models (e.g. bart-large-mnli), do not assume a shared mapping",
+    "Requires sentencepiece: install as transformers[sentencepiece]",
+    "Requires transformers >= 4.13 for the DeBERTa-v3 fast tokenizer; older versions produce tokenizer errors (per model card)",
+    "Checkpoint weights are stored in float16 (config torch_dtype: float16)",
+    "No trust_remote_code needed (standard deberta-v2 architecture in transformers)",
+    "Usable via the zero-shot-classification pipeline (pipeline tag on HF)"
+  ],
+  "known_issues": [
+    "HF community discussions flag a possible license inconsistency: model declared MIT while some training datasets (e.g. ANLI components) carry CC BY-NC 4.0 terms — review if commercial use is critical",
+    "Model card notes to consult the original DeBERTa paper for potential biases from the training data",
+    "config.json max_position_embeddings is 512; longer premise+hypothesis pairs are truncated"
+  ],
+  "maintenance": {
+    "last_updated": "2024-04-11",
+    "hf_downloads_last_month": 118935
+  },
+  "sources": [
+    "https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+    "https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli/raw/main/config.json",
+    "https://huggingface.co/api/models/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+    "https://huggingface.co/MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli/discussions"
+  ],
+  "unknowns": [
+    "embedding_dim (not applicable: cross-encoder NLI classifier, produces class logits not embeddings)"
+  ]
+}

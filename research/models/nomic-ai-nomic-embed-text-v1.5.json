@@ -1,0 +1,71 @@
+{
+  "model_id": "nomic-ai/nomic-embed-text-v1.5",
+  "slot": "bi_encoder",
+  "params_millions": 137,
+  "embedding_dim": 768,
+  "max_seq_length": 8192,
+  "benchmark_scores": [
+    {
+      "benchmark": "MTEB (avg, 768-dim)",
+      "value": 62.28,
+      "source_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB (avg, 512-dim Matryoshka)",
+      "value": 61.96,
+      "source_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB (avg, 256-dim Matryoshka)",
+      "value": 61.04,
+      "source_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB (avg, 128-dim Matryoshka)",
+      "value": 59.34,
+      "source_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+      "self_reported": true
+    },
+    {
+      "benchmark": "MTEB (avg, 64-dim Matryoshka)",
+      "value": 56.1,
+      "source_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+      "self_reported": true
+    }
+  ],
+  "license": "apache-2.0",
+  "usage_requirements": [
+    "Task prefixes are REQUIRED on every input: 'search_query: ' for queries, 'search_document: ' for corpus documents, 'clustering: ' for clustering, 'classification: ' for classification. Omitting them silently degrades retrieval quality.",
+    "Mean pooling over token embeddings.",
+    "L2-normalize embeddings (p=2, dim=1) for similarity use.",
+    "Matryoshka dimensionality reduction (512/256/128/64): in the raw-transformers path, apply layer normalization to the 768-d embedding BEFORE truncating to the target dim, then L2-normalize; in sentence-transformers use truncate_dim which handles this.",
+    "trust_remote_code=True required on transformers < v5.5.0 / sentence-transformers < v5.3.0 (custom NomicBert modeling code); newer versions load natively per the model card.",
+    "Custom modeling code depends on einops (when loaded via trust_remote_code).",
+    "Model was trained at 2048-token context; to use sequence lengths beyond 2048 (up to 8192) you must enable dynamic rotary scaling, e.g. rope_parameters={'rope_theta': 1000.0, 'rope_type': 'dynamic', 'factor': 2.0} (older snippets: rotary_scaling_factor=2)."
+  ],
+  "known_issues": [
+    "Repo references configuration/modeling files hosted in a separate repo (nomic-ai/nomic-bert-2048); offline/air-gapped or serialized copies (e.g. mlflow save of the sentence-transformers model) can fail because those files are re-downloaded at load time (HF discussions #12, #25).",
+    "Community has requested upstreaming the modeling code to avoid trust_remote_code and the einops dependency (HF discussion #16); resolved only on recent transformers/sentence-transformers versions.",
+    "Loading with safetensors: model ships as model.safetensors; older loading paths expecting pytorch_model.bin need safe_serialization handling (HF discussion #2).",
+    "Prefix handling is caller responsibility in most frameworks; serving layers (e.g. vLLM, kserve, privateGPT) have had trust_remote_code plumbing issues (see linked GitHub issues).",
+    "audit 2026-07-03: filled maintenance.last_updated from HF API lastModified (2026-04-07), previously null/unknown. All five Matryoshka MTEB scores, prefixes, mean pooling, layer-norm-before-truncation, and trust_remote_code version bounds re-verified against the model card; scores remain self_reported (MTEB leaderboard not independently fetchable)."
+  ],
+  "maintenance": {
+    "last_updated": "2026-04-07",
+    "hf_downloads_last_month": 16925589
+  },
+  "sources": [
+    "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+    "https://arxiv.org/pdf/2402.01613",
+    "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/discussions/16",
+    "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/discussions/25",
+    "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/discussions/2",
+    "https://github.com/nomic-ai/contrastors/issues"
+  ],
+  "unknowns": [
+    "independent (non-Nomic) MTEB leaderboard verification of the Matryoshka scores — all benchmark values trace to the model card/paper, hence self_reported=true"
+  ]
+}
