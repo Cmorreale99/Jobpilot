@@ -153,9 +153,14 @@ function Masthead({ masterCv }: { masterCv: MasterCvSummary | null }) {
         JobPilot <span className="italic text-annotation">— pipeline ledger</span>
       </h1>
       <p className="mt-2 font-mono text-xs text-annotation">
-        {masterCv
-          ? `Master CV v${masterCv.version} · ${masterCv.claim_count} claims from ${masterCv.source_count} sources`
-          : "No Master CV yet — the nightly run builds one from your connected sources."}
+        {masterCv ? (
+          <Link href="/master-cv" className="underline-offset-2 hover:underline">
+            Master CV v{masterCv.version} · {masterCv.claim_count} claims from{" "}
+            {masterCv.source_count} sources →
+          </Link>
+        ) : (
+          "No Master CV yet — the nightly run builds one from your connected sources."
+        )}
       </p>
     </header>
   );

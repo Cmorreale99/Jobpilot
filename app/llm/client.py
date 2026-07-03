@@ -33,6 +33,7 @@ class LlmClient(Protocol):
         messages: list[LlmMessage],
         tier: ModelTier,
         system: str | None = None,
+        cached_context: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> LlmResponse: ...
@@ -95,6 +96,7 @@ class AnthropicClient:
         messages: list[LlmMessage],
         tier: ModelTier,
         system: str | None = None,
+        cached_context: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> LlmResponse:
@@ -108,7 +110,23 @@ class AnthropicClient:
             "max_tokens": max_tokens or self._settings.anthropic_max_tokens,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
         }
-        if system is not None:
+        if cached_context is not None:
+            # Prompt caching is a prefix match over tools -> system -> messages, so the
+            # stable evidence block goes last in `system` with the cache breakpoint on it
+            # — one marker caches the whole system prefix. Below the model's minimum
+            # cacheable prefix the marker is silently ignored, so this is always safe.
+            blocks: list[dict[str, Any]] = []
+            if system is not None:
+                blocks.append({"type": "text", "text": system})
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": cached_context,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+            kwargs["system"] = blocks
+        elif system is not None:
             kwargs["system"] = system
         if temperature is not None:
             kwargs["temperature"] = temperature
@@ -151,4 +169,6 @@ def _extract_usage(response: object) -> TokenUsage:
     return TokenUsage(
         input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
         output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        cache_creation_input_tokens=int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+        cache_read_input_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
     )

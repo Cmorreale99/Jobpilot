@@ -84,7 +84,11 @@ class LlmMaterialsTailorer:
             summary, highlight_ids, cover_letter = complete_json(
                 self._client,
                 system=_TAILOR_SYSTEM,
-                messages=[LlmMessage.user(_tailor_prompt(by_id, match.job))],
+                # The numbered-claims block is identical for every application tailored
+                # in a run (same Master CV); as cached context the first call writes the
+                # prompt cache and the remaining top-N calls read it at ~0.1x.
+                cached_context=_claims_block(by_id),
+                messages=[LlmMessage.user(_tailor_prompt(match.job))],
                 tier=self._tier,
                 validator=_parse_materials,
                 max_tokens=self._max_tokens,
@@ -159,7 +163,7 @@ class LlmOutreachDrafter:
 # --- prompts ---------------------------------------------------------------------
 
 
-def _tailor_prompt(by_id: dict[str, ParClaim], job: Job) -> str:
+def _claims_block(by_id: dict[str, ParClaim]) -> str:
     lines = ["Candidate career claims:"]
     for claim_id, claim in by_id.items():
         segments = []
@@ -169,16 +173,17 @@ def _tailor_prompt(by_id: dict[str, ParClaim], job: Job) -> str:
         if claim.result:
             segments.append(f"Result: {claim.result}")
         lines.append(f"- id={claim_id} | " + " | ".join(segments))
-    lines += [
-        "",
-        "Job posting:",
-        f"Title: {job.title}",
-        f"Company: {job.company}",
-        f"Description: {_truncate(job.description, _MAX_DESC_CHARS)}",
-        "",
-        "Tailor the materials.",
-    ]
     return "\n".join(lines)
+
+
+def _tailor_prompt(job: Job) -> str:
+    return (
+        "Job posting:\n"
+        f"Title: {job.title}\n"
+        f"Company: {job.company}\n"
+        f"Description: {_truncate(job.description, _MAX_DESC_CHARS)}\n\n"
+        "Tailor the materials."
+    )
 
 
 def _outreach_prompt(materials: TailoredMaterials, job: Job, contact: Contact | None) -> str:

@@ -42,19 +42,35 @@ class LlmMessage:
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """Input/output token counts reported for a single call."""
+    """Token counts reported for a single call.
+
+    ``input_tokens`` is the *uncached* remainder only — the prompt-cache fields count
+    tokens written to / served from the cache, billed at different rates (see
+    :mod:`app.llm.cost`). Total prompt size is the sum of all three input fields.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
     @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
+        return (
+            self.input_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens
+            + self.output_tokens
+        )
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
         return TokenUsage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            cache_creation_input_tokens=(
+                self.cache_creation_input_tokens + other.cache_creation_input_tokens
+            ),
+            cache_read_input_tokens=self.cache_read_input_tokens + other.cache_read_input_tokens,
         )
 
 

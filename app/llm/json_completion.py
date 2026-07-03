@@ -52,6 +52,7 @@ def complete_json[T](
     messages: list[LlmMessage],
     tier: ModelTier,
     system: str | None = None,
+    cached_context: str | None = None,
     validator: Callable[[Any], T] | None = None,
     max_tokens: int | None = None,
     max_parse_retries: int = 1,
@@ -71,6 +72,7 @@ def complete_json[T](
             messages=convo,
             tier=tier,
             system=system,
+            cached_context=cached_context,
             max_tokens=max_tokens,
             # No sampling params: current models (Sonnet 5 / Opus 4.8) reject
             # non-default temperature with a 400 — verified live. The strict-JSON

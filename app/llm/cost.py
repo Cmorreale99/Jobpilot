@@ -19,6 +19,12 @@ from app.llm.types import TokenUsage
 logger = logging.getLogger("app.llm.cost")
 
 
+# Prompt-cache billing multipliers on the input price (Anthropic-wide, model-independent):
+# a 5-minute-TTL cache write costs 1.25x base input, a cache read ~0.1x.
+_CACHE_WRITE_MULTIPLIER = 1.25
+_CACHE_READ_MULTIPLIER = 0.1
+
+
 @dataclass(frozen=True)
 class ModelPrice:
     """USD per **million** tokens, in and out."""
@@ -27,9 +33,12 @@ class ModelPrice:
     output_per_mtok: float
 
     def cost(self, usage: TokenUsage) -> float:
-        return (
-            usage.input_tokens * self.input_per_mtok + usage.output_tokens * self.output_per_mtok
-        ) / 1_000_000
+        input_cost = (
+            usage.input_tokens
+            + usage.cache_creation_input_tokens * _CACHE_WRITE_MULTIPLIER
+            + usage.cache_read_input_tokens * _CACHE_READ_MULTIPLIER
+        ) * self.input_per_mtok
+        return (input_cost + usage.output_tokens * self.output_per_mtok) / 1_000_000
 
 
 # Public prices as of 2026-07 (per MTok), matched by substring against the model id.
@@ -72,10 +81,12 @@ class CostTracker:
             self._cost_usd += cost
             self._calls += 1
         logger.info(
-            "llm call model=%s in=%d out=%d est_cost=$%.4f",
+            "llm call model=%s in=%d out=%d cache_write=%d cache_read=%d est_cost=$%.4f",
             model,
             usage.input_tokens,
             usage.output_tokens,
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
             cost,
         )
         return cost
