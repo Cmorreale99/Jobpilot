@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["model_id", "slot", "license", "sources"],
+  "properties": {
+    "model_id": {"type": "string"},
+    "slot": {"enum": ["bi_encoder", "reranker", "nli"]},
+    "params_millions": {"type": ["number", "null"]},
+    "embedding_dim": {"type": ["integer", "null"]},
+    "max_seq_length": {"type": ["integer", "null"]},
+    "benchmark_scores": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["benchmark", "value", "source_url", "self_reported"],
+        "properties": {
+          "benchmark": {"type": "string"},
+          "value": {"type": "number"},
+          "source_url": {"type": "string"},
+          "self_reported": {"type": "boolean"}
+        }
+      }
+    },
+    "license": {"type": "string"},
+    "usage_requirements": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "e.g. 'requires query:/passage: prefixes', 'mean pooling', 'trust_remote_code'"
+    },
+    "known_issues": {"type": "array", "items": {"type": "string"}},
+    "maintenance": {
+      "type": "object",
+      "properties": {
+        "last_updated": {"type": ["string", "null"]},
+        "hf_downloads_last_month": {"type": ["integer", "null"]}
+      }
+    },
+    "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "unknowns": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Fields that could not be verified. Listing here is REQUIRED instead of guessing."
+    }
+  }
+}
