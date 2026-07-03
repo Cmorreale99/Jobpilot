@@ -72,7 +72,11 @@ class LlmJobScorer:
             result = complete_json(
                 self._client,
                 system=_SCORER_SYSTEM,
-                messages=[LlmMessage.user(_scorer_prompt(profile, job))],
+                # The evidence block is identical for every job scored in a run; as
+                # cached context the first call writes the prompt cache and the rest
+                # of the batch reads it at ~0.1x input price.
+                cached_context=_evidence_block(profile),
+                messages=[LlmMessage.user(_scorer_prompt(job))],
                 tier=self._tier,
                 validator=_parse_score,
                 max_tokens=self._max_tokens,
@@ -107,6 +111,9 @@ class LlmJobReranker:
 
         # Address jobs by a stable positional id so duplicate external_ids can't collide.
         by_id = {f"j{i}": scored for i, scored in enumerate(shortlist)}
+        # No cached_context here: this is one call per run, so a cache write (1.25x)
+        # would never be read back — and DEEP is a different model than the scorer's
+        # BULK cache anyway (caches are per-model).
         try:
             ranking = complete_json(
                 self._client,
@@ -146,10 +153,12 @@ class LlmJobReranker:
 # --- prompts ---------------------------------------------------------------------
 
 
-def _scorer_prompt(profile: CvProfile, job: Job) -> str:
+def _evidence_block(profile: CvProfile) -> str:
+    return f"Candidate career evidence (PAR claims):\n{profile.summary}"
+
+
+def _scorer_prompt(job: Job) -> str:
     return (
-        "Candidate career evidence (PAR claims):\n"
-        f"{profile.summary}\n\n"
         "Job posting:\n"
         f"Title: {job.title}\n"
         f"Company: {job.company}\n"

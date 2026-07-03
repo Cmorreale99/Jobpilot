@@ -29,12 +29,14 @@ class RecordedCall:
         messages: list[LlmMessage],
         tier: ModelTier,
         system: str | None,
+        cached_context: str | None,
         max_tokens: int | None,
         temperature: float | None,
     ) -> None:
         self.messages = messages
         self.tier = tier
         self.system = system
+        self.cached_context = cached_context
         self.max_tokens = max_tokens
         self.temperature = temperature
 
@@ -73,10 +75,13 @@ class FakeLlmClient:
         messages: list[LlmMessage],
         tier: ModelTier,
         system: str | None = None,
+        cached_context: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> LlmResponse:
-        self.calls.append(RecordedCall(messages, tier, system, max_tokens, temperature))
+        self.calls.append(
+            RecordedCall(messages, tier, system, cached_context, max_tokens, temperature)
+        )
         if self._remaining_failures > 0:
             self._remaining_failures -= 1
             raise LlmResponseError("fake client: simulated transient failure")

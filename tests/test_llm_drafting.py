@@ -64,6 +64,19 @@ def test_tailorer_resolves_highlights_from_real_claims() -> None:
     assert client.calls[0].tier is ModelTier.DEEP
 
 
+def test_tailorer_puts_claims_block_in_cached_context_not_the_prompt() -> None:
+    # The numbered-claims block is the same for every application tailored in a run —
+    # it rides in cached_context so the top-N calls share one prompt-cache entry.
+    client = FakeLlmClient([_tailor_reply(["c0"])])
+    LlmMaterialsTailorer(client).tailor(_cv(), _MATCH)
+    call = client.calls[0]
+    assert call.cached_context is not None
+    assert "id=c0" in call.cached_context
+    assert "settlement pipeline" in call.cached_context
+    assert "id=c0" not in call.last_user_text
+    assert "Ledgerline" in call.last_user_text  # only the posting varies per call
+
+
 def test_tailorer_drops_hallucinated_and_duplicate_ids() -> None:
     client = FakeLlmClient([_tailor_reply(["c9", "c1", "c1"])])
     materials = LlmMaterialsTailorer(client).tailor(_cv(), _MATCH)

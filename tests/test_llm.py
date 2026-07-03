@@ -145,6 +145,26 @@ def test_price_for_unknown_uses_fallback() -> None:
     assert price_for("some-unknown-model").input_per_mtok == 10.0
 
 
+def test_model_price_bills_cache_writes_and_reads_at_multipliers() -> None:
+    price = ModelPrice(input_per_mtok=3.0, output_per_mtok=15.0)
+    usage = TokenUsage(
+        input_tokens=1_000_000,
+        cache_creation_input_tokens=1_000_000,
+        cache_read_input_tokens=1_000_000,
+    )
+    # 3.00 uncached + 3.75 write (1.25x) + 0.30 read (0.1x)
+    assert price.cost(usage) == pytest.approx(7.05)
+
+
+def test_token_usage_adds_and_totals_cache_fields() -> None:
+    a = TokenUsage(input_tokens=1, output_tokens=2, cache_creation_input_tokens=3)
+    b = TokenUsage(cache_read_input_tokens=4)
+    total = a + b
+    assert total.cache_creation_input_tokens == 3
+    assert total.cache_read_input_tokens == 4
+    assert total.total_tokens == 10
+
+
 def test_cost_tracker_accumulates() -> None:
     tracker = CostTracker({"sonnet": ModelPrice(3.0, 15.0)})
     cost = tracker.record("claude-sonnet-5", TokenUsage(input_tokens=1_000_000, output_tokens=0))
@@ -225,6 +245,51 @@ def test_anthropic_client_maps_tier_to_model_and_records_cost() -> None:
     assert sdk.messages.last_kwargs["model"] == "claude-opus-4-8"
     assert sdk.messages.last_kwargs["system"] == "be terse"
     assert tracker.calls == 1
+
+
+def test_anthropic_client_renders_cached_context_as_cache_breakpoint() -> None:
+    sdk = _FakeSDK("ok")
+    client = AnthropicClient(_settings(), client=sdk)  # type: ignore[arg-type]
+    client.complete(
+        messages=[LlmMessage.user("hi")],
+        tier=ModelTier.BULK,
+        system="be terse",
+        cached_context="EVIDENCE BLOCK",
+    )
+    # The stable block goes last in `system` and carries the cache breakpoint, which
+    # caches the whole system prefix (prefix match: tools -> system -> messages).
+    assert sdk.messages.last_kwargs["system"] == [
+        {"type": "text", "text": "be terse"},
+        {"type": "text", "text": "EVIDENCE BLOCK", "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+def test_anthropic_client_cached_context_without_system() -> None:
+    sdk = _FakeSDK("ok")
+    client = AnthropicClient(_settings(), client=sdk)  # type: ignore[arg-type]
+    client.complete(messages=[LlmMessage.user("hi")], tier=ModelTier.BULK, cached_context="CTX")
+    assert sdk.messages.last_kwargs["system"] == [
+        {"type": "text", "text": "CTX", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+def test_anthropic_client_plain_system_stays_a_string() -> None:
+    # Without cached context the request shape is unchanged (no block list, no marker).
+    sdk = _FakeSDK("ok")
+    client = AnthropicClient(_settings(), client=sdk)  # type: ignore[arg-type]
+    client.complete(messages=[LlmMessage.user("hi")], tier=ModelTier.BULK, system="be terse")
+    assert sdk.messages.last_kwargs["system"] == "be terse"
+
+
+def test_anthropic_client_extracts_cache_usage_fields() -> None:
+    sdk = _FakeSDK("ok")
+    message = sdk.messages.create()  # the canned message the fake SDK returns
+    message.usage.cache_creation_input_tokens = 7  # type: ignore[attr-defined]
+    message.usage.cache_read_input_tokens = 5  # type: ignore[attr-defined]
+    client = AnthropicClient(_settings(), client=sdk)  # type: ignore[arg-type]
+    resp = client.complete(messages=[LlmMessage.user("hi")], tier=ModelTier.BULK)
+    assert resp.usage.cache_creation_input_tokens == 7
+    assert resp.usage.cache_read_input_tokens == 5
 
 
 def test_anthropic_client_bulk_tier_uses_bulk_model() -> None:

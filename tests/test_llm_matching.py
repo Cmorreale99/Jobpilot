@@ -50,6 +50,26 @@ def test_scorer_maps_score_and_terms_and_uses_bulk_tier() -> None:
     assert client.calls[0].tier is ModelTier.BULK
 
 
+def test_scorer_puts_evidence_in_cached_context_not_the_prompt() -> None:
+    # The evidence block is identical across every job scored in a run — it rides in
+    # cached_context so call 1 writes the prompt cache and the rest read it.
+    client = FakeLlmClient([json.dumps({"score": 0.5})])
+    LlmJobScorer(client).score(_profile(), _job("j1"))  # type: ignore[arg-type]
+    call = client.calls[0]
+    assert call.cached_context is not None
+    assert "Kafka settlement workers" in call.cached_context
+    assert "Kafka settlement workers" not in call.last_user_text
+    assert "Backend Engineer" in call.last_user_text  # only the posting varies per call
+
+
+def test_reranker_single_call_does_not_cache() -> None:
+    # One rerank per run: a cache write would never be read back.
+    ranking = {"ranking": [{"id": "j0", "score": 0.9, "rationale": "fit"}]}
+    client = FakeLlmClient([json.dumps(ranking)])
+    LlmJobReranker(client).rerank(_profile(), _shortlist(), top_n=1)  # type: ignore[arg-type]
+    assert client.calls[0].cached_context is None
+
+
 def test_scorer_clamps_out_of_range_score() -> None:
     client = FakeLlmClient([json.dumps({"score": 1.9})])
     scored = LlmJobScorer(client).score(_profile(), _job("j1"))  # type: ignore[arg-type]
