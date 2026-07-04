@@ -747,6 +747,33 @@ class ClaimRepository(Protocol):
         ...
 
 
+def evidence_source_url(source_type: str, source_ref: str) -> str | None:
+    """The click-through URL for one evidence source, when one exists.
+
+    Deterministic mapping from stored provenance to the place a human can read it:
+    GitHub READMEs/commits and Drive files resolve; uploads and user attestations are
+    local by nature and return ``None`` (the review card shows the quote itself).
+    """
+    ref = source_ref.strip()
+    if not ref:
+        return None
+    if source_type == SOURCE_GITHUB_README:
+        return f"https://github.com/{ref}"
+    if source_type == SOURCE_GITHUB_COMMIT and "@" in ref:
+        repo_ref, _, sha = ref.rpartition("@")
+        if repo_ref and sha:
+            return f"https://github.com/{repo_ref}/commit/{sha}"
+        return None
+    if source_type == SOURCE_GITHUB_PR and "#" in ref:
+        repo_ref, _, number = ref.rpartition("#")
+        if repo_ref and number.isdigit():
+            return f"https://github.com/{repo_ref}/pull/{number}"
+        return None
+    if source_type == SOURCE_DRIVE:
+        return f"https://drive.google.com/open?id={ref}"
+    return None
+
+
 def claim_content_fingerprint(
     problem_text: str | None, action_text: str, result_text: str | None
 ) -> tuple[str, str, str]:
@@ -954,6 +981,7 @@ __all__ = [
     "StoredEvidence",
     "claim_content_fingerprint",
     "derive_resolves",
+    "evidence_source_url",
     "plan_claim_edit",
     "validate_claim_transition",
 ]

@@ -93,6 +93,7 @@ class JobRow(Base):
     description: Mapped[str] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(String(512), nullable=True)
     url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    canonical_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     remote: Mapped[bool] = mapped_column(Boolean, default=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

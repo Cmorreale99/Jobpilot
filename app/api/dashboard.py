@@ -76,12 +76,20 @@ def _serialize_match(match: JobMatch) -> dict[str, Any]:
             "company": job.company,
             "location": job.location,
             "url": job.url,
+            "canonical_url": job.canonical_url,
             "remote": job.remote,
         },
     }
 
 
-def _serialize_application(application: Application) -> dict[str, Any]:
+def _serialize_application(
+    application: Application, jobs: JobRepository | None = None
+) -> dict[str, Any]:
+    job = (
+        jobs.get_job(application.job_source, application.job_external_id)
+        if jobs is not None
+        else None
+    )
     return {
         "id": application.id,
         "user_id": application.user_id,
@@ -90,6 +98,8 @@ def _serialize_application(application: Application) -> dict[str, Any]:
         "job_external_id": application.job_external_id,
         "job_title": application.job_title,
         "job_company": application.job_company,
+        "job_url": job.url if job else None,
+        "job_canonical_url": job.canonical_url if job else None,
         "master_cv_version": application.master_cv_version,
         "materials": application.materials.to_json(),
         "allowed_transitions": sorted(
@@ -124,19 +134,23 @@ def list_matches(user_id: str, jobs: JobsDep, master_cvs: MasterCvDep) -> dict[s
 
 
 @router.get("/applications")
-def list_applications(user_id: str, repository: ApplicationsDep) -> list[dict[str, Any]]:
-    """All applications for the user, oldest first."""
-    return [_serialize_application(a) for a in repository.list_applications(user_id)]
+def list_applications(
+    user_id: str, repository: ApplicationsDep, jobs: JobsDep
+) -> list[dict[str, Any]]:
+    """All applications for the user, oldest first (with posting links)."""
+    return [_serialize_application(a, jobs) for a in repository.list_applications(user_id)]
 
 
 @router.get("/applications/{application_id}")
-def get_application(application_id: int, repository: ApplicationsDep) -> dict[str, Any]:
+def get_application(
+    application_id: int, repository: ApplicationsDep, jobs: JobsDep
+) -> dict[str, Any]:
     """One application with its tailored materials and outreach draft (if any)."""
     application = repository.get_application(application_id)
     if application is None:
         raise HTTPException(status_code=404, detail=f"no application with id {application_id}")
     outreach = repository.get_outreach_for_application(application_id)
-    payload = _serialize_application(application)
+    payload = _serialize_application(application, jobs)
     payload["outreach"] = (
         {
             "id": outreach.id,

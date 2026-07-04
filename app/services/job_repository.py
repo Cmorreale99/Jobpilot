@@ -17,6 +17,9 @@ class InMemoryJobRepository:
             self._jobs[job.ref] = job
         return len(jobs)
 
+    def get_job(self, source: str, external_id: str) -> Job | None:
+        return self._jobs.get((source, external_id))
+
     def save_matches(self, user_id: str, master_cv_version: int, matches: list[JobMatch]) -> None:
         self._matches[(user_id, master_cv_version)] = list(matches)
 

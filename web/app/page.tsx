@@ -5,17 +5,24 @@ import Link from "next/link";
 
 import {
   api,
+  masterCvDownloadUrl,
   oauthStartUrl,
   type Application,
+  type ClaimCard,
+  type Experience,
   type Interview,
   type MasterCvSummary,
   type MatchesResponse,
   type OutreachDraft,
 } from "@/lib/api";
+import { ClaimsReviewSection } from "@/components/claims";
 import { EmptyRow, SectionHead, statusInk } from "@/components/ledger";
 
 export default function Dashboard() {
   const [queue, setQueue] = useState<OutreachDraft[] | null>(null);
+  const [claims, setClaims] = useState<ClaimCard[] | null>(null);
+  const [experiences, setExperiences] = useState<Experience[] | null>(null);
+  const [missingOnly, setMissingOnly] = useState(false);
   const [matches, setMatches] = useState<MatchesResponse | null>(null);
   const [applications, setApplications] = useState<Application[] | null>(null);
   const [interviews, setInterviews] = useState<Interview[] | null>(null);
@@ -24,14 +31,18 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const [q, m, a, i, cv] = await Promise.all([
+      const [q, c, x, m, a, i, cv] = await Promise.all([
         api.queue(),
+        api.claimsQueue(missingOnly),
+        api.experiences(),
         api.matches(),
         api.applications(),
         api.interviews(),
         api.masterCv(),
       ]);
       setQueue(q);
+      setClaims(c);
+      setExperiences(x);
       setMatches(m);
       setApplications(a);
       setInterviews(i);
@@ -40,7 +51,7 @@ export default function Dashboard() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "The API is not reachable.");
     }
-  }, []);
+  }, [missingOnly]);
 
   useEffect(() => {
     void load();
@@ -57,12 +68,57 @@ export default function Dashboard() {
         </p>
       )}
 
+      <ClaimsReviewSection
+        claims={claims}
+        experiences={experiences}
+        missingOnly={missingOnly}
+        onToggleMissing={setMissingOnly}
+        onChanged={load}
+      />
+      <MasterCvDocxSection onChanged={load} />
       <QueueSection queue={queue} onChanged={load} />
       <InterviewsSection interviews={interviews} onChanged={load} />
       <MatchesSection matches={matches} />
       <ApplicationsSection applications={applications} onChanged={load} />
       <AccountsSection masterCv={masterCv} />
     </main>
+  );
+}
+
+function MasterCvDocxSection({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const renderNow = async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const artifact = await api.renderMasterCv();
+      setMessage(`Rendered Master CV v${artifact.master_cv_version ?? "?"}.`);
+      await onChanged();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Rendering failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section aria-label="Master CV document">
+      <SectionHead title="Master CV (docx)" />
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2 py-2 text-sm">
+        <span className="text-annotation">
+          Rendered from approved claims only, in the real CV template.
+        </span>
+        <button className="stamp text-ink" disabled={busy} onClick={renderNow}>
+          Render now
+        </button>
+        <a className="stamp inline-block text-viridian" href={masterCvDownloadUrl}>
+          Download docx
+        </a>
+      </div>
+      {message && <p className="font-mono text-xs text-annotation">{message}</p>}
+    </section>
   );
 }
 
@@ -84,7 +140,9 @@ function InterviewsSection({
     setBusyId(id);
     setActionError(null);
     try {
-      await api.transitionInterview(id, stage);
+      // Confirming goes through the confirm endpoint (it generates the prep packet);
+      // other stage changes use the plain transition.
+      await (stage === "confirmed" ? api.confirmInterview(id) : api.transitionInterview(id, stage));
       await onChanged();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "The stage change failed.");
@@ -96,49 +154,55 @@ function InterviewsSection({
   return (
     <section aria-label="Interviews">
       <SectionHead
-        title="Interviews"
+        title="Interviews — confirm queue"
         count={active.length}
         accent={active.some((i) => i.stage === "detected")}
       />
       {actionError && <p className="py-1 text-sm text-carmine">{actionError}</p>}
       {interviews && active.length === 0 && (
         <EmptyRow>
-          No open interviews. The nightly scan reads only invite-matching mail.
+          No open interviews. The nightly scan reads only invite-matching mail; every
+          detection is verified against the real message before it lands here.
           {closed > 0 ? ` (${closed} closed)` : ""}
         </EmptyRow>
       )}
       <ul className="divide-y divide-rule">
         {active.map((interview) => (
-          <li
-            key={interview.id}
-            className="flex flex-wrap items-baseline gap-x-3 gap-y-2 py-3"
-          >
-            <div className="min-w-0 flex-1">
-              <Link
-                href={`/interviews/${interview.id}`}
-                className="text-sm font-medium underline-offset-2 hover:underline"
-              >
-                {interview.company}
-              </Link>
-              <span className="text-sm text-annotation">
-                {" "}
-                · {interview.job_title ?? "role not stated"}
-                {interview.has_prep_packet ? " · prep packet ready" : ""}
-              </span>
-            </div>
-            <span className={`stamped ${statusInk(interview.stage)}`}>{interview.stage}</span>
-            <div className="flex gap-2">
-              {interview.allowed_transitions.map((next) => (
-                <button
-                  key={next}
-                  className="stamp text-ink"
-                  disabled={busyId === interview.id}
-                  onClick={() => move(interview.id, next)}
+          <li key={interview.id} className="py-3">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
+              <div className="min-w-0 flex-1">
+                <Link
+                  href={`/interviews/${interview.id}`}
+                  className="text-sm font-medium underline-offset-2 hover:underline"
                 >
-                  {next}
-                </button>
-              ))}
+                  {interview.company}
+                </Link>
+                <span className="text-sm text-annotation">
+                  {" "}
+                  · {interview.job_title ?? "role not stated"}
+                  {interview.has_prep_packet ? " · prep packet ready" : ""}
+                </span>
+              </div>
+              <span className={`stamped ${statusInk(interview.stage)}`}>{interview.stage}</span>
+              <div className="flex gap-2">
+                {interview.allowed_transitions.map((next) => (
+                  <button
+                    key={next}
+                    className={`stamp ${next === "confirmed" ? "text-viridian" : "text-ink"}`}
+                    disabled={busyId === interview.id}
+                    onClick={() => move(interview.id, next)}
+                  >
+                    {next === "confirmed" ? "confirm" : next}
+                  </button>
+                ))}
+              </div>
             </div>
+            {interview.stage === "detected" && interview.evidence_quote && (
+              <blockquote className="mt-1 border-l-2 border-rule pl-2 font-mono text-xs text-annotation">
+                “{interview.evidence_quote}” — verified against message{" "}
+                {interview.gmail_message_id}
+              </blockquote>
+            )}
           </li>
         ))}
       </ul>
@@ -256,9 +320,9 @@ function MatchesSection({ matches }: { matches: MatchesResponse | null }) {
                 {String(match.rank).padStart(2, "0")}
               </span>
               <span className="text-sm font-medium">
-                {match.job.url ? (
+                {(match.job.canonical_url ?? match.job.url) ? (
                   <a
-                    href={match.job.url}
+                    href={match.job.canonical_url ?? match.job.url ?? "#"}
                     target="_blank"
                     rel="noreferrer"
                     className="underline-offset-2 hover:underline"
@@ -330,6 +394,16 @@ function ApplicationsSection({
                 {application.job_title}
               </Link>
               <span className="text-sm text-annotation"> · {application.job_company}</span>
+              {(application.job_canonical_url ?? application.job_url) && (
+                <a
+                  href={application.job_canonical_url ?? application.job_url ?? "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="ml-2 font-mono text-xs text-annotation underline-offset-2 hover:underline"
+                >
+                  posting ↗
+                </a>
+              )}
             </div>
             <span className={`stamped ${statusInk(application.status)}`}>
               {application.status}
