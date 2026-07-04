@@ -19,7 +19,6 @@ from app.config import Settings, get_settings
 from app.domain.applications import ApplicationRepository
 from app.domain.artifacts import ArtifactStore
 from app.domain.claims import ClaimRepository
-from app.domain.cv import MasterCvRepository
 from app.domain.interviews import InterviewRepository
 from app.domain.jobs import JobRepository
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore
@@ -33,7 +32,6 @@ def create_app(
     flow: OAuthFlowService | None = None,
     application_repository: ApplicationRepository | None = None,
     job_repository: JobRepository | None = None,
-    master_cv_repository: MasterCvRepository | None = None,
     mail_client: MailClient | None = None,
     interview_repository: InterviewRepository | None = None,
     claim_repository: ClaimRepository | None = None,
@@ -46,7 +44,6 @@ def create_app(
     app.state.flow = flow
     app.state.application_repository = application_repository
     app.state.job_repository = job_repository
-    app.state.master_cv_repository = master_cv_repository
     app.state.mail_client = mail_client
     app.state.interview_repository = interview_repository
     app.state.claim_repository = claim_repository

@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.deps import (
     get_application_repository,
     get_job_repository,
-    get_master_cv_repository,
+    get_snapshot_store,
 )
 from app.domain.applications import (
     APPLICATION_TRANSITIONS,
@@ -24,27 +24,30 @@ from app.domain.applications import (
     ApplicationStatus,
     InvalidTransitionError,
 )
-from app.domain.cv import MasterCvRepository, StoredMasterCv
 from app.domain.jobs import JobMatch, JobRepository
+from app.domain.master_cv_snapshot import (
+    MasterCvSnapshotStore,
+    StoredSnapshot,
+    master_cv_from_snapshot,
+)
 
 router = APIRouter(tags=["dashboard"])
 
 ApplicationsDep = Annotated[ApplicationRepository, Depends(get_application_repository)]
 JobsDep = Annotated[JobRepository, Depends(get_job_repository)]
-MasterCvDep = Annotated[MasterCvRepository, Depends(get_master_cv_repository)]
+SnapshotDep = Annotated[MasterCvSnapshotStore, Depends(get_snapshot_store)]
 
 
 # --- serialization -----------------------------------------------------------------
 
 
-def _serialize_master_cv(stored: StoredMasterCv) -> dict[str, Any]:
-    cv = stored.master_cv
+def _serialize_master_cv(snapshot: StoredSnapshot) -> dict[str, Any]:
+    cv = master_cv_from_snapshot(snapshot)
     return {
-        "user_id": stored.user_id,
-        "version": stored.version,
-        "created_at": stored.created_at.isoformat() if stored.created_at else None,
+        "user_id": snapshot.user_id,
+        "version": snapshot.version,
+        "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
         "claim_count": len(cv.claims),
-        "source_count": len(cv.sources),
         "claims": [
             {
                 "problem": c.problem,
@@ -55,10 +58,7 @@ def _serialize_master_cv(stored: StoredMasterCv) -> dict[str, Any]:
             }
             for c in cv.claims
         ],
-        "sources": [
-            {"source_type": s.source_type, "external_ref": s.external_ref, "title": s.title}
-            for s in cv.sources
-        ],
+        "sections": snapshot.content.get("sections", {}),
     }
 
 
@@ -112,18 +112,18 @@ def _serialize_application(
 
 
 @router.get("/master-cv/latest")
-def latest_master_cv(user_id: str, repository: MasterCvDep) -> dict[str, Any]:
-    """The user's current Master CV (claims + provenance), or 404 before first ingest."""
-    stored = repository.get_latest(user_id)
-    if stored is None:
+def latest_master_cv(user_id: str, snapshots: SnapshotDep) -> dict[str, Any]:
+    """The latest approved-claims Master CV version, or 404 before one is snapshotted."""
+    snapshot = snapshots.get_latest(user_id)
+    if snapshot is None:
         raise HTTPException(status_code=404, detail=f"no master CV for user '{user_id}'")
-    return _serialize_master_cv(stored)
+    return _serialize_master_cv(snapshot)
 
 
 @router.get("/matches")
-def list_matches(user_id: str, jobs: JobsDep, master_cvs: MasterCvDep) -> dict[str, Any]:
+def list_matches(user_id: str, jobs: JobsDep, snapshots: SnapshotDep) -> dict[str, Any]:
     """Deep-ranked matches for the user's latest Master CV version (empty before one exists)."""
-    stored = master_cvs.get_latest(user_id)
+    stored = snapshots.get_latest(user_id)
     if stored is None:
         return {"master_cv_version": None, "matches": []}
     matches = jobs.get_matches(user_id, stored.version)

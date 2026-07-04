@@ -32,11 +32,11 @@ from datetime import UTC, datetime, timedelta
 from app.config import Settings, get_settings
 from app.db.application_repository import SqlApplicationRepository
 from app.db.interview_repository import SqlInterviewRepository
-from app.db.master_cv_repository import SqlMasterCvRepository
+from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.db.validation_run_log import SqlValidationRunLog
 from app.domain.applications import Application, ApplicationRepository
-from app.domain.cv import MasterCv, MasterCvRepository
+from app.domain.cv import MasterCv
 from app.domain.interviews import (
     HeuristicInviteDetector,
     Interview,
@@ -47,6 +47,7 @@ from app.domain.interviews import (
     normalize_company,
     verify_invite_provenance,
 )
+from app.domain.master_cv_snapshot import MasterCvSnapshotStore, master_cv_from_snapshot
 from app.domain.validation_runs import KIND_INTERVIEW_VERIFICATION, ValidationRunLog
 from app.integrations.base import InboxScanner
 from app.integrations.inbox_factory import create_inbox_scanner
@@ -63,7 +64,7 @@ class InterviewScanDependencies:
     detector: InviteDetector
     prep_generator: PrepPacketGenerator
     interview_repository: InterviewRepository
-    master_cv_repository: MasterCvRepository
+    snapshot_store: MasterCvSnapshotStore
     application_repository: ApplicationRepository
     validation_log: ValidationRunLog
 
@@ -110,7 +111,7 @@ def build_default_interview_dependencies(
         detector=HeuristicInviteDetector(),
         prep_generator=create_prep_generator(settings),
         interview_repository=SqlInterviewRepository(session_factory),
-        master_cv_repository=SqlMasterCvRepository(session_factory),
+        snapshot_store=SqlMasterCvSnapshotStore(session_factory),
         application_repository=SqlApplicationRepository(session_factory),
         validation_log=SqlValidationRunLog(session_factory),
     )
@@ -122,19 +123,23 @@ def _application_index(applications: list[Application]) -> dict[str, Application
 
 def generate_prep_packet(
     interview_repository: InterviewRepository,
-    master_cv_repository: MasterCvRepository,
+    snapshot_store: MasterCvSnapshotStore,
     application_repository: ApplicationRepository,
     prep_generator: PrepPacketGenerator,
     interview: Interview,
     user_id: str,
 ) -> None:
-    """Generate (or refresh) the prep packet for one CONFIRMED interview."""
+    """Generate (or refresh) the prep packet for one CONFIRMED interview.
+
+    The CV context comes from the approved-claims snapshot — prep packets, like every
+    other generated artifact, are grounded in reviewed claims only.
+    """
     if interview.stage is not InterviewStage.CONFIRMED:
         raise ValueError(
             f"prep packets are only generated for confirmed interviews (stage: {interview.stage})"
         )
-    stored_cv = master_cv_repository.get_latest(user_id)
-    master_cv = stored_cv.master_cv if stored_cv else MasterCv()
+    snapshot = snapshot_store.get_latest(user_id)
+    master_cv = master_cv_from_snapshot(snapshot) if snapshot else MasterCv()
     applications = _application_index(application_repository.list_applications(user_id))
     application = applications.get(normalize_company(interview.company))
     packet = prep_generator.generate(interview, master_cv, application)
@@ -143,7 +148,7 @@ def generate_prep_packet(
 
 def confirm_interview(
     interview_repository: InterviewRepository,
-    master_cv_repository: MasterCvRepository,
+    snapshot_store: MasterCvSnapshotStore,
     application_repository: ApplicationRepository,
     prep_generator: PrepPacketGenerator,
     interview_id: int,
@@ -153,7 +158,7 @@ def confirm_interview(
     interview = interview_repository.transition_interview(interview_id, InterviewStage.CONFIRMED)
     generate_prep_packet(
         interview_repository,
-        master_cv_repository,
+        snapshot_store,
         application_repository,
         prep_generator,
         interview,
@@ -237,7 +242,7 @@ async def run_interview_scan(
         ):
             generate_prep_packet(
                 deps.interview_repository,
-                deps.master_cv_repository,
+                deps.snapshot_store,
                 deps.application_repository,
                 deps.prep_generator,
                 interview,

@@ -19,13 +19,11 @@ from app.db.claim_repository import SqlClaimRepository
 from app.db.credentials_store import SqlOAuthCredentialStore
 from app.db.interview_repository import SqlInterviewRepository
 from app.db.job_repository import SqlJobRepository
-from app.db.master_cv_repository import SqlMasterCvRepository
 from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.domain.applications import ApplicationRepository
 from app.domain.artifacts import ArtifactStore
 from app.domain.claims import ClaimRepository
-from app.domain.cv import MasterCvRepository
 from app.domain.interviews import InterviewRepository
 from app.domain.jobs import JobRepository
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore
@@ -183,16 +181,3 @@ def get_artifact_store(request: Request) -> ArtifactStore:
     store = SqlArtifactStore(create_session_factory(engine))
     request.app.state.artifact_store = store
     return store
-
-
-def get_master_cv_repository(request: Request) -> MasterCvRepository:
-    """Return the app's Master CV repository, building a SQL-backed one on first use."""
-    existing = getattr(request.app.state, "master_cv_repository", None)
-    if isinstance(existing, MasterCvRepository):
-        return existing
-    settings = getattr(request.app.state, "settings", None) or get_settings()
-    engine = create_db_engine(settings)
-    create_all(engine)
-    repository = SqlMasterCvRepository(create_session_factory(engine))
-    request.app.state.master_cv_repository = repository
-    return repository

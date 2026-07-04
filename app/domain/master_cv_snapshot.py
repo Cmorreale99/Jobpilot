@@ -24,8 +24,14 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from app.domain.claims import Claim, ClaimStatus, Experience, ExperienceSection
+from app.domain.cv import MasterCv, ParClaim
 
 SNAPSHOT_KIND = "approved_claims"
+
+# ``ParClaim.source_type`` for claims adapted from an approved-claims snapshot: the
+# provenance is the reviewed claim itself (``source_ref`` = ``claim:<id>``), not a
+# raw evidence document.
+SOURCE_APPROVED_CLAIM = "approved_claim"
 
 
 def _claim_entry(claim: Claim) -> dict[str, Any]:
@@ -106,6 +112,34 @@ class StoredSnapshot:
     content: dict[str, Any]
     content_hash: str
     created_at: datetime | None = None
+
+
+def master_cv_from_snapshot(snapshot: StoredSnapshot) -> MasterCv:
+    """Adapt an approved-claims snapshot into the :class:`MasterCv` consumers expect.
+
+    Matching, tailoring, and prep generation all take a ``MasterCv``; this is the only
+    bridge from the reviewed V2 ledger to those consumers, so everything derived from
+    the "Master CV" traces back to approved claims. Each ``ParClaim`` keeps provenance
+    through ``source_ref = claim:<id>``.
+    """
+    claims: list[ParClaim] = []
+    sections: dict[str, Any] = snapshot.content.get("sections", {})
+    for entries in sections.values():
+        for experience in entries:
+            for entry in experience.get("claims", []):
+                action = entry.get("action") or ""
+                if not action:
+                    continue  # an approved claim always carries an Action; skip malformed rows
+                claims.append(
+                    ParClaim(
+                        action=action,
+                        problem=entry.get("problem"),
+                        result=entry.get("result"),
+                        source_type=SOURCE_APPROVED_CLAIM,
+                        source_ref=f"claim:{entry.get('claim_id')}",
+                    )
+                )
+    return MasterCv(claims=claims, sources=[], version=snapshot.version)
 
 
 @runtime_checkable

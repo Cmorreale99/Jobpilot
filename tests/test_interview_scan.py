@@ -12,7 +12,19 @@ from datetime import UTC, datetime
 import pytest
 from app.config import Settings
 from app.domain.applications import ApplicationStatus
-from app.domain.cv import MasterCv, ParClaim
+from app.domain.claims import (
+    SOURCE_DRIVE,
+    ClaimEvidenceRef,
+    ClaimField,
+    ClaimStatus,
+    DraftClaim,
+    EvidenceChunk,
+    ExperienceSection,
+    ExperienceSeed,
+    ResultKind,
+    ResultStatus,
+    StorableClaim,
+)
 from app.domain.interviews import (
     HeuristicInviteDetector,
     HeuristicPrepPacketGenerator,
@@ -24,13 +36,14 @@ from app.domain.tailoring import TailoredMaterials
 from app.domain.validation_runs import KIND_INTERVIEW_VERIFICATION
 from app.integrations.mock.inbox import MockInboxScanner
 from app.services.application_repository import InMemoryApplicationRepository
+from app.services.claim_repository import InMemoryClaimRepository
 from app.services.interview_repository import InMemoryInterviewRepository
 from app.services.interview_scan import (
     InterviewScanDependencies,
     confirm_interview,
     run_interview_scan,
 )
-from app.services.master_cv_repository import InMemoryMasterCvRepository
+from app.services.master_cv_snapshot import InMemorySnapshotStore, create_master_cv_snapshot
 from app.services.validation_run_log import InMemoryValidationRunLog
 
 from tests.conftest import INBOX_FIXTURES_DIR
@@ -56,20 +69,37 @@ class _SpyScanner:
         return None
 
 
-def _deps(scanner: object | None = None) -> InterviewScanDependencies:
-    master_cvs = InMemoryMasterCvRepository()
-    master_cvs.save(
-        "u1",
-        MasterCv(
-            claims=[
-                ParClaim(
-                    action="Re-architected the settlement pipeline over Kafka",
-                    source_ref="resume",
-                    result="Cut runtime by 70%",
-                )
-            ]
-        ),
+def _seeded_snapshot_store() -> InMemorySnapshotStore:
+    """A snapshot store holding one approved-claims Master CV version."""
+    repo = InMemoryClaimRepository()
+    experience = repo.upsert_experience(
+        "u1", ExperienceSeed(name="Ledgerline", section=ExperienceSection.PROFESSIONAL_EXPERIENCE)
     )
+    chunk = EvidenceChunk(SOURCE_DRIVE, "drv1", "Re-architected the settlement pipeline.")
+    (claim,) = repo.replace_unreviewed_claims(
+        "u1",
+        experience.id,
+        [
+            StorableClaim(
+                draft=DraftClaim(
+                    action_text="Re-architected the settlement pipeline over Kafka",
+                    action_tools=("Kafka",),
+                    result_text="Cut runtime by 70%",
+                    result_kind=ResultKind.QUALITATIVE_EVIDENCED,
+                    evidence=(ClaimEvidenceRef(chunk=chunk, field=ClaimField.ACTION),),
+                ),
+                status=ClaimStatus.PENDING_REVIEW,
+                result_status=ResultStatus.UNVERIFIED,
+            )
+        ],
+    )
+    repo.transition_claim(claim.id, ClaimStatus.APPROVED)
+    store = InMemorySnapshotStore()
+    create_master_cv_snapshot("u1", repo, store)
+    return store
+
+
+def _deps(scanner: object | None = None) -> InterviewScanDependencies:
     applications = InMemoryApplicationRepository()
     job = Job(
         source="mock",
@@ -94,7 +124,7 @@ def _deps(scanner: object | None = None) -> InterviewScanDependencies:
         detector=HeuristicInviteDetector(),
         prep_generator=HeuristicPrepPacketGenerator(),
         interview_repository=InMemoryInterviewRepository(),
-        master_cv_repository=master_cvs,
+        snapshot_store=_seeded_snapshot_store(),
         application_repository=applications,
         validation_log=InMemoryValidationRunLog(),
     )
@@ -103,7 +133,7 @@ def _deps(scanner: object | None = None) -> InterviewScanDependencies:
 def _confirm(deps: InterviewScanDependencies, interview_id: int) -> None:
     confirm_interview(
         deps.interview_repository,
-        deps.master_cv_repository,
+        deps.snapshot_store,
         deps.application_repository,
         deps.prep_generator,
         interview_id,

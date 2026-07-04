@@ -29,7 +29,12 @@ from app.domain.claims import (
     ResultStatus,
     StorableClaim,
 )
-from app.domain.master_cv_snapshot import MasterCvSnapshotStore, build_snapshot_content
+from app.domain.master_cv_snapshot import (
+    SOURCE_APPROVED_CLAIM,
+    MasterCvSnapshotStore,
+    build_snapshot_content,
+    master_cv_from_snapshot,
+)
 from app.services.claim_repository import InMemoryClaimRepository
 from app.services.master_cv_snapshot import InMemorySnapshotStore, create_master_cv_snapshot
 
@@ -177,3 +182,88 @@ def test_experiences_without_approved_claims_are_omitted(store: MasterCvSnapshot
     snapshot = create_master_cv_snapshot("u1", repo, store)
     assert snapshot.content["sections"]["professional_experience"] == []
     assert snapshot.content["sections"]["projects_hackathons"] == []
+
+
+# --- legacy V1 rows are invisible (the "V1 corrupts V2" regression) ----------------------
+
+
+def _legacy_v1_row(user_id: str = "u1", version: int = 1) -> dict[str, object]:
+    """A V1 builder-generated ``content_json`` — unreviewed claims, no ``snapshot_of``."""
+    return {
+        "version": version,
+        "claims": [
+            {
+                "problem": "manual",
+                "action": "extracted",
+                "result": None,
+                "evidence_text": "word\nper\nline",
+                "source_type": "gdrive",
+                "source_ref": "drv-legacy",
+            }
+        ],
+        "sources": [],
+    }
+
+
+def _sql_store_with_legacy_rows(tmp_path: Path) -> SqlMasterCvSnapshotStore:
+    engine = sa.create_engine(f"sqlite+pysqlite:///{tmp_path / 'legacy.db'}")
+    Base.metadata.create_all(engine)
+    session_factory = create_session_factory(engine)
+    from app.db.models import MasterCvRow
+
+    with session_factory() as session:
+        for version in (1, 2):
+            session.add(
+                MasterCvRow(
+                    user_id="u1",
+                    version=version,
+                    content_json=_legacy_v1_row(version=version),
+                    content_hash=f"legacy-{version}",
+                )
+            )
+        session.commit()
+    return SqlMasterCvSnapshotStore(session_factory)
+
+
+def test_legacy_v1_rows_are_invisible_to_all_reads(tmp_path: Path) -> None:
+    store = _sql_store_with_legacy_rows(tmp_path)
+    assert store.get_latest("u1") is None
+    assert store.get_version("u1", 1) is None
+    assert store.get_version("u1", 2) is None
+    assert store.list_versions("u1") == []
+
+
+def test_new_snapshot_versions_above_legacy_rows_and_reads_skip_them(tmp_path: Path) -> None:
+    store = _sql_store_with_legacy_rows(tmp_path)
+    repo = InMemoryClaimRepository()
+    _, claim_ids = _seed(repo)
+    repo.transition_claim(claim_ids[0], ClaimStatus.APPROVED)
+
+    snapshot = create_master_cv_snapshot("u1", repo, store)
+
+    assert snapshot.version == 3  # allocated above the legacy rows, no unique collision
+    latest = store.get_latest("u1")
+    assert latest is not None and latest.version == 3
+    assert store.list_versions("u1") == [3]
+    # Idempotent against the V2 row, not fooled by legacy hashes.
+    again = create_master_cv_snapshot("u1", repo, store)
+    assert again.version == 3
+
+
+# --- the adapter: approved snapshot -> the MasterCv consumers match/tailor against -------
+
+
+def test_master_cv_from_snapshot_carries_approved_claims_only() -> None:
+    repo = InMemoryClaimRepository()
+    _, claim_ids = _seed(repo, actions=("Automated triage with Python", "Pending never rendered"))
+    repo.transition_claim(claim_ids[0], ClaimStatus.APPROVED)
+    store = InMemorySnapshotStore()
+    snapshot = create_master_cv_snapshot("u1", repo, store)
+
+    master_cv = master_cv_from_snapshot(snapshot)
+
+    assert master_cv.version == snapshot.version
+    (claim,) = master_cv.claims
+    assert claim.action == "Automated triage with Python"
+    assert claim.source_type == SOURCE_APPROVED_CLAIM
+    assert claim.source_ref == f"claim:{claim_ids[0]}"

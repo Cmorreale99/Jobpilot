@@ -6,9 +6,19 @@ import logging
 
 import pytest
 from app.config import Settings
+from app.domain.claims import (
+    SOURCE_DRIVE,
+    ClaimEvidenceRef,
+    ClaimField,
+    ClaimStatus,
+    DraftClaim,
+    EvidenceChunk,
+    ExperienceSection,
+    ExperienceSeed,
+    ResultStatus,
+    StorableClaim,
+)
 from app.domain.interviews import HeuristicInviteDetector, HeuristicPrepPacketGenerator
-from app.integrations.mock.drive import MockDriveClient
-from app.integrations.mock.github import MockGitHubClient
 from app.integrations.mock.inbox import MockInboxScanner
 from app.integrations.mock.jobs import MockJobSource
 from app.integrations.mock.mail import MockMailClient
@@ -21,16 +31,15 @@ from app.scheduler import (
     run_job_safely,
 )
 from app.services.application_repository import InMemoryApplicationRepository
+from app.services.claim_repository import InMemoryClaimRepository
 from app.services.interview_repository import InMemoryInterviewRepository
 from app.services.interview_scan import InterviewScanDependencies
 from app.services.job_repository import InMemoryJobRepository
-from app.services.master_cv_repository import InMemoryMasterCvRepository
+from app.services.master_cv_snapshot import InMemorySnapshotStore
 from app.services.pipeline import PipelineDependencies
 from app.services.validation_run_log import InMemoryValidationRunLog
 
 from tests.conftest import (
-    FIXTURES_DIR,
-    GITHUB_FIXTURES_DIR,
     INBOX_FIXTURES_DIR,
     JOBS_FIXTURES_DIR,
     RESEARCH_FIXTURES_DIR,
@@ -43,20 +52,45 @@ def _interview_deps() -> InterviewScanDependencies:
         detector=HeuristicInviteDetector(),
         prep_generator=HeuristicPrepPacketGenerator(),
         interview_repository=InMemoryInterviewRepository(),
-        master_cv_repository=InMemoryMasterCvRepository(),
+        snapshot_store=InMemorySnapshotStore(),
         application_repository=InMemoryApplicationRepository(),
         validation_log=InMemoryValidationRunLog(),
     )
 
 
+def _seeded_claim_repository() -> InMemoryClaimRepository:
+    """A ledger with one approved claim — the pipeline refuses to run without one."""
+    repo = InMemoryClaimRepository()
+    experience = repo.upsert_experience(
+        "u1", ExperienceSeed(name="Ledgerline", section=ExperienceSection.PROFESSIONAL_EXPERIENCE)
+    )
+    chunk = EvidenceChunk(SOURCE_DRIVE, "drv1", "Rebuilt the settlement pipeline in Python.")
+    (claim,) = repo.replace_unreviewed_claims(
+        "u1",
+        experience.id,
+        [
+            StorableClaim(
+                draft=DraftClaim(
+                    action_text="Re-architected the settlement pipeline over Kafka in Python",
+                    action_tools=("Python",),
+                    evidence=(ClaimEvidenceRef(chunk=chunk, field=ClaimField.ACTION),),
+                ),
+                status=ClaimStatus.PENDING_REVIEW,
+                result_status=ResultStatus.UNVERIFIED,
+            )
+        ],
+    )
+    repo.transition_claim(claim.id, ClaimStatus.APPROVED)
+    return repo
+
+
 def _deps(job_source: object | None = None) -> PipelineDependencies:
     return PipelineDependencies(
-        drive_client=MockDriveClient(FIXTURES_DIR),
-        github_client=MockGitHubClient(GITHUB_FIXTURES_DIR),
         job_source=job_source or MockJobSource(JOBS_FIXTURES_DIR),  # type: ignore[arg-type]
         research_client=MockResearchClient(RESEARCH_FIXTURES_DIR),
         mail_client=MockMailClient(),
-        master_cv_repository=InMemoryMasterCvRepository(),
+        claim_repository=_seeded_claim_repository(),
+        snapshot_store=InMemorySnapshotStore(),
         job_repository=InMemoryJobRepository(),
         application_repository=InMemoryApplicationRepository(),
     )

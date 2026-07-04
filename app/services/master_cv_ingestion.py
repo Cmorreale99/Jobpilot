@@ -9,6 +9,12 @@ The service depends only on the :class:`DriveClient` / :class:`GitHubClient` /
 :class:`UploadsClient` *interfaces* (injected), so it runs identically against the mocks
 or the real clients. The domain layer never sees a client — it only receives
 :class:`CvSource` provenance records.
+
+**Retired from the running system (V2):** nothing here persists anymore. The V1
+``refresh_master_cv`` entrypoint that wrote builder-generated Master CV versions is
+deleted — a Master CV version is exclusively a snapshot of human-approved claims
+(``services/master_cv_snapshot.py``). The build functions remain only as pure,
+side-effect-free evidence readers.
 """
 
 from __future__ import annotations
@@ -17,13 +23,7 @@ import logging
 from datetime import UTC, datetime
 
 from app.config import Settings, get_settings
-from app.domain.cv import (
-    CvSource,
-    MasterCv,
-    MasterCvBuilder,
-    MasterCvRepository,
-    StoredMasterCv,
-)
+from app.domain.cv import CvSource, MasterCv, MasterCvBuilder
 from app.integrations.base import (
     DriveClient,
     DriveResponseError,
@@ -220,31 +220,3 @@ async def build_master_cv(
     )
     builder = builder or create_cv_builder(settings)
     return builder.build([*drive_sources, *github_sources, *upload_sources])
-
-
-async def refresh_master_cv(
-    drive_client: DriveClient,
-    github_client: GitHubClient,
-    user_id: str,
-    repository: MasterCvRepository,
-    settings: Settings | None = None,
-    builder: MasterCvBuilder | None = None,
-    *,
-    uploads_client: UploadsClient | None = None,
-    now: datetime | None = None,
-) -> StoredMasterCv:
-    """Build the Master CV from all sources and persist it as a (possibly new) version.
-
-    Idempotent: if the rebuilt content matches the latest stored version, no new version
-    is created — the existing one is returned.
-    """
-    master_cv = await build_master_cv(
-        drive_client,
-        github_client,
-        user_id,
-        settings,
-        builder,
-        uploads_client=uploads_client,
-        now=now,
-    )
-    return repository.save(user_id, master_cv)
