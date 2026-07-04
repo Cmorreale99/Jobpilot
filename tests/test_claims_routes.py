@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from app.config import Settings
 from app.domain.claims import (
@@ -37,10 +39,13 @@ def repo() -> InMemoryClaimRepository:
 
 @pytest.fixture
 def client(repo: InMemoryClaimRepository) -> TestClient:
+    from app.services.artifact_store import InMemoryArtifactStore
+
     app = create_app(
         settings=Settings(),
         claim_repository=repo,
         snapshot_store=InMemorySnapshotStore(),
+        artifact_store=InMemoryArtifactStore(),
     )
     return TestClient(app)
 
@@ -218,3 +223,50 @@ def test_snapshot_endpoint_builds_from_approved_claims_only(
 
 def test_latest_snapshot_for_unknown_user_is_404(client: TestClient) -> None:
     assert client.get("/master-cv/snapshots/latest", params={"user_id": "ghost"}).status_code == 404
+
+
+# --- render + download (M11) -----------------------------------------------------------
+
+
+def test_render_and_download_master_cv(repo: InMemoryClaimRepository, tmp_path: Path) -> None:
+    from app.services.artifact_store import InMemoryArtifactStore
+
+    template = Path(__file__).parent.parent / "templates" / "resume_template.docx"
+    profile = Path(__file__).parent / "fixtures" / "render" / "profile.json"
+    app = create_app(
+        settings=Settings(
+            resume_template_path=str(template),
+            resume_profile_path=str(profile),
+            artifacts_dir=str(tmp_path / "artifacts"),
+        ),
+        claim_repository=repo,
+        snapshot_store=InMemorySnapshotStore(),
+        artifact_store=InMemoryArtifactStore(),
+    )
+    render_client = TestClient(app)
+
+    claim_id = _seed_claim(repo)
+    render_client.post(f"/claims/{claim_id}/approve")
+
+    rendered = render_client.post("/master-cv/render", params={"user_id": "u1"})
+    assert rendered.status_code == 200
+    assert rendered.json()["kind"] == "master_cv_docx"
+    assert rendered.json()["master_cv_version"] == 1
+
+    download = render_client.get("/master-cv/download", params={"user_id": "u1"})
+    assert download.status_code == 200
+    assert download.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument"
+    )
+    assert download.content[:2] == b"PK"  # a real docx (zip) came back
+
+
+def test_download_without_render_is_404(client: TestClient) -> None:
+    assert client.get("/master-cv/download", params={"user_id": "u1"}).status_code == 404
+
+
+def test_render_without_profile_is_503(client: TestClient, repo: InMemoryClaimRepository) -> None:
+    claim_id = _seed_claim(repo)
+    client.post(f"/claims/{claim_id}/approve")
+    response = client.post("/master-cv/render", params={"user_id": "u1"})
+    assert response.status_code == 503  # unconfigured, never invented header data

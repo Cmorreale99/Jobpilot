@@ -14,6 +14,7 @@ from starlette.requests import Request
 
 from app.config import Settings, get_settings
 from app.db.application_repository import SqlApplicationRepository
+from app.db.artifact_store import SqlArtifactStore
 from app.db.claim_repository import SqlClaimRepository
 from app.db.credentials_store import SqlOAuthCredentialStore
 from app.db.interview_repository import SqlInterviewRepository
@@ -22,6 +23,7 @@ from app.db.master_cv_repository import SqlMasterCvRepository
 from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.domain.applications import ApplicationRepository
+from app.domain.artifacts import ArtifactStore
 from app.domain.claims import ClaimRepository
 from app.domain.cv import MasterCvRepository
 from app.domain.interviews import InterviewRepository
@@ -167,6 +169,19 @@ def get_snapshot_store(request: Request) -> MasterCvSnapshotStore:
     create_all(engine)
     store = SqlMasterCvSnapshotStore(create_session_factory(engine))
     request.app.state.snapshot_store = store
+    return store
+
+
+def get_artifact_store(request: Request) -> ArtifactStore:
+    """Return the app's artifact store, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "artifact_store", None)
+    if isinstance(existing, ArtifactStore):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    store = SqlArtifactStore(create_session_factory(engine))
+    request.app.state.artifact_store = store
     return store
 
 

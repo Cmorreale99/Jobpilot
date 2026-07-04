@@ -9,6 +9,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "mcp>=1.2",
     "anthropic>=0.40",
+    "docxtpl>=0.16",
     "sqlalchemy>=2.0",
     "cryptography>=42.0",
     "httpx>=0.27",
@@ -38,8 +39,9 @@ target-version = "py312"
 line-length = 100
 src = ["app", "tests"]
 # architecture/v2 holds verified, drop-in V2 assets (renderer, template inputs);
-# they are integrated as-is and must never be reformatted.
-extend-exclude = ["architecture"]
+# they are integrated as-is and must never be reformatted. The integrated copy of the
+# renderer is equally frozen (M11 scope guard: integrate, never rewrite).
+extend-exclude = ["architecture", "app/render/render_master_cv.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -56,6 +58,11 @@ exclude = ['app/db/migrations/']
 # APScheduler 3.x ships no type stubs.
 [[tool.mypy.overrides]]
 module = "apscheduler.*"
+ignore_missing_imports = true
+
+# docxtpl ships no type stubs (used only by the frozen V2 renderer module).
+[[tool.mypy.overrides]]
+module = "docxtpl.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

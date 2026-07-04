@@ -17,6 +17,7 @@ from app.api.oauth import router as oauth_router
 from app.api.outreach import router as outreach_router
 from app.config import Settings, get_settings
 from app.domain.applications import ApplicationRepository
+from app.domain.artifacts import ArtifactStore
 from app.domain.claims import ClaimRepository
 from app.domain.cv import MasterCvRepository
 from app.domain.interviews import InterviewRepository
@@ -37,6 +38,7 @@ def create_app(
     interview_repository: InterviewRepository | None = None,
     claim_repository: ClaimRepository | None = None,
     snapshot_store: MasterCvSnapshotStore | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Tests inject mock-backed services; prod builds them lazily."""
     app = FastAPI(title="JobPilot", version="0.1.0")
@@ -49,6 +51,7 @@ def create_app(
     app.state.interview_repository = interview_repository
     app.state.claim_repository = claim_repository
     app.state.snapshot_store = snapshot_store
+    app.state.artifact_store = artifact_store
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(app.state.settings.dashboard_origin_list),

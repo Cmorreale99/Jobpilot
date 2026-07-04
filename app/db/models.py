@@ -276,6 +276,27 @@ class ClaimEvidenceRow(Base):
     outcome_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class ArtifactRow(Base):
+    """One generated file (V2: only ``master_cv_docx``), deduped per rendered version."""
+
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "kind", "master_cv_version", name="uq_artifacts_user_kind_version"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    file_path: Mapped[str] = mapped_column(String(1024))
+    master_cv_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ValidationRunRow(Base):
     """One recorded verification run (PAR validation or interview provenance check)."""
 
