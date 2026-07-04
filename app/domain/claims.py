@@ -732,6 +732,20 @@ class ClaimRepository(Protocol):
         reviewed_at: datetime | None = None,
     ) -> Claim: ...
 
+    def apply_claim_edit(self, user_id: str, plan: ClaimEditPlan) -> Claim:
+        """Persist an edit plan: upsert attestation evidence, add links, apply updates."""
+        ...
+
+    def update_experience_layout(
+        self,
+        experience_id: int,
+        *,
+        section: ExperienceSection | None = None,
+        sort_order: int | None = None,
+    ) -> Experience:
+        """The section picker: reassign where an experience renders, and its order."""
+        ...
+
 
 def claim_content_fingerprint(
     problem_text: str | None, action_text: str, result_text: str | None
@@ -744,9 +758,174 @@ def claim_content_fingerprint(
     return (norm(problem_text), norm(action_text), norm(result_text))
 
 
+# --- Review edits (edit-then-approve) --------------------------------------------------
+
+
+class ClaimEditError(ValueError):
+    """Raised when a requested edit is inconsistent or the claim cannot be edited."""
+
+
+@dataclass(frozen=True)
+class ClaimEdits:
+    """The fields a reviewer may change before approving. ``None`` means untouched.
+
+    Result edits are how the Missing-Results queue resolves: the reviewer supplies
+    the impact statement (``result_text`` + explicit ``result_kind``); the result
+    becomes ``user_attested``. Approving without edits is approval to omit.
+    """
+
+    problem_text: str | None = None
+    problem_cost_dimension: CostDimension | None = None
+    problem_inefficiency: Inefficiency | None = None
+    action_text: str | None = None
+    action_tools: tuple[str, ...] | None = None
+    result_text: str | None = None
+    result_kind: ResultKind | None = None
+    result_metric_json: dict[str, Any] | None = None
+
+    def is_empty(self) -> bool:
+        return all(
+            value is None
+            for value in (
+                self.problem_text,
+                self.problem_cost_dimension,
+                self.problem_inefficiency,
+                self.action_text,
+                self.action_tools,
+                self.result_text,
+                self.result_kind,
+                self.result_metric_json,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class AttestationLink:
+    """A user_attestation evidence row to create, plus the claim link to add."""
+
+    chunk: EvidenceChunk
+    field: ClaimField
+    outcome_quote: str | None = None
+
+
+@dataclass(frozen=True)
+class ClaimEditPlan:
+    """Everything a repository must persist for one edit, computed purely.
+
+    ``updates`` maps claim attribute names to their new values. ``attestations``
+    are the provenance rows: every edited field group gets a ``user_attestation``
+    evidence row holding the attested text, linked to the claim on that field —
+    so traceability survives the edit. ``validation_flags`` is always cleared:
+    the human decision supersedes the validator's findings.
+    """
+
+    claim_id: int
+    updates: dict[str, Any]
+    attestations: tuple[AttestationLink, ...]
+
+
+def _attestation_chunk(claim_id: int, field: ClaimField, text: str) -> EvidenceChunk:
+    # source_ref is stable per (claim, field): a re-edit updates the same row rather
+    # than accreting near-duplicates (edits only happen before the terminal approve).
+    return EvidenceChunk(
+        source_type=SOURCE_USER_ATTESTATION,
+        source_ref=f"claim:{claim_id}:{field.value}",
+        chunk_text=text,
+    )
+
+
+def plan_claim_edit(claim: Claim, edits: ClaimEdits) -> ClaimEditPlan:
+    """Compute the persistence plan for an edit-then-approve.
+
+    Only ``pending_review`` claims are editable. Any edit inside a PAR field group
+    (problem text/dimensions, action text/tools, result text/kind/metric) attests
+    that whole group: the resulting text is stored as a ``user_attestation``
+    evidence row and linked on that field. An edited Result additionally becomes
+    ``result_status=user_attested``.
+    """
+    if claim.status is not ClaimStatus.PENDING_REVIEW:
+        raise ClaimEditError(f"only pending_review claims can be edited (status: {claim.status})")
+    if edits.is_empty():
+        raise ClaimEditError("no edits supplied; use a plain approve instead")
+    if edits.result_kind is not None and edits.result_kind is ResultKind.MISSING:
+        raise ClaimEditError("an edit cannot set result_kind=missing; reject or approve as-is")
+    if edits.result_text is not None and edits.result_kind is None:
+        raise ClaimEditError(
+            "supplying result_text requires an explicit result_kind "
+            "(quantified or qualitative_evidenced)"
+        )
+    if edits.result_kind is not None and edits.result_text is None and claim.result_text is None:
+        raise ClaimEditError("result_kind without result_text on a claim that has no Result")
+
+    updates: dict[str, Any] = {"validation_flags": ()}
+    attestations: list[AttestationLink] = []
+
+    problem_edited = any(
+        value is not None
+        for value in (edits.problem_text, edits.problem_cost_dimension, edits.problem_inefficiency)
+    )
+    if problem_edited:
+        problem_text = edits.problem_text if edits.problem_text is not None else claim.problem_text
+        if not (problem_text or "").strip():
+            raise ClaimEditError("cannot attest problem dimensions on a claim with no Problem text")
+        updates["problem_text"] = problem_text
+        if edits.problem_cost_dimension is not None:
+            updates["problem_cost_dimension"] = edits.problem_cost_dimension
+        if edits.problem_inefficiency is not None:
+            updates["problem_inefficiency"] = edits.problem_inefficiency
+        attestations.append(
+            AttestationLink(
+                chunk=_attestation_chunk(claim.id, ClaimField.PROBLEM, problem_text or ""),
+                field=ClaimField.PROBLEM,
+            )
+        )
+
+    action_edited = edits.action_text is not None or edits.action_tools is not None
+    if action_edited:
+        action_text = edits.action_text if edits.action_text is not None else claim.action_text
+        if not action_text.strip():
+            raise ClaimEditError("action_text cannot be emptied")
+        updates["action_text"] = action_text
+        if edits.action_tools is not None:
+            updates["action_tools"] = edits.action_tools
+        attestations.append(
+            AttestationLink(
+                chunk=_attestation_chunk(claim.id, ClaimField.ACTION, action_text),
+                field=ClaimField.ACTION,
+            )
+        )
+
+    result_edited = any(
+        value is not None
+        for value in (edits.result_text, edits.result_kind, edits.result_metric_json)
+    )
+    if result_edited:
+        result_text = edits.result_text if edits.result_text is not None else claim.result_text
+        if not (result_text or "").strip():
+            raise ClaimEditError("an edited Result needs non-empty result_text")
+        updates["result_text"] = result_text
+        updates["result_kind"] = edits.result_kind or claim.result_kind
+        updates["result_status"] = ResultStatus.USER_ATTESTED
+        if edits.result_metric_json is not None:
+            updates["result_metric_json"] = edits.result_metric_json
+        attestations.append(
+            AttestationLink(
+                chunk=_attestation_chunk(claim.id, ClaimField.RESULT, result_text or ""),
+                field=ClaimField.RESULT,
+                outcome_quote=result_text,
+            )
+        )
+
+    return ClaimEditPlan(claim_id=claim.id, updates=updates, attestations=tuple(attestations))
+
+
 __all__ = [
     "CLAIM_TRANSITIONS",
+    "AttestationLink",
     "Claim",
+    "ClaimEditError",
+    "ClaimEditPlan",
+    "ClaimEdits",
     "ClaimEvidenceLink",
     "ClaimEvidenceRef",
     "ClaimExtractor",
@@ -775,5 +954,6 @@ __all__ = [
     "StoredEvidence",
     "claim_content_fingerprint",
     "derive_resolves",
+    "plan_claim_edit",
     "validate_claim_transition",
 ]

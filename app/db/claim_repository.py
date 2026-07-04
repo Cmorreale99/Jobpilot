@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -18,6 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.models import ClaimEvidenceRow, ClaimRow, EvidenceRow, ExperienceRow
 from app.domain.claims import (
     Claim,
+    ClaimEditPlan,
     ClaimEvidenceLink,
     ClaimField,
     ClaimStatus,
@@ -36,6 +39,15 @@ from app.domain.claims import (
 )
 
 _UNREVIEWED = (ClaimStatus.EXTRACTED.value, ClaimStatus.PENDING_REVIEW.value)
+
+
+def _to_column_value(value: Any) -> Any:
+    """Convert a domain edit value to its DB representation (enums/tuples -> str/list)."""
+    if isinstance(value, StrEnum):
+        return value.value
+    if isinstance(value, tuple):
+        return list(value)
+    return value
 
 
 def _to_experience(row: ExperienceRow) -> Experience:
@@ -138,6 +150,25 @@ class SqlClaimRepository:
                 .order_by(ExperienceRow.sort_order, ExperienceRow.id)
             )
             return [_to_experience(row) for row in rows]
+
+    def update_experience_layout(
+        self,
+        experience_id: int,
+        *,
+        section: ExperienceSection | None = None,
+        sort_order: int | None = None,
+    ) -> Experience:
+        with self._session_factory() as session:
+            row = session.get(ExperienceRow, experience_id)
+            if row is None:
+                raise LookupError(f"no experience with id {experience_id}")
+            if section is not None:
+                row.section = section.value
+            if sort_order is not None:
+                row.sort_order = sort_order
+            session.commit()
+            session.refresh(row)
+            return _to_experience(row)
 
     # --- evidence --------------------------------------------------------------------
 
@@ -261,6 +292,37 @@ class SqlClaimRepository:
             if status is not None:
                 query = query.where(ClaimRow.status == status.value)
             return [_to_claim(row, self._links(session, row.id)) for row in session.scalars(query)]
+
+    def apply_claim_edit(self, user_id: str, plan: ClaimEditPlan) -> Claim:
+        with self._session_factory() as session:
+            row = session.get(ClaimRow, plan.claim_id)
+            if row is None:
+                raise LookupError(f"no claim with id {plan.claim_id}")
+            for attribute, value in plan.updates.items():
+                setattr(row, attribute, _to_column_value(value))
+            for attestation in plan.attestations:
+                evidence_row = self._upsert_evidence_row(session, user_id, attestation.chunk)
+                existing_link = session.scalar(
+                    select(ClaimEvidenceRow).where(
+                        ClaimEvidenceRow.claim_id == row.id,
+                        ClaimEvidenceRow.evidence_id == evidence_row.id,
+                        ClaimEvidenceRow.field == attestation.field.value,
+                    )
+                )
+                if existing_link is not None:
+                    existing_link.outcome_quote = attestation.outcome_quote
+                else:
+                    session.add(
+                        ClaimEvidenceRow(
+                            claim_id=row.id,
+                            evidence_id=evidence_row.id,
+                            field=attestation.field.value,
+                            outcome_quote=attestation.outcome_quote,
+                        )
+                    )
+            session.commit()
+            session.refresh(row)
+            return _to_claim(row, self._links(session, row.id))
 
     def transition_claim(
         self,

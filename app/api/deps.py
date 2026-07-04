@@ -14,15 +14,19 @@ from starlette.requests import Request
 
 from app.config import Settings, get_settings
 from app.db.application_repository import SqlApplicationRepository
+from app.db.claim_repository import SqlClaimRepository
 from app.db.credentials_store import SqlOAuthCredentialStore
 from app.db.interview_repository import SqlInterviewRepository
 from app.db.job_repository import SqlJobRepository
 from app.db.master_cv_repository import SqlMasterCvRepository
+from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.domain.applications import ApplicationRepository
+from app.domain.claims import ClaimRepository
 from app.domain.cv import MasterCvRepository
 from app.domain.interviews import InterviewRepository
 from app.domain.jobs import JobRepository
+from app.domain.master_cv_snapshot import MasterCvSnapshotStore
 from app.integrations.base import MailClient, MailConfigurationError
 from app.integrations.mail_factory import create_mail_client
 from app.integrations.oauth.base import OAuthError
@@ -138,6 +142,32 @@ def get_interview_repository(request: Request) -> InterviewRepository:
     repository = SqlInterviewRepository(create_session_factory(engine))
     request.app.state.interview_repository = repository
     return repository
+
+
+def get_claim_repository(request: Request) -> ClaimRepository:
+    """Return the app's claim repository, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "claim_repository", None)
+    if isinstance(existing, ClaimRepository):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    repository = SqlClaimRepository(create_session_factory(engine))
+    request.app.state.claim_repository = repository
+    return repository
+
+
+def get_snapshot_store(request: Request) -> MasterCvSnapshotStore:
+    """Return the app's Master CV snapshot store, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "snapshot_store", None)
+    if isinstance(existing, MasterCvSnapshotStore):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    store = SqlMasterCvSnapshotStore(create_session_factory(engine))
+    request.app.state.snapshot_store = store
+    return store
 
 
 def get_master_cv_repository(request: Request) -> MasterCvRepository:
