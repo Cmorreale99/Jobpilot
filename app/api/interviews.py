@@ -17,24 +17,24 @@ from starlette.requests import Request
 from app.api.deps import (
     get_application_repository,
     get_interview_repository,
-    get_master_cv_repository,
+    get_snapshot_store,
 )
 from app.config import Settings, get_settings
 from app.domain.applications import ApplicationRepository, InvalidTransitionError
-from app.domain.cv import MasterCvRepository
 from app.domain.interviews import (
     INTERVIEW_TRANSITIONS,
     Interview,
     InterviewRepository,
     InterviewStage,
 )
+from app.domain.master_cv_snapshot import MasterCvSnapshotStore
 from app.services.interview_scan import confirm_interview
 from app.services.prep_factory import create_prep_generator
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
 RepositoryDep = Annotated[InterviewRepository, Depends(get_interview_repository)]
-MasterCvDep = Annotated[MasterCvRepository, Depends(get_master_cv_repository)]
+SnapshotDep = Annotated[MasterCvSnapshotStore, Depends(get_snapshot_store)]
 ApplicationsDep = Annotated[ApplicationRepository, Depends(get_application_repository)]
 
 
@@ -94,7 +94,7 @@ def confirm(
     interview_id: int,
     request: Request,
     repository: RepositoryDep,
-    master_cv_repository: MasterCvDep,
+    snapshot_store: SnapshotDep,
     application_repository: ApplicationsDep,
 ) -> dict[str, Any]:
     """Confirm a detected interview (``detected -> confirmed``) and generate its packet."""
@@ -105,7 +105,7 @@ def confirm(
     try:
         interview = confirm_interview(
             repository,
-            master_cv_repository,
+            snapshot_store,
             application_repository,
             create_prep_generator(settings),
             interview_id,

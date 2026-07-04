@@ -32,7 +32,7 @@ from app.scheduler import ModeGuardError, assert_mode_guard
 from app.services.application_repository import InMemoryApplicationRepository
 from app.services.interview_repository import InMemoryInterviewRepository
 from app.services.interview_scan import InterviewScanDependencies, run_interview_scan
-from app.services.master_cv_repository import InMemoryMasterCvRepository
+from app.services.master_cv_snapshot import InMemorySnapshotStore
 from app.services.validation_run_log import InMemoryValidationRunLog
 
 _INVITE_BODY = (
@@ -76,7 +76,7 @@ def _deps(scanner: _ScriptedScanner) -> InterviewScanDependencies:
         detector=HeuristicInviteDetector(),
         prep_generator=HeuristicPrepPacketGenerator(),
         interview_repository=InMemoryInterviewRepository(),
-        master_cv_repository=InMemoryMasterCvRepository(),
+        snapshot_store=InMemorySnapshotStore(),
         application_repository=InMemoryApplicationRepository(),
         validation_log=InMemoryValidationRunLog(),
     )
@@ -216,7 +216,7 @@ def test_mode_guard_refuses_mock_inbox_in_real_mode(settings: Settings) -> None:
         detector=HeuristicInviteDetector(),
         prep_generator=HeuristicPrepPacketGenerator(),
         interview_repository=InMemoryInterviewRepository(),
-        master_cv_repository=InMemoryMasterCvRepository(),
+        snapshot_store=InMemorySnapshotStore(),
         application_repository=InMemoryApplicationRepository(),
         validation_log=InMemoryValidationRunLog(),
     )
@@ -233,7 +233,7 @@ def test_scheduler_main_enforces_the_mode_guard(settings: Settings) -> None:
         detector=HeuristicInviteDetector(),
         prep_generator=HeuristicPrepPacketGenerator(),
         interview_repository=InMemoryInterviewRepository(),
-        master_cv_repository=InMemoryMasterCvRepository(),
+        snapshot_store=InMemorySnapshotStore(),
         application_repository=InMemoryApplicationRepository(),
         validation_log=InMemoryValidationRunLog(),
     )
@@ -251,7 +251,7 @@ def test_scheduler_main_enforces_the_mode_guard(settings: Settings) -> None:
         detector=HeuristicInviteDetector(),
         prep_generator=HeuristicPrepPacketGenerator(),
         interview_repository=InMemoryInterviewRepository(),
-        master_cv_repository=InMemoryMasterCvRepository(),
+        snapshot_store=InMemorySnapshotStore(),
         application_repository=InMemoryApplicationRepository(),
         validation_log=InMemoryValidationRunLog(),
     )

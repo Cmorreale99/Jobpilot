@@ -13,7 +13,7 @@ from app.domain.interviews import InterviewInvite, InterviewStage, PrepPacket
 from app.main import create_app
 from app.services.application_repository import InMemoryApplicationRepository
 from app.services.interview_repository import InMemoryInterviewRepository
-from app.services.master_cv_repository import InMemoryMasterCvRepository
+from app.services.master_cv_snapshot import InMemorySnapshotStore
 from fastapi.testclient import TestClient
 
 _QUOTE = "We'd love to set up a 30-minute phone screen with the hiring manager."
@@ -29,7 +29,7 @@ def client(repo: InMemoryInterviewRepository) -> TestClient:
     return TestClient(
         create_app(
             interview_repository=repo,
-            master_cv_repository=InMemoryMasterCvRepository(),
+            snapshot_store=InMemorySnapshotStore(),
             application_repository=InMemoryApplicationRepository(),
         )
     )

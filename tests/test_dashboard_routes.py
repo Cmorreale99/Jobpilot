@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
-from app.domain.cv import CvSource, MasterCv, ParClaim
+from app.domain.claims import (
+    SOURCE_DRIVE,
+    ClaimEvidenceRef,
+    ClaimField,
+    ClaimStatus,
+    DraftClaim,
+    EvidenceChunk,
+    ExperienceSection,
+    ExperienceSeed,
+    ResultKind,
+    ResultStatus,
+    StorableClaim,
+)
 from app.domain.jobs import Job, JobMatch
+from app.domain.master_cv_snapshot import StoredSnapshot
 from app.domain.outreach import Contact, OutreachMessage
 from app.domain.tailoring import TailoredMaterials
 from app.main import create_app
 from app.services.application_repository import InMemoryApplicationRepository
+from app.services.claim_repository import InMemoryClaimRepository
 from app.services.job_repository import InMemoryJobRepository
-from app.services.master_cv_repository import InMemoryMasterCvRepository
+from app.services.master_cv_snapshot import InMemorySnapshotStore, create_master_cv_snapshot
 from fastapi.testclient import TestClient
 
 _JOB = Job(
@@ -26,69 +38,75 @@ _JOB = Job(
 )
 
 
-def _cv() -> MasterCv:
-    return MasterCv(
-        claims=[
-            ParClaim(
-                action="Re-architected the settlement pipeline",
-                source_ref="resume",
-                result="Cut runtime by 70%",
-            )
-        ],
-        sources=[
-            CvSource(
-                source_type="gdrive",
-                external_ref="resume",
-                title="Resume",
-                mime_type="text/plain",
-                raw_text="…",
-                ingested_at=datetime(2026, 7, 1, tzinfo=UTC),
+def _snapshot_approved_claim(store: InMemorySnapshotStore) -> StoredSnapshot:
+    """Approve one claim and snapshot it — the only way a Master CV version is born."""
+    repo = InMemoryClaimRepository()
+    experience = repo.upsert_experience(
+        "u1", ExperienceSeed(name="Ledgerline", section=ExperienceSection.PROFESSIONAL_EXPERIENCE)
+    )
+    chunk = EvidenceChunk(SOURCE_DRIVE, "drv1", "Re-architected the settlement pipeline.")
+    (claim,) = repo.replace_unreviewed_claims(
+        "u1",
+        experience.id,
+        [
+            StorableClaim(
+                draft=DraftClaim(
+                    action_text="Re-architected the settlement pipeline",
+                    action_tools=("Kafka",),
+                    result_text="Cut runtime by 70%",
+                    result_kind=ResultKind.QUALITATIVE_EVIDENCED,
+                    evidence=(ClaimEvidenceRef(chunk=chunk, field=ClaimField.ACTION),),
+                ),
+                status=ClaimStatus.PENDING_REVIEW,
+                result_status=ResultStatus.UNVERIFIED,
             )
         ],
     )
+    repo.transition_claim(claim.id, ClaimStatus.APPROVED)
+    return create_master_cv_snapshot("u1", repo, store)
 
 
 @pytest.fixture
-def repos() -> tuple[
-    InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository
-]:
+def repos() -> tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore]:
     return (
         InMemoryApplicationRepository(),
         InMemoryJobRepository(),
-        InMemoryMasterCvRepository(),
+        InMemorySnapshotStore(),
     )
 
 
 @pytest.fixture
 def client(
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> TestClient:
-    applications, jobs, master_cvs = repos
+    applications, jobs, snapshots = repos
     return TestClient(
         create_app(
             application_repository=applications,
             job_repository=jobs,
-            master_cv_repository=master_cvs,
+            snapshot_store=snapshots,
         )
     )
 
 
-def test_latest_master_cv_404_before_first_ingest(client: TestClient) -> None:
+def test_latest_master_cv_404_before_first_snapshot(client: TestClient) -> None:
     response = client.get("/master-cv/latest", params={"user_id": "u1"})
     assert response.status_code == 404
 
 
-def test_latest_master_cv_serializes_claims_and_sources(
+def test_latest_master_cv_serializes_approved_claims(
     client: TestClient,
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> None:
-    _, _, master_cvs = repos
-    master_cvs.save("u1", _cv())
+    _, _, snapshots = repos
+    _snapshot_approved_claim(snapshots)
     body = client.get("/master-cv/latest", params={"user_id": "u1"}).json()
     assert body["version"] == 1
     assert body["claim_count"] == 1
     assert body["claims"][0]["action"] == "Re-architected the settlement pipeline"
-    assert body["sources"][0]["title"] == "Resume"
+    assert body["claims"][0]["result"] == "Cut runtime by 70%"
+    assert body["claims"][0]["source_type"] == "approved_claim"
+    assert [e["name"] for e in body["sections"]["professional_experience"]] == ["Ledgerline"]
 
 
 def test_matches_empty_before_master_cv_exists(client: TestClient) -> None:
@@ -98,10 +116,10 @@ def test_matches_empty_before_master_cv_exists(client: TestClient) -> None:
 
 def test_matches_returns_ranked_matches_for_latest_version(
     client: TestClient,
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> None:
-    _, jobs, master_cvs = repos
-    stored = master_cvs.save("u1", _cv())
+    _, jobs, snapshots = repos
+    stored = _snapshot_approved_claim(snapshots)
     jobs.upsert_jobs([_JOB])
     jobs.save_matches(
         "u1",
@@ -133,7 +151,7 @@ def _seed_application(
 
 def test_applications_list_includes_allowed_transitions(
     client: TestClient,
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> None:
     applications, _, _ = repos
     _seed_application(applications)
@@ -145,7 +163,7 @@ def test_applications_list_includes_allowed_transitions(
 
 def test_application_detail_includes_outreach_draft(
     client: TestClient,
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> None:
     applications, _, _ = repos
     application_id = _seed_application(applications)
@@ -157,7 +175,7 @@ def test_application_detail_includes_outreach_draft(
 
 def test_application_detail_without_outreach(
     client: TestClient,
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> None:
     applications, _, _ = repos
     application_id = _seed_application(applications, with_outreach=False)
@@ -170,7 +188,7 @@ def test_application_detail_404(client: TestClient) -> None:
 
 def test_transition_application_happy_path(
     client: TestClient,
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> None:
     applications, _, _ = repos
     application_id = _seed_application(applications)
@@ -182,7 +200,7 @@ def test_transition_application_happy_path(
 
 def test_transition_rejects_illegal_jump_with_409(
     client: TestClient,
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> None:
     applications, _, _ = repos
     application_id = _seed_application(applications)
@@ -192,7 +210,7 @@ def test_transition_rejects_illegal_jump_with_409(
 
 def test_transition_unknown_status_is_422(
     client: TestClient,
-    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemoryMasterCvRepository],
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
 ) -> None:
     applications, _, _ = repos
     application_id = _seed_application(applications)
