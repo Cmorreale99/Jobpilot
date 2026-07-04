@@ -22,6 +22,7 @@ def _to_job(row: JobRow) -> Job:
         description=row.description,
         location=row.location,
         url=row.url,
+        canonical_url=row.canonical_url,
         posted_at=row.posted_at,
         remote=row.remote,
     )
@@ -51,6 +52,7 @@ class SqlJobRepository:
                             description=job.description,
                             location=job.location,
                             url=job.url,
+                            canonical_url=job.canonical_url,
                             posted_at=job.posted_at,
                             remote=job.remote,
                         )
@@ -61,10 +63,18 @@ class SqlJobRepository:
                     existing.description = job.description
                     existing.location = job.location
                     existing.url = job.url
+                    existing.canonical_url = job.canonical_url
                     existing.posted_at = job.posted_at
                     existing.remote = job.remote
             session.commit()
         return len(jobs)
+
+    def get_job(self, source: str, external_id: str) -> Job | None:
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(JobRow).where(JobRow.source == source, JobRow.external_id == external_id)
+            )
+            return _to_job(row) if row is not None else None
 
     def save_matches(self, user_id: str, master_cv_version: int, matches: list[JobMatch]) -> None:
         with self._session_factory() as session:

@@ -124,7 +124,8 @@ async def gather_github_groups(
                 chunks.append(
                     EvidenceChunk(
                         source_type=SOURCE_GITHUB_COMMIT,
-                        source_ref=commit.sha,
+                        # repo@sha: self-contained provenance, resolvable to a commit URL
+                        source_ref=f"{repo.repo_ref}@{commit.sha}",
                         chunk_text=commit.message,
                     )
                 )

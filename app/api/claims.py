@@ -32,6 +32,7 @@ from app.domain.claims import (
     Inefficiency,
     RejectionReasonRequiredError,
     ResultKind,
+    evidence_source_url,
 )
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore, StoredSnapshot
 from app.services.claim_review import (
@@ -102,6 +103,9 @@ def _serialize_claim(claim: Claim, repository: ClaimRepository) -> dict[str, Any
                 "outcome_quote": link.outcome_quote,
                 "source_type": stored.source_type if stored else None,
                 "source_ref": stored.source_ref if stored else None,
+                "source_url": (
+                    evidence_source_url(stored.source_type, stored.source_ref) if stored else None
+                ),
                 "chunk_text": stored.chunk_text if stored else None,
             }
         )

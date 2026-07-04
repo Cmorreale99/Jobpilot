@@ -33,7 +33,9 @@ async def run_matching(
 ) -> list[JobMatch]:
     """Fetch recent jobs, rank them against ``master_cv``, and persist the top matches."""
     settings = settings or get_settings()
-    jobs = await job_source.fetch_recent_jobs(since)
+    fetched = await job_source.fetch_recent_jobs(since)
+    # Store the original URL plus its canonical form (tracking stripped) when resolvable.
+    jobs = [job.with_canonical_url() for job in fetched]
     repository.upsert_jobs(jobs)
 
     if scorer is None or reranker is None:
