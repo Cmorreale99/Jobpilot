@@ -37,6 +37,9 @@ packages = ["app"]
 target-version = "py312"
 line-length = 100
 src = ["app", "tests"]
+# architecture/v2 holds verified, drop-in V2 assets (renderer, template inputs);
+# they are integrated as-is and must never be reformatted.
+extend-exclude = ["architecture"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -191,6 +191,75 @@ def test_transition_unknown_claim_raises_lookup_error(repo: ClaimRepository) -> 
         repo.transition_claim(999, ClaimStatus.APPROVED)
 
 
+def test_apply_claim_edit_persists_updates_links_and_attestation(
+    repo: ClaimRepository,
+) -> None:
+    from app.domain.claims import (
+        SOURCE_USER_ATTESTATION,
+        ClaimEdits,
+        ClaimField,
+        ResultKind,
+        ResultStatus,
+        plan_claim_edit,
+    )
+
+    experience = repo.upsert_experience("u1", _SEED)
+    inserted = repo.replace_unreviewed_claims("u1", experience.id, [_storable()])
+    claim = inserted[0]
+
+    plan = plan_claim_edit(
+        claim,
+        ClaimEdits(
+            result_text="Cut ingest failures from 12% to 0.5%",
+            result_kind=ResultKind.QUANTIFIED,
+            result_metric_json={"resolves": "quality"},
+        ),
+    )
+    updated = repo.apply_claim_edit("u1", plan)
+
+    assert updated.result_text == "Cut ingest failures from 12% to 0.5%"
+    assert updated.result_kind is ResultKind.QUANTIFIED
+    assert updated.result_status is ResultStatus.USER_ATTESTED
+    assert updated.result_metric_json == {"resolves": "quality"}
+    assert updated.validation_flags == ()  # human decision supersedes the validator
+
+    result_links = [ln for ln in updated.evidence if ln.field is ClaimField.RESULT]
+    assert len(result_links) == 1
+    evidence = repo.get_evidence(result_links[0].evidence_id)
+    assert evidence is not None
+    assert evidence.source_type == SOURCE_USER_ATTESTATION
+    assert evidence.chunk_text == "Cut ingest failures from 12% to 0.5%"
+
+    # A re-edit updates the same attestation row instead of accreting links.
+    replan = plan_claim_edit(
+        repo.get_claim(claim.id),  # type: ignore[arg-type]
+        ClaimEdits(
+            result_text="Cut ingest failures from 12% to 0.4%",
+            result_kind=ResultKind.QUANTIFIED,
+        ),
+    )
+    reedited = repo.apply_claim_edit("u1", replan)
+    result_links = [ln for ln in reedited.evidence if ln.field is ClaimField.RESULT]
+    assert len(result_links) == 1
+    assert result_links[0].outcome_quote == "Cut ingest failures from 12% to 0.4%"
+
+
+def test_update_experience_layout_persists_section_and_order(repo: ClaimRepository) -> None:
+    from app.domain.claims import ExperienceSection
+
+    experience = repo.upsert_experience("u1", _SEED)
+    updated = repo.update_experience_layout(
+        experience.id, section=ExperienceSection.PROFESSIONAL_EXPERIENCE, sort_order=7
+    )
+    assert updated.section is ExperienceSection.PROFESSIONAL_EXPERIENCE
+    assert updated.sort_order == 7
+    stored = repo.list_experiences("u1")[0]
+    assert stored.section is ExperienceSection.PROFESSIONAL_EXPERIENCE
+    assert stored.sort_order == 7
+    with pytest.raises(LookupError):
+        repo.update_experience_layout(999, sort_order=1)
+
+
 def test_rejected_claims_are_retained_not_deleted(repo: ClaimRepository) -> None:
     experience = repo.upsert_experience("u1", _SEED)
     inserted = repo.replace_unreviewed_claims("u1", experience.id, [_storable()])

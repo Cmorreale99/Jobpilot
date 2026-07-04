@@ -16,11 +16,13 @@ from datetime import UTC, datetime
 
 from app.domain.claims import (
     Claim,
+    ClaimEditPlan,
     ClaimEvidenceLink,
     ClaimRepository,
     ClaimStatus,
     EvidenceChunk,
     Experience,
+    ExperienceSection,
     ExperienceSeed,
     StorableClaim,
     StoredEvidence,
@@ -64,6 +66,23 @@ class InMemoryClaimRepository(ClaimRepository):
     def list_experiences(self, user_id: str) -> list[Experience]:
         rows = [e for e in self._experiences.values() if e.user_id == user_id]
         return sorted(rows, key=lambda e: (e.sort_order, e.id))
+
+    def update_experience_layout(
+        self,
+        experience_id: int,
+        *,
+        section: ExperienceSection | None = None,
+        sort_order: int | None = None,
+    ) -> Experience:
+        experience = self._experiences.get(experience_id)
+        if experience is None:
+            raise LookupError(f"no experience with id {experience_id}")
+        if section is not None:
+            experience = replace(experience, section=section)
+        if sort_order is not None:
+            experience = replace(experience, sort_order=sort_order)
+        self._experiences[experience_id] = experience
+        return experience
 
     # --- evidence --------------------------------------------------------------------
 
@@ -159,6 +178,30 @@ class InMemoryClaimRepository(ClaimRepository):
             if c.user_id == user_id and (status is None or c.status is status)
         ]
         return sorted(rows, key=lambda c: c.id)
+
+    def apply_claim_edit(self, user_id: str, plan: ClaimEditPlan) -> Claim:
+        claim = self._claims.get(plan.claim_id)
+        if claim is None:
+            raise LookupError(f"no claim with id {plan.claim_id}")
+        links = list(claim.evidence)
+        for attestation in plan.attestations:
+            evidence = self.upsert_evidence(user_id, attestation.chunk)
+            link = ClaimEvidenceLink(
+                evidence_id=evidence.id,
+                field=attestation.field,
+                outcome_quote=attestation.outcome_quote,
+            )
+            # Replace an existing link to the same attestation row (re-edit),
+            # keep links to original source evidence untouched.
+            links = [
+                existing
+                for existing in links
+                if not (existing.evidence_id == evidence.id and existing.field == link.field)
+            ]
+            links.append(link)
+        updated = replace(claim, evidence=tuple(links), **plan.updates)
+        self._claims[claim.id] = updated
+        return updated
 
     def transition_claim(
         self,
