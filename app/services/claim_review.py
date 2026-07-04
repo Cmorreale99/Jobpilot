@@ -2,7 +2,9 @@
 
 Human-in-the-loop core of V2. Three actions, mirroring the outline's review card:
 
-* **approve** — the claim becomes canonical as-is.
+* **approve** — the claim becomes canonical as-is. Refused for claims carrying
+  ``validation_flags``: a flagged claim must be edit-attested (the human supersedes
+  the validator, with provenance) or rejected — never waved through unchanged.
 * **edit + approve** — the reviewer changes fields first; every edited field group
   gets ``user_attestation`` provenance (an evidence row holding the attested text,
   linked to the claim), so traceability survives the edit. An edited/supplied Result
@@ -38,8 +40,21 @@ def review_queue(
     return pending
 
 
+class FlaggedClaimApprovalError(Exception):
+    """Approve-as-is was attempted on a claim with validation flags."""
+
+
 def approve_claim(repository: ClaimRepository, claim_id: int) -> Claim:
-    """Approve as-is (``pending_review -> approved``)."""
+    """Approve as-is (``pending_review -> approved``); refused for flagged claims."""
+    claim = repository.get_claim(claim_id)
+    if claim is None:
+        raise LookupError(f"no claim with id {claim_id}")
+    if claim.validation_flags:
+        raise FlaggedClaimApprovalError(
+            f"claim {claim_id} carries {len(claim.validation_flags)} validation flag(s) "
+            "and cannot be approved as-is - edit-attest it (which records your "
+            "attestation and clears the flags) or reject it: " + "; ".join(claim.validation_flags)
+        )
     return repository.transition_claim(claim_id, ClaimStatus.APPROVED)
 
 

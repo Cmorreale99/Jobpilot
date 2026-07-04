@@ -15,8 +15,11 @@ action drops the claim, an ungrounded result leaves ``result_kind=missing`` rath
 than ever inventing an outcome. The PAR validator downstream is the final gate.
 
 On a bounced re-extraction the validator's specific violations are folded into both
-prompts. On any LLM failure the deterministic heuristic extractor answers instead —
-one bad response degrades a group, never the nightly run.
+prompts. On any LLM failure the extractor raises :class:`ClaimExtractionError` — the
+service skips the group loudly (logged + recorded in ``validation_runs``) and existing
+claims stay untouched. There is deliberately NO silent heuristic fallback: swapping in
+a much dumber extractor mid-run with no operator signal is how mixed-quality claims
+ended up coexisting in the same run (docs/V2_AUDIT.md).
 """
 
 from __future__ import annotations
@@ -29,11 +32,11 @@ from typing import Any
 
 from app.domain.claims import (
     ClaimEvidenceRef,
+    ClaimExtractionError,
     ClaimField,
     CostDimension,
     DraftClaim,
     EvidenceGroup,
-    HeuristicTwoPassExtractor,
     Inefficiency,
     ResultKind,
 )
@@ -122,7 +125,7 @@ class _Pass2Result:
 
 
 class LlmTwoPassExtractor:
-    """Two-pass PAR extraction via an :class:`LlmClient`, heuristic on failure."""
+    """Two-pass PAR extraction via an :class:`LlmClient`; loud failure, no fallback."""
 
     def __init__(
         self,
@@ -134,7 +137,6 @@ class LlmTwoPassExtractor:
         self._client = client
         self._tier = tier
         self._max_tokens = max_tokens
-        self._fallback = HeuristicTwoPassExtractor()
 
     def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
         if not any(chunk.chunk_text.strip() for chunk in group.chunks):
@@ -160,12 +162,10 @@ class LlmTwoPassExtractor:
                 max_tokens=self._max_tokens,
             )
         except LlmError as exc:
-            logger.warning(
-                "LLM extraction failed for %r; falling back to heuristic: %s",
-                group.experience.name,
-                exc,
-            )
-            return self._fallback.extract(group, violations)
+            logger.error("LLM extraction failed for %r: %s", group.experience.name, exc)
+            raise ClaimExtractionError(
+                f"LLM extraction failed for {group.experience.name!r}: {exc}"
+            ) from exc
         return self._assemble(group, grounded, pass2)
 
     def _ground_pass1(self, group: EvidenceGroup, claims: list[_Pass1Claim]) -> list[_Pass1Claim]:

@@ -51,7 +51,10 @@ def client(repo: InMemoryClaimRepository) -> TestClient:
 
 
 def _seed_claim(
-    repo: InMemoryClaimRepository, *, result_kind: ResultKind = ResultKind.MISSING
+    repo: InMemoryClaimRepository,
+    *,
+    result_kind: ResultKind = ResultKind.MISSING,
+    flags: tuple[str, ...] = (),
 ) -> int:
     experience = repo.upsert_experience(
         "u1", ExperienceSeed(name="carrier-etl", section=ExperienceSection.PROJECTS_HACKATHONS)
@@ -72,6 +75,7 @@ def _seed_claim(
                 ),
                 status=ClaimStatus.PENDING_REVIEW,
                 result_status=ResultStatus.UNVERIFIED,
+                validation_flags=flags,
             )
         ],
     )
@@ -119,6 +123,20 @@ def test_approve_then_reapprove_conflicts(
 
 def test_approve_unknown_claim_is_404(client: TestClient) -> None:
     assert client.post("/claims/999/approve").status_code == 404
+
+
+def test_approve_flagged_claim_is_409(client: TestClient, repo: InMemoryClaimRepository) -> None:
+    claim_id = _seed_claim(repo, flags=("result_problem_coupling: …",))
+    response = client.post(f"/claims/{claim_id}/approve")
+    assert response.status_code == 409
+    assert "cannot be approved as-is" in response.json()["detail"]
+    # Edit-attest still resolves it: the human supersedes the validator, with provenance.
+    resolved = client.post(
+        f"/claims/{claim_id}/edit-approve",
+        json={"result_text": "Cut effort from 10h to 1h", "result_kind": "quantified"},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["validation_flags"] == []
 
 
 def test_reject_requires_a_reason(client: TestClient, repo: InMemoryClaimRepository) -> None:

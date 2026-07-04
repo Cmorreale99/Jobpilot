@@ -18,7 +18,13 @@ from app.domain.claims import (
     Inefficiency,
     ResultKind,
 )
-from app.domain.par_validation import COUPLING_FLAG, validate_claim, verbatim_in
+from app.domain.par_validation import (
+    COUPLING_FLAG,
+    STRUCTURAL_CODES,
+    is_structural,
+    validate_claim,
+    verbatim_in,
+)
 
 _RESULT_CHUNK = EvidenceChunk(
     SOURCE_GITHUB_COMMIT,
@@ -223,3 +229,67 @@ def test_verbatim_tolerates_whitespace_reflow_only() -> None:
     assert verbatim_in("cut  failure\nrate", "We cut failure rate in half")
     assert not verbatim_in("Cut Failure Rate", "we cut failure rate in half")
     assert not verbatim_in("", "anything")
+
+
+# --- structural gates (Phase 1): unreviewable claims are marked for dropping ----------
+
+
+def test_one_word_problem_is_structurally_rejected() -> None:
+    """Audit test case 1: 'manual' passed the enum gate; it must not pass this one."""
+    for junk in ("manual", "~$8M", "high-risk state"):
+        claim = _valid_claim(problem_text=junk)
+        violations = validate_claim(claim)
+        assert any(v.code == "problem_not_specific" and is_structural(v) for v in violations), (
+            f"junk problem passed: {junk!r}"
+        )
+
+
+def test_problem_restating_the_action_is_structurally_rejected() -> None:
+    """The V1 pattern: the Problem is a substring of the Action, restated."""
+    claim = _valid_claim(
+        action_text=(
+            "Reconstructed the data architecture, replacing a fragmented legacy Excel workflow"
+        ),
+        problem_text="replacing a fragmented legacy Excel workflow",
+    )
+    assert "problem_not_specific" in _codes(claim)
+
+
+def test_resume_artifact_problems_are_structurally_rejected() -> None:
+    artifacts = (
+        "Cooper.ai — Data Engineer (Contract) | Remote June 2024–Present full time",
+        "Contact me at someone@example.com for more details about this",
+        "See cmorreale_resume.docx (1).pdf for the full history of this",
+        "linkedin.com/in/cam-morreale and github.com/Cmorreale99 hold all the code",
+    )
+    for artifact in artifacts:
+        claim = _valid_claim(problem_text=artifact)
+        assert "problem_not_specific" in _codes(claim), f"artifact passed: {artifact!r}"
+
+
+def test_specific_problems_still_pass() -> None:
+    assert validate_claim(_valid_claim()) == []
+    wordy = _valid_claim(
+        problem_text="Manual carrier-invoice reconciliation burned ten analyst-hours weekly"
+    )
+    assert "problem_not_specific" not in _codes(wordy)
+
+
+def test_fragment_actions_are_structurally_rejected() -> None:
+    """Audit test case 6: fragment actions from unreflowed PDF text never queue."""
+    for fragment in ("design,", "extracted", "Rebuilt the exporter and", "Migrated flows with"):
+        claim = _valid_claim(action_text=fragment, action_tools=())
+        violations = validate_claim(claim)
+        assert any(v.code == "action_fragment" and is_structural(v) for v in violations), (
+            f"fragment passed: {fragment!r}"
+        )
+
+
+def test_complete_actions_are_not_fragments() -> None:
+    claim = _valid_claim(action_text="Automated exception triage with Python and SQL rules.")
+    assert "action_fragment" not in _codes(claim)
+
+
+def test_structural_codes_are_exactly_the_droppable_ones() -> None:
+    expected = {"problem_not_specific", "action_fragment"}
+    assert expected == STRUCTURAL_CODES

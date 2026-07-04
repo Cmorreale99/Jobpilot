@@ -65,7 +65,8 @@ async def _seed() -> None:
     )
     print(
         f"claims: {len(report.claims)} pending review "
-        f"({len(report.flagged)} flagged, {len(report.missing_results)} missing results)"
+        f"({len(report.flagged)} flagged, {len(report.missing_results)} missing results; "
+        f"{len(report.dropped)} dropped, {len(report.deduped)} deduped)"
     )
 
     interview_deps = InterviewScanDependencies(

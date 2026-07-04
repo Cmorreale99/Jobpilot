@@ -211,13 +211,19 @@ export function ClaimsReviewSection({
               />
             )}
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button
-                className="stamp text-viridian"
-                disabled={busyId === claim.id}
-                onClick={() => run(claim.id, () => api.approveClaim(claim.id))}
-              >
-                Approve
-              </button>
+              {claim.validation_flags.length === 0 ? (
+                <button
+                  className="stamp text-viridian"
+                  disabled={busyId === claim.id}
+                  onClick={() => run(claim.id, () => api.approveClaim(claim.id))}
+                >
+                  Approve
+                </button>
+              ) : (
+                <span className="font-mono text-xs text-carmine/80">
+                  flagged — attest the impact or reject; approve-as-is is disabled
+                </span>
+              )}
               {rejectingId === claim.id ? (
                 <>
                   <input

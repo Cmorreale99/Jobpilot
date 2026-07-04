@@ -177,13 +177,13 @@ def test_ungrounded_problem_is_stripped_but_claim_survives() -> None:
     assert claims[0].problem_cost_dimension is None
 
 
-def test_llm_failure_falls_back_to_the_heuristic() -> None:
-    client = FakeLlmClient(["not json", "still not json"])  # initial + parse retry
-    claims = LlmTwoPassExtractor(client).extract(_GROUP)
+def test_llm_failure_raises_loudly_instead_of_falling_back() -> None:
+    import pytest
+    from app.domain.claims import ClaimExtractionError
 
-    # The deterministic heuristic answered instead: the README work statement.
-    assert len(claims) == 1
-    assert claims[0].action_text == "Built a Kafka consumer in Python for carrier feeds."
+    client = FakeLlmClient(["not json", "still not json"])  # initial + parse retry
+    with pytest.raises(ClaimExtractionError, match="carrier-etl"):
+        LlmTwoPassExtractor(client).extract(_GROUP)
 
 
 def test_bounced_violations_are_folded_into_the_prompts() -> None:
