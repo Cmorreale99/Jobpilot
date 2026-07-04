@@ -26,18 +26,19 @@ class InMemoryInterviewRepository:
     def upsert_interview(
         self,
         user_id: str,
-        source_message_id: str,
+        gmail_message_id: str,
         invite: InterviewInvite,
         received_at: datetime | None,
     ) -> tuple[Interview, bool]:
-        key = (user_id, source_message_id)
+        key = (user_id, gmail_message_id)
         existing_id = self._by_message.get(key)
         if existing_id is not None:
             return self._interviews[existing_id], False  # stage never regressed
         interview = Interview(
             id=self._next_id,
             user_id=user_id,
-            source_message_id=source_message_id,
+            gmail_message_id=gmail_message_id,
+            evidence_quote=invite.evidence_quote,
             company=invite.company,
             job_title=invite.job_title,
             stage=InterviewStage.DETECTED,

@@ -43,17 +43,27 @@ class InboxMessage:
 
 
 class InterviewStage(StrEnum):
-    """Lifecycle of one detected interview (``interviews.stage``)."""
+    """Lifecycle of one detected interview (``interviews.stage``).
+
+    V2 inserts ``confirmed`` between detection and scheduling: a detected interview
+    sits in the dashboard **confirm queue** until a human confirms it is real. Prep
+    packets are generated only for confirmed interviews — same philosophy as claims
+    (deterministic provenance check, then a human queue).
+    """
 
     DETECTED = "detected"
+    CONFIRMED = "confirmed"
     SCHEDULED = "scheduled"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
 
-# Terminal stages cannot reopen — a new invite email creates a new interview.
+# detected -> confirmed -> scheduled (-> completed); cancellable at any live stage.
+# Terminal stages cannot reopen — a new invite email creates a new interview. There is
+# deliberately NO detected -> scheduled shortcut: nothing skips the confirm queue.
 INTERVIEW_TRANSITIONS: dict[InterviewStage, frozenset[InterviewStage]] = {
-    InterviewStage.DETECTED: frozenset({InterviewStage.SCHEDULED, InterviewStage.CANCELLED}),
+    InterviewStage.DETECTED: frozenset({InterviewStage.CONFIRMED, InterviewStage.CANCELLED}),
+    InterviewStage.CONFIRMED: frozenset({InterviewStage.SCHEDULED, InterviewStage.CANCELLED}),
     InterviewStage.SCHEDULED: frozenset({InterviewStage.COMPLETED, InterviewStage.CANCELLED}),
     InterviewStage.COMPLETED: frozenset(),
     InterviewStage.CANCELLED: frozenset(),
@@ -62,21 +72,32 @@ INTERVIEW_TRANSITIONS: dict[InterviewStage, frozenset[InterviewStage]] = {
 
 @dataclass(frozen=True)
 class InterviewInvite:
-    """A detected invite: what the detector could truthfully extract, nothing more."""
+    """A detected invite: what the detector could truthfully extract, nothing more.
+
+    ``evidence_quote`` is the verbatim trigger text from the message **body** — the
+    provenance that verification re-checks against the re-fetched message before any
+    record is created. A detection without a body quote is not a detection.
+    """
 
     company: str
+    evidence_quote: str
     job_title: str | None = None
 
 
 @dataclass(frozen=True)
 class Interview:
-    """One detected interview, deduped on ``(user_id, source_message_id)``."""
+    """One detected interview, deduped on ``(user_id, gmail_message_id)``.
+
+    Hard provenance: ``gmail_message_id`` and ``evidence_quote`` are required —
+    no message id, no record.
+    """
 
     id: int
     user_id: str
-    source_message_id: str
+    gmail_message_id: str
     company: str
     stage: InterviewStage
+    evidence_quote: str = ""
     job_title: str | None = None
     received_at: datetime | None = None
 
@@ -144,8 +165,29 @@ def _extract_title(message: InboxMessage) -> str | None:
     return None
 
 
+def _extract_evidence_quote(body: str) -> str | None:
+    """The verbatim line of the BODY containing the first invite pattern.
+
+    The quote must come from the body (not the subject) because verification asserts
+    it against the re-fetched message body. Being a line of the original text, it is
+    a verbatim substring by construction.
+    """
+    for line in body.splitlines():
+        lowered = line.lower()
+        if any(pattern in lowered for pattern in _INVITE_PATTERNS):
+            stripped = line.strip()
+            if stripped:
+                return stripped
+    return None
+
+
 class HeuristicInviteDetector:
-    """Keyword-based invite detection — conservative, deterministic, offline."""
+    """Keyword-based invite detection — conservative, deterministic, offline.
+
+    V2: a message whose invite language appears only in the subject is NOT detected —
+    without a body quote there is nothing verification could re-check, and a missed
+    invite is recoverable while a hallucinated one is not.
+    """
 
     def detect(self, message: InboxMessage) -> InterviewInvite | None:
         haystack = f"{message.subject} {message.body}".lower()
@@ -153,10 +195,46 @@ class HeuristicInviteDetector:
             return None
         if any(pattern in haystack for pattern in _REJECTION_PATTERNS):
             return None
+        evidence_quote = _extract_evidence_quote(message.body)
+        if evidence_quote is None:
+            return None
         return InterviewInvite(
             company=_extract_company(message.sender),
+            evidence_quote=evidence_quote,
             job_title=_extract_title(message),
         )
+
+
+# --- provenance verification (the anti-hallucination gate) ----------------------------
+
+
+def verify_invite_provenance(
+    gmail_message_id: str,
+    evidence_quote: str,
+    fetched: InboxMessage | None,
+) -> str | None:
+    """Deterministic pre-insert check; returns the failure reason, or ``None`` to pass.
+
+    Hard provenance: a missing message id or empty quote fails before any fetch is
+    even consulted. The quote must appear verbatim (whitespace-reflow tolerant, same
+    rule as the PAR validator) in the **re-fetched** message body — the detector's
+    own copy of the message proves nothing.
+    """
+    from app.domain.par_validation import verbatim_in
+
+    if not gmail_message_id.strip():
+        return "no gmail_message_id: an interview without a message id cannot exist"
+    if not evidence_quote.strip():
+        return "no evidence_quote: an interview without verbatim trigger text cannot exist"
+    if fetched is None:
+        return f"message {gmail_message_id!r} could not be re-fetched from the provider"
+    if fetched.message_id != gmail_message_id:
+        return (
+            f"re-fetch returned message {fetched.message_id!r}, not the cited {gmail_message_id!r}"
+        )
+    if not verbatim_in(evidence_quote, fetched.body):
+        return "evidence_quote is not a substring of the re-fetched message body"
+    return None
 
 
 def normalize_company(name: str) -> str:
@@ -212,7 +290,7 @@ class HeuristicPrepPacketGenerator:
             "- How does the team review, ship, and roll back changes?",
             "",
             "## Logistics",
-            f"- Detected from message {interview.source_message_id}"
+            f"- Detected from message {interview.gmail_message_id}"
             + (f" (received {interview.received_at:%Y-%m-%d})" if interview.received_at else ""),
             "- Confirm the time zone and who you will be speaking with.",
         ]
@@ -226,7 +304,7 @@ class HeuristicPrepPacketGenerator:
 class InterviewRepository(Protocol):
     """Persistence for interviews and their prep packets.
 
-    ``upsert_interview`` is **idempotent** per ``(user_id, source_message_id)``: a
+    ``upsert_interview`` is **idempotent** per ``(user_id, gmail_message_id)``: a
     re-scan returns the existing row (stage untouched — never regressed to
     ``detected``) with ``created=False``. Prep packets keep one row per interview.
     """
@@ -234,7 +312,7 @@ class InterviewRepository(Protocol):
     def upsert_interview(
         self,
         user_id: str,
-        source_message_id: str,
+        gmail_message_id: str,
         invite: InterviewInvite,
         received_at: datetime | None,
     ) -> tuple[Interview, bool]: ...

@@ -1,6 +1,6 @@
 """SQLAlchemy-backed :class:`InterviewRepository`.
 
-Interviews dedupe on ``(user_id, source_message_id)`` so re-scanning the inbox is
+Interviews dedupe on ``(user_id, gmail_message_id)`` so re-scanning the inbox is
 idempotent — an existing row is returned untouched (stage never regressed). Prep
 packets keep one row per interview with replace semantics.
 """
@@ -26,7 +26,8 @@ def _to_interview(row: InterviewRow) -> Interview:
     return Interview(
         id=row.id,
         user_id=row.user_id,
-        source_message_id=row.source_message_id,
+        gmail_message_id=row.gmail_message_id,
+        evidence_quote=row.evidence_quote,
         company=row.company,
         job_title=row.job_title,
         stage=InterviewStage(row.stage),
@@ -43,7 +44,7 @@ class SqlInterviewRepository:
     def upsert_interview(
         self,
         user_id: str,
-        source_message_id: str,
+        gmail_message_id: str,
         invite: InterviewInvite,
         received_at: datetime | None,
     ) -> tuple[Interview, bool]:
@@ -51,14 +52,15 @@ class SqlInterviewRepository:
             row = session.scalar(
                 select(InterviewRow).where(
                     InterviewRow.user_id == user_id,
-                    InterviewRow.source_message_id == source_message_id,
+                    InterviewRow.gmail_message_id == gmail_message_id,
                 )
             )
             if row is not None:
                 return _to_interview(row), False  # stage never regressed
             row = InterviewRow(
                 user_id=user_id,
-                source_message_id=source_message_id,
+                gmail_message_id=gmail_message_id,
+                evidence_quote=invite.evidence_quote,
                 company=invite.company,
                 job_title=invite.job_title,
                 stage=InterviewStage.DETECTED.value,

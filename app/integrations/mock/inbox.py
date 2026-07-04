@@ -48,6 +48,12 @@ class MockInboxScanner:
             for entry in raw["messages"]
         ]
 
+    async def get_message(self, message_id: str) -> InboxMessage | None:
+        for message in self._load():
+            if message.message_id == message_id:
+                return message
+        return None
+
     async def search_messages(
         self, query: str, since: datetime | None = None
     ) -> list[InboxMessage]:

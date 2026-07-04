@@ -76,7 +76,7 @@ function InterviewsSection({
   const [busyId, setBusyId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const active = (interviews ?? []).filter(
-    (i) => i.stage === "detected" || i.stage === "scheduled",
+    (i) => i.stage === "detected" || i.stage === "confirmed" || i.stage === "scheduled",
   );
   const closed = (interviews ?? []).length - active.length;
 

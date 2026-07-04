@@ -57,9 +57,26 @@ def test_ignores_unrelated_mail() -> None:
 
 
 def test_title_absent_rather_than_invented() -> None:
-    invite = _DETECTOR.detect(_message("Interview invitation", "Please pick a slot."))
+    invite = _DETECTOR.detect(
+        _message("Next steps", "We'd like to schedule an interview. Please pick a slot.")
+    )
     assert invite is not None
     assert invite.job_title is None  # nothing extractable -> nothing fabricated
+
+
+def test_detection_produces_a_verbatim_body_quote() -> None:
+    body = "Hi!\nWe'd love to set up a 30-minute phone screen with the hiring manager.\nThanks."
+    invite = _DETECTOR.detect(_message("Next steps", body))
+    assert invite is not None
+    assert invite.evidence_quote == (
+        "We'd love to set up a 30-minute phone screen with the hiring manager."
+    )
+    assert invite.evidence_quote in body  # verbatim by construction
+
+
+def test_invite_language_only_in_subject_is_not_a_detection() -> None:
+    # No body quote -> nothing verification could re-check -> conservatively dropped.
+    assert _DETECTOR.detect(_message("Interview invitation", "Please pick a slot.")) is None
 
 
 def test_normalize_company_matches_across_spellings() -> None:
@@ -76,8 +93,10 @@ def test_every_stage_has_transition_rules() -> None:
 @pytest.mark.parametrize(
     ("current", "new"),
     [
-        (InterviewStage.DETECTED, InterviewStage.SCHEDULED),
+        (InterviewStage.DETECTED, InterviewStage.CONFIRMED),
         (InterviewStage.DETECTED, InterviewStage.CANCELLED),
+        (InterviewStage.CONFIRMED, InterviewStage.SCHEDULED),
+        (InterviewStage.CONFIRMED, InterviewStage.CANCELLED),
         (InterviewStage.SCHEDULED, InterviewStage.COMPLETED),
         (InterviewStage.SCHEDULED, InterviewStage.CANCELLED),
     ],
@@ -89,7 +108,8 @@ def test_legal_transitions(current: InterviewStage, new: InterviewStage) -> None
 @pytest.mark.parametrize(
     ("current", "new"),
     [
-        (InterviewStage.DETECTED, InterviewStage.COMPLETED),  # must schedule first
+        (InterviewStage.DETECTED, InterviewStage.SCHEDULED),  # nothing skips the confirm queue
+        (InterviewStage.DETECTED, InterviewStage.COMPLETED),
         (InterviewStage.COMPLETED, InterviewStage.SCHEDULED),  # terminal
         (InterviewStage.CANCELLED, InterviewStage.SCHEDULED),  # terminal — no reopening
     ],
@@ -106,10 +126,11 @@ def _interview() -> Interview:
     return Interview(
         id=1,
         user_id="u1",
-        source_message_id="m1",
+        gmail_message_id="m1",
+        evidence_quote="We'd love to set up a phone screen.",
         company="Ledgerline",
         job_title="Staff Backend Engineer",
-        stage=InterviewStage.DETECTED,
+        stage=InterviewStage.CONFIRMED,
     )
 
 
