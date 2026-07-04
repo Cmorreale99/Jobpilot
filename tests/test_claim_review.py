@@ -93,6 +93,18 @@ def test_approve_makes_the_claim_canonical() -> None:
     assert review_queue(repo, "u1") == []
 
 
+def test_flagged_claim_cannot_be_approved_as_is() -> None:
+    from app.services.claim_review import FlaggedClaimApprovalError
+
+    repo = InMemoryClaimRepository()
+    claim_id = _seed_claim(repo, flags=("result_problem_coupling: result does not address …",))
+    with pytest.raises(FlaggedClaimApprovalError):
+        approve_claim(repo, claim_id)
+    claim = repo.get_claim(claim_id)
+    assert claim is not None and claim.status is ClaimStatus.PENDING_REVIEW  # untouched
+    # test_edit_clears_validator_flags_human_supersedes covers the resolution path.
+
+
 def test_reject_requires_a_reason_and_retains_the_claim() -> None:
     repo = InMemoryClaimRepository()
     claim_id = _seed_claim(repo)

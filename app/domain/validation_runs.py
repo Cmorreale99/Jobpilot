@@ -18,6 +18,8 @@ from typing import Protocol, runtime_checkable
 
 KIND_PAR_VALIDATION = "par_validation"
 KIND_INTERVIEW_VERIFICATION = "interview_verification"
+# One row per evidence group whose LLM extraction failed outright (no silent fallback).
+KIND_EXTRACTION_FAILURE = "extraction_failure"
 
 
 @dataclass(frozen=True)

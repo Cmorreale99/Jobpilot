@@ -36,6 +36,7 @@ from app.domain.claims import (
 )
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore, StoredSnapshot
 from app.services.claim_review import (
+    FlaggedClaimApprovalError,
     approve_claim,
     edit_and_approve_claim,
     reject_claim,
@@ -170,11 +171,13 @@ def list_queue(
 
 @router.post("/claims/{claim_id}/approve")
 def approve(claim_id: int, repository: RepositoryDep) -> dict[str, Any]:
-    """Approve as-is (``pending_review -> approved``)."""
+    """Approve as-is (``pending_review -> approved``); 409 for flagged claims."""
     try:
         claim = approve_claim(repository, claim_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FlaggedClaimApprovalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except InvalidTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _serialize_claim(claim, repository)

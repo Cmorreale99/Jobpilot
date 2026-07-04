@@ -2,12 +2,20 @@
 
 Flow (per experience-sized evidence group):
 
-    gather evidence (Drive docs, GitHub READMEs + commits, via the existing policies)
+    gather evidence (Drive docs, GitHub READMEs + commits, via the existing policies;
+                     source text is normalized before it becomes a chunk)
         -> extract (two-pass; heuristic default, LLM behind a flag)
         -> PAR-validate every draft
         -> failures bounce to re-extraction ONCE, carrying the specific violations
-        -> second failure lands in the review queue flagged (validation_flags)
+        -> STRUCTURAL failures after the bounce are DROPPED (logged, never queued)
+        -> advisory failures land in the review queue flagged (validation_flags)
+        -> duplicates of content already queued anywhere for the user are dropped
         -> persist evidence, experiences, claims + claim_evidence links
+
+An extractor that cannot answer at all (:class:`ClaimExtractionError` — e.g. the LLM
+call failed) skips its group LOUDLY: the failure is logged and recorded in
+``validation_runs``, existing claims for that experience stay untouched, and no other
+extractor silently substitutes its output.
 
 Every persisted claim is ``pending_review`` — extraction NEVER produces an approved
 claim. Idempotent by construction: evidence and experiences upsert, and
@@ -25,6 +33,7 @@ from app.domain.claims import (
     SOURCE_GITHUB_COMMIT,
     SOURCE_GITHUB_README,
     Claim,
+    ClaimExtractionError,
     ClaimExtractor,
     ClaimRepository,
     ClaimStatus,
@@ -36,9 +45,15 @@ from app.domain.claims import (
     ResultKind,
     ResultStatus,
     StorableClaim,
+    claim_content_fingerprint,
 )
-from app.domain.par_validation import validate_claim
-from app.domain.validation_runs import KIND_PAR_VALIDATION, ValidationRunLog
+from app.domain.par_validation import is_structural, validate_claim
+from app.domain.text_normalization import normalize_source_text
+from app.domain.validation_runs import (
+    KIND_EXTRACTION_FAILURE,
+    KIND_PAR_VALIDATION,
+    ValidationRunLog,
+)
 from app.integrations.base import (
     DriveClient,
     DriveResponseError,
@@ -55,6 +70,9 @@ class ExtractionReport:
     """What one extraction run produced (per user)."""
 
     claims: list[Claim] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)  # structurally invalid, never queued
+    deduped: list[str] = field(default_factory=list)  # duplicates of already-queued content
+    failed_groups: list[str] = field(default_factory=list)  # extraction failed outright
 
     @property
     def flagged(self) -> list[Claim]:
@@ -87,7 +105,7 @@ async def gather_drive_groups(
                     EvidenceChunk(
                         source_type=SOURCE_DRIVE,
                         source_ref=document.source_ref,
-                        chunk_text=document.text,
+                        chunk_text=normalize_source_text(document.text),
                     ),
                 ),
             )
@@ -114,7 +132,7 @@ async def gather_github_groups(
                 EvidenceChunk(
                     source_type=SOURCE_GITHUB_README,
                     source_ref=repo.repo_ref,
-                    chunk_text=document.text,
+                    chunk_text=normalize_source_text(document.text),
                 )
             )
         except GitHubResponseError as exc:
@@ -126,7 +144,7 @@ async def gather_github_groups(
                         source_type=SOURCE_GITHUB_COMMIT,
                         # repo@sha: self-contained provenance, resolvable to a commit URL
                         source_ref=f"{repo.repo_ref}@{commit.sha}",
-                        chunk_text=commit.message,
+                        chunk_text=normalize_source_text(commit.message),
                     )
                 )
         except GitHubResponseError as exc:
@@ -171,18 +189,27 @@ def _to_storable(draft: DraftClaim, violations: list[str]) -> StorableClaim:
     )
 
 
-def extract_and_validate_group(
-    extractor: ClaimExtractor, group: EvidenceGroup
-) -> list[StorableClaim]:
+@dataclass(frozen=True)
+class GroupExtraction:
+    """One group's gate output: what may be queued, and what was dropped (with why)."""
+
+    storables: list[StorableClaim] = field(default_factory=list)
+    dropped: list[tuple[DraftClaim, tuple[str, ...]]] = field(default_factory=list)
+
+
+def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) -> GroupExtraction:
     """Extract one group's claims, bouncing validator failures to re-extraction once.
 
-    The re-extraction carries the specific violations; a claim still failing after
-    the second pass lands in the review queue flagged with them.
+    The re-extraction carries the specific violations. After the bounce, claims with
+    STRUCTURAL violations (one-word Problems, fragment Actions) are dropped — they are
+    not reviewable candidates; advisory violations land in the queue as flags. A
+    failure on the bounce itself falls back to the first pass's drafts (flagged)
+    rather than losing them.
     """
     drafts = extractor.extract(group)
-    violations_per_draft = [[str(v) for v in validate_claim(d)] for d in drafts]
+    violations_per_draft = [validate_claim(d) for d in drafts]
 
-    all_violations = [v for vs in violations_per_draft for v in vs]
+    all_violations = [str(v) for vs in violations_per_draft for v in vs]
     if all_violations:
         logger.info(
             "PAR validation bounced %d/%d claim(s) for %r; re-extracting once",
@@ -190,13 +217,30 @@ def extract_and_validate_group(
             len(drafts),
             group.experience.name,
         )
-        drafts = extractor.extract(group, violations=all_violations)
-        violations_per_draft = [[str(v) for v in validate_claim(d)] for d in drafts]
+        try:
+            drafts = extractor.extract(group, violations=all_violations)
+            violations_per_draft = [validate_claim(d) for d in drafts]
+        except ClaimExtractionError as exc:
+            logger.error(
+                "re-extraction failed for %r; keeping the first pass's drafts: %s",
+                group.experience.name,
+                exc,
+            )
 
-    return [
-        _to_storable(draft, violations)
-        for draft, violations in zip(drafts, violations_per_draft, strict=True)
-    ]
+    result = GroupExtraction()
+    for draft, violations in zip(drafts, violations_per_draft, strict=True):
+        structural = tuple(str(v) for v in violations if is_structural(v))
+        if structural:
+            logger.warning(
+                "dropping structurally invalid claim for %r (%s): %s",
+                group.experience.name,
+                "; ".join(v.code for v in violations if is_structural(v)),
+                draft.action_text[:80],
+            )
+            result.dropped.append((draft, structural))
+            continue
+        result.storables.append(_to_storable(draft, [str(v) for v in violations]))
+    return result
 
 
 async def run_claim_extraction(
@@ -226,12 +270,70 @@ async def run_claim_extraction(
     ]
 
     persisted: list[Claim] = []
+    dropped: list[str] = []
+    deduped: list[str] = []
+    failed_groups: list[str] = []
     for group in groups:
         experience = repository.upsert_experience(user_id, group.experience)
         for chunk in group.chunks:
             repository.upsert_evidence(user_id, chunk)
-        storables = extract_and_validate_group(extractor, group)
-        inserted = repository.replace_unreviewed_claims(user_id, experience.id, storables)
+        try:
+            extraction = extract_and_validate_group(extractor, group)
+        except ClaimExtractionError as exc:
+            # Loud, isolated failure: the group is skipped (existing claims stay),
+            # recorded, and reported — never silently answered by another extractor.
+            logger.error("extraction failed for %r; skipping the group: %s", experience.name, exc)
+            failed_groups.append(experience.name)
+            if validation_log is not None:
+                validation_log.record(
+                    user_id,
+                    KIND_EXTRACTION_FAILURE,
+                    subject_ref=f"experience:{experience.name}",
+                    passed=False,
+                    detail=(str(exc),),
+                )
+            continue
+
+        for draft, violations in extraction.dropped:
+            dropped.append(f"{experience.name}: {draft.action_text[:80]}")
+            if validation_log is not None:
+                validation_log.record(
+                    user_id,
+                    KIND_PAR_VALIDATION,
+                    subject_ref=f"dropped:{experience.name}",
+                    passed=False,
+                    detail=violations,
+                )
+
+        # Cross-experience dedupe: content already queued (or decided) anywhere for
+        # this user never queues again. The current experience's own unreviewed rows
+        # don't count — replace_unreviewed_claims is about to replace them.
+        seen = {
+            claim_content_fingerprint(c.problem_text, c.action_text, c.result_text)
+            for c in repository.list_claims(user_id)
+            if not (
+                c.experience_id == experience.id
+                and c.status in (ClaimStatus.EXTRACTED, ClaimStatus.PENDING_REVIEW)
+            )
+        }
+        unique: list[StorableClaim] = []
+        for storable in extraction.storables:
+            draft = storable.draft
+            fingerprint = claim_content_fingerprint(
+                draft.problem_text, draft.action_text, draft.result_text
+            )
+            if fingerprint in seen:
+                logger.info(
+                    "dropping duplicate claim for %r (same content queued elsewhere): %s",
+                    experience.name,
+                    draft.action_text[:80],
+                )
+                deduped.append(f"{experience.name}: {draft.action_text[:80]}")
+                continue
+            seen.add(fingerprint)
+            unique.append(storable)
+
+        inserted = repository.replace_unreviewed_claims(user_id, experience.id, unique)
         if validation_log is not None:
             for claim in inserted:
                 validation_log.record(
@@ -243,12 +345,18 @@ async def run_claim_extraction(
                 )
         persisted.extend(inserted)
 
-    report = ExtractionReport(claims=persisted)
+    report = ExtractionReport(
+        claims=persisted, dropped=dropped, deduped=deduped, failed_groups=failed_groups
+    )
     logger.info(
-        "claim extraction for %s: %d claim(s) pending review (%d flagged, %d missing results)",
+        "claim extraction for %s: %d claim(s) pending review (%d flagged, %d missing results); "
+        "%d dropped as structurally invalid, %d dropped as duplicates, %d group(s) failed",
         user_id,
         len(report.claims),
         len(report.flagged),
         len(report.missing_results),
+        len(report.dropped),
+        len(report.deduped),
+        len(report.failed_groups),
     )
     return report

@@ -15,6 +15,12 @@ Encodes the non-negotiable rules (see ``app/domain/claims.py`` for the definitio
   declared ``problem_cost_dimension`` / ``problem_inefficiency`` values. A mismatch is
   flagged ``"result does not address stated problem"``.
 
+**Structural vs. advisory.** Violations whose code is in :data:`STRUCTURAL_CODES` mean
+the claim is not a reviewable candidate at all — a one-word Problem, a mid-clause
+Action fragment, a resume header extracted as a pain point. Extraction DROPS these
+(logged, never persisted); everything else is advisory and lands in the review queue
+as ``validation_flags``. This is the Phase-1 anti-slop gate (docs/V2_AUDIT.md §9).
+
 Verbatim means an exact, case-sensitive substring after collapsing whitespace runs
 (quotes must survive text reflowing, nothing else).
 
@@ -23,6 +29,7 @@ Pure logic, no I/O: the caller supplies the claim with its evidence refs attache
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.domain.claims import (
@@ -35,6 +42,30 @@ from app.domain.claims import (
 
 # The exact coupling-failure flag text (asserted in tests; shown on review cards).
 COUPLING_FLAG = "result does not address stated problem"
+
+# Violation codes that make a claim structurally unreviewable: extraction drops these
+# pre-persistence instead of queueing them flagged.
+STRUCTURAL_CODES = frozenset({"problem_not_specific", "action_fragment"})
+
+_MIN_PROBLEM_TOKENS = 6
+_MIN_ACTION_TOKENS = 5
+
+# Resume-artifact shapes that are never pain points: contact lines, links, file names,
+# and "Company — Title | Remote  Jun 2026–Present" job headers.
+_ARTIFACT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\S+@\S+\.\w+"),  # email addresses
+    re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]?\d{4}\b"),  # phone numbers
+    re.compile(r"\b(?:https?://|www\.|linkedin\.com/|github\.com/)", re.IGNORECASE),
+    re.compile(r"\.(?:pdf|docx?)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:19|20)\d{2}\s*[–—-]\s*(?:(?:19|20)\d{2}|present)\b", re.IGNORECASE
+    ),  # date-range headers
+)
+
+# An Action ending on one of these (or a comma) was truncated mid-clause.
+_MID_CLAUSE_ENDINGS = frozenset(
+    {"and", "or", "with", "to", "of", "for", "by", "in", "on", "the", "a", "an"}
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +87,71 @@ def verbatim_in(needle: str, haystack: str) -> bool:
     """
     collapse = " ".join
     return bool(needle.strip()) and collapse(needle.split()) in collapse(haystack.split())
+
+
+def is_structural(violation: Violation) -> bool:
+    """True when the violation makes the claim unreviewable (drop, never queue)."""
+    return violation.code in STRUCTURAL_CODES
+
+
+def _problem_specificity(claim: DraftClaim) -> list[Violation]:
+    """Structural checks on the Problem text (only when one is declared)."""
+    problem = (claim.problem_text or "").strip()
+    if not problem:
+        return []
+    violations: list[Violation] = []
+    if len(problem.split()) < _MIN_PROBLEM_TOKENS:
+        violations.append(
+            Violation(
+                "problem_not_specific",
+                f"the Problem ({problem!r}) is too short to describe a pain point "
+                f"(< {_MIN_PROBLEM_TOKENS} words)",
+            )
+        )
+    normalized = " ".join(problem.split()).lower()
+    action_normalized = " ".join(claim.action_text.split()).lower()
+    if normalized and action_normalized and normalized in action_normalized:
+        violations.append(
+            Violation(
+                "problem_not_specific",
+                "the Problem merely restates (a substring of) the Action - it names "
+                "no pain point of its own",
+            )
+        )
+    if any(pattern.search(problem) for pattern in _ARTIFACT_PATTERNS):
+        violations.append(
+            Violation(
+                "problem_not_specific",
+                "the Problem text looks like a resume artifact (contact line, link, "
+                "file name, or job header), not a pain point",
+            )
+        )
+    return violations
+
+
+def _action_structure(claim: DraftClaim) -> list[Violation]:
+    """Structural checks on the Action text: fragments never reach review."""
+    action = claim.action_text.strip()
+    if not action:
+        return []  # action_missing already covers this
+    violations: list[Violation] = []
+    if len(action.split()) < _MIN_ACTION_TOKENS:
+        violations.append(
+            Violation(
+                "action_fragment",
+                f"the Action ({action!r}) is a fragment (< {_MIN_ACTION_TOKENS} words)",
+            )
+        )
+    trimmed = action.rstrip(".!?")
+    last_word = re.sub(r"[^\w]+$", "", trimmed.split()[-1]).lower() if trimmed.split() else ""
+    if trimmed.endswith((",", ";", "-", "–", "—")) or last_word in _MID_CLAUSE_ENDINGS:
+        violations.append(
+            Violation(
+                "action_fragment",
+                f"the Action ({action!r}) ends mid-clause - it was truncated, not extracted",
+            )
+        )
+    return violations
 
 
 def _validate_problem(claim: DraftClaim) -> list[Violation]:
@@ -201,9 +297,18 @@ def validate_claim(claim: DraftClaim) -> list[Violation]:
     """Run every deterministic PAR check; an empty list means the claim passes."""
     return [
         *_validate_problem(claim),
+        *_problem_specificity(claim),
         *_validate_action(claim),
+        *_action_structure(claim),
         *_validate_result(claim),
     ]
 
 
-__all__ = ["COUPLING_FLAG", "Violation", "validate_claim", "verbatim_in"]
+__all__ = [
+    "COUPLING_FLAG",
+    "STRUCTURAL_CODES",
+    "Violation",
+    "is_structural",
+    "validate_claim",
+    "verbatim_in",
+]

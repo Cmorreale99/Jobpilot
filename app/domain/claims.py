@@ -252,6 +252,14 @@ class Claim:
 # --- Extractor protocol -------------------------------------------------------------
 
 
+class ClaimExtractionError(RuntimeError):
+    """Extraction failed outright for one evidence group (e.g. the LLM call failed).
+
+    Raised instead of silently degrading to a different extractor: the caller skips
+    the group loudly (existing claims stay untouched) and records the failure.
+    """
+
+
 @runtime_checkable
 class ClaimExtractor(Protocol):
     """Two-pass PAR extraction over one experience's evidence.
@@ -259,6 +267,9 @@ class ClaimExtractor(Protocol):
     ``violations`` carries the PAR validator's specific findings on a bounced
     re-extraction (empty on the first pass). The deterministic extractor ignores
     it (same input, same output); the LLM extractor folds it into the prompt.
+
+    ``extract`` may raise :class:`ClaimExtractionError` when it cannot produce an
+    answer at all — it must never substitute a different extractor's output.
     """
 
     def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]: ...
@@ -955,6 +966,7 @@ __all__ = [
     "ClaimEdits",
     "ClaimEvidenceLink",
     "ClaimEvidenceRef",
+    "ClaimExtractionError",
     "ClaimExtractor",
     "ClaimField",
     "ClaimRepository",

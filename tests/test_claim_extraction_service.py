@@ -185,7 +185,8 @@ async def test_rerun_is_idempotent_and_preserves_review_decisions(
 _CHUNK = EvidenceChunk(
     SOURCE_DRIVE,
     "drv_x",
-    "Problem: Manual reconciliation took 10 hours per week.\nAction: Automated triage with Python.",
+    "Problem: Manual reconciliation took 10 hours per week.\n"
+    "Action: Automated exception triage with Python.",
 )
 _GROUP = EvidenceGroup(
     experience=ExperienceSeed(name="x", section=ExperienceSection.PROFESSIONAL_EXPERIENCE),
@@ -193,7 +194,7 @@ _GROUP = EvidenceGroup(
 )
 
 _GOOD = DraftClaim(
-    action_text="Automated triage with Python",
+    action_text="Automated exception triage with Python",
     action_tools=("Python",),
     problem_text="Manual reconciliation took 10 hours per week.",
     problem_cost_dimension=CostDimension.TIME,
@@ -205,7 +206,10 @@ _GOOD = DraftClaim(
     ),
 )
 
-_BAD = DraftClaim(action_text="Automated triage", action_tools=())  # no problem, no tools
+# Advisory-bad: long enough to be reviewable, but no problem and no tools declared.
+_BAD = DraftClaim(
+    action_text="Automated exception triage across the carrier feeds", action_tools=()
+)
 
 
 class _ScriptedExtractor:
@@ -224,25 +228,25 @@ class _ScriptedExtractor:
 
 def test_validator_failure_bounces_to_reextraction_once_with_the_violations() -> None:
     extractor = _ScriptedExtractor()
-    storables = extract_and_validate_group(extractor, _GROUP)
+    extraction = extract_and_validate_group(extractor, _GROUP)
 
     assert len(extractor.calls) == 2
     assert extractor.calls[0] == ()
     assert any("problem_missing" in v for v in extractor.calls[1])
     assert any("action_names_no_tools" in v for v in extractor.calls[1])
 
-    assert len(storables) == 1
-    assert storables[0].validation_flags == ()
-    assert storables[0].status is ClaimStatus.PENDING_REVIEW
+    assert len(extraction.storables) == 1
+    assert extraction.storables[0].validation_flags == ()
+    assert extraction.storables[0].status is ClaimStatus.PENDING_REVIEW
 
 
 def test_second_failure_lands_in_the_queue_flagged() -> None:
     extractor = _ScriptedExtractor(always_bad=True)
-    storables = extract_and_validate_group(extractor, _GROUP)
+    extraction = extract_and_validate_group(extractor, _GROUP)
 
     assert len(extractor.calls) == 2  # bounce happens exactly once
-    assert len(storables) == 1
-    flagged = storables[0]
+    assert len(extraction.storables) == 1
+    flagged = extraction.storables[0]
     assert flagged.status is ClaimStatus.PENDING_REVIEW
     assert any("problem_missing" in flag for flag in flagged.validation_flags)
     assert flagged.result_status is ResultStatus.UNVERIFIED
@@ -281,8 +285,138 @@ def test_clean_extraction_does_not_bounce() -> None:
             return [_GOOD]
 
     extractor = _CleanExtractor()
-    storables = extract_and_validate_group(extractor, _GROUP)
+    extraction = extract_and_validate_group(extractor, _GROUP)
     assert extractor.calls == 1
-    assert storables[0].validation_flags == ()
+    assert extraction.storables[0].validation_flags == ()
     # An honest missing Result is unverified until review resolves it.
-    assert storables[0].result_status is ResultStatus.UNVERIFIED
+    assert extraction.storables[0].result_status is ResultStatus.UNVERIFIED
+
+
+# --- Phase 1: structural drops, dedupe, loud failure ---------------------------------------
+
+
+class _FixedExtractor:
+    """Always returns the given drafts (deterministic across the bounce)."""
+
+    def __init__(self, drafts: list[DraftClaim]) -> None:
+        self._drafts = drafts
+
+    def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
+        return list(self._drafts)
+
+
+def test_one_word_problem_is_dropped_never_persisted() -> None:
+    """Audit test case 1: 'manual' as a Problem is structurally invalid."""
+    draft = DraftClaim(
+        action_text="Designed and implemented a RAG system with Python",
+        action_tools=("Python",),
+        problem_text="manual",
+        problem_inefficiency=Inefficiency.MANUAL,
+        evidence=(ClaimEvidenceRef(chunk=_CHUNK, field=ClaimField.ACTION),),
+    )
+    extraction = extract_and_validate_group(_FixedExtractor([draft]), _GROUP)
+    assert extraction.storables == []
+    ((dropped_draft, violations),) = extraction.dropped
+    assert dropped_draft.problem_text == "manual"
+    assert any("problem_not_specific" in v for v in violations)
+
+
+def test_fragment_action_is_dropped_never_persisted() -> None:
+    for fragment in ("design,", "extracted", "Reconstructed the data architecture and"):
+        draft = DraftClaim(
+            action_text=fragment,
+            action_tools=(),
+            evidence=(ClaimEvidenceRef(chunk=_CHUNK, field=ClaimField.ACTION),),
+        )
+        extraction = extract_and_validate_group(_FixedExtractor([draft]), _GROUP)
+        assert extraction.storables == [], f"fragment queued: {fragment!r}"
+        assert any("action_fragment" in v for _, vs in extraction.dropped for v in vs)
+
+
+async def test_dropped_claims_never_reach_the_repository(
+    drive_client: MockDriveClient,
+    github_client: MockGitHubClient,
+    claims_settings: Settings,
+) -> None:
+    from app.services.validation_run_log import InMemoryValidationRunLog
+
+    bad = DraftClaim(
+        action_text="extracted",
+        action_tools=(),
+        evidence=(ClaimEvidenceRef(chunk=_CHUNK, field=ClaimField.ACTION),),
+    )
+    repo = InMemoryClaimRepository()
+    log = InMemoryValidationRunLog()
+    report = await run_claim_extraction(
+        drive_client,
+        github_client,
+        "u1",
+        repo,
+        claims_settings,
+        extractor=_FixedExtractor([bad, _GOOD]),
+        validation_log=log,
+    )
+
+    actions = {c.action_text for c in repo.list_claims("u1")}
+    assert "extracted" not in actions
+    assert report.dropped  # reported, not silently discarded
+    dropped_runs = [r for r in log.list_runs("u1") if r.subject_ref.startswith("dropped:")]
+    assert dropped_runs and all(not r.passed for r in dropped_runs)
+
+
+async def test_same_content_never_queues_under_two_experiences(
+    drive_client: MockDriveClient,
+    github_client: MockGitHubClient,
+    claims_settings: Settings,
+) -> None:
+    """Audit: claims 41/42 — one bullet from two resume versions queued twice."""
+    repo = InMemoryClaimRepository()
+    report = await run_claim_extraction(
+        drive_client,
+        github_client,
+        "u1",
+        repo,
+        claims_settings,
+        extractor=_FixedExtractor([_GOOD]),  # every group extracts identical content
+    )
+
+    assert len(report.claims) == 1  # first group queued it; every other group deduped
+    assert report.deduped
+    fingerprints = {(c.problem_text, c.action_text, c.result_text) for c in repo.list_claims("u1")}
+    assert len(fingerprints) == len(repo.list_claims("u1"))
+
+
+async def test_extraction_failure_skips_the_group_loudly_and_keeps_existing_claims(
+    drive_client: MockDriveClient,
+    github_client: MockGitHubClient,
+    claims_settings: Settings,
+) -> None:
+    from app.domain.claims import ClaimExtractionError
+    from app.domain.validation_runs import KIND_EXTRACTION_FAILURE
+    from app.services.validation_run_log import InMemoryValidationRunLog
+
+    repo = InMemoryClaimRepository()
+    baseline = await run_claim_extraction(drive_client, github_client, "u1", repo, claims_settings)
+    assert baseline.claims
+
+    class _ExplodingExtractor:
+        def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
+            raise ClaimExtractionError(f"LLM extraction failed for {group.experience.name!r}")
+
+    log = InMemoryValidationRunLog()
+    report = await run_claim_extraction(
+        drive_client,
+        github_client,
+        "u1",
+        repo,
+        claims_settings,
+        extractor=_ExplodingExtractor(),
+        validation_log=log,
+    )
+
+    assert report.claims == []
+    assert len(report.failed_groups) == 3  # every group failed, loudly
+    failures = log.list_runs("u1", KIND_EXTRACTION_FAILURE)
+    assert len(failures) == 3 and all(not r.passed for r in failures)
+    # The failed run never touched the claims a previous run queued.
+    assert len(repo.list_claims("u1")) == len(baseline.claims)
