@@ -1,4 +1,9 @@
-"""Interview scan service on fixtures: detection, idempotency, the privacy gate."""
+"""Interview scan service on fixtures: verified detection, the confirm queue, privacy.
+
+V2 semantics under test: every detection is re-fetched and verified before insert,
+verified invites land in the confirm queue (stage ``detected``) with NO prep packet,
+and packets appear only once a human confirms.
+"""
 
 from __future__ import annotations
 
@@ -16,14 +21,17 @@ from app.domain.interviews import (
 )
 from app.domain.jobs import Job
 from app.domain.tailoring import TailoredMaterials
+from app.domain.validation_runs import KIND_INTERVIEW_VERIFICATION
 from app.integrations.mock.inbox import MockInboxScanner
 from app.services.application_repository import InMemoryApplicationRepository
 from app.services.interview_repository import InMemoryInterviewRepository
 from app.services.interview_scan import (
     InterviewScanDependencies,
+    confirm_interview,
     run_interview_scan,
 )
 from app.services.master_cv_repository import InMemoryMasterCvRepository
+from app.services.validation_run_log import InMemoryValidationRunLog
 
 from tests.conftest import INBOX_FIXTURES_DIR
 
@@ -42,6 +50,10 @@ class _SpyScanner:
     ) -> list[InboxMessage]:
         self.calls += 1
         return []
+
+    async def get_message(self, message_id: str) -> InboxMessage | None:
+        self.calls += 1
+        return None
 
 
 def _deps(scanner: object | None = None) -> InterviewScanDependencies:
@@ -84,6 +96,18 @@ def _deps(scanner: object | None = None) -> InterviewScanDependencies:
         interview_repository=InMemoryInterviewRepository(),
         master_cv_repository=master_cvs,
         application_repository=applications,
+        validation_log=InMemoryValidationRunLog(),
+    )
+
+
+def _confirm(deps: InterviewScanDependencies, interview_id: int) -> None:
+    confirm_interview(
+        deps.interview_repository,
+        deps.master_cv_repository,
+        deps.application_repository,
+        deps.prep_generator,
+        interview_id,
+        "u1",
     )
 
 
@@ -92,46 +116,76 @@ def scan_settings(settings: Settings) -> Settings:
     return settings.model_copy(update={"interview_scan_since_hours": 24 * 30})
 
 
-async def test_scan_detects_invites_and_generates_packets(scan_settings: Settings) -> None:
+async def test_scan_verifies_and_queues_without_prep_packets(scan_settings: Settings) -> None:
     deps = _deps()
     result = await run_interview_scan(deps, scan_settings, now=_NOW)
 
     assert result.detected == 2  # the two real invites; rejection + digest ignored
+    assert result.verified == 2
+    assert result.rejected == 0
     assert result.new_interviews == 2
-    assert result.packets_generated == 2
+    assert result.packets_generated == 0  # nothing is confirmed yet
+
     interviews = deps.interview_repository.list_interviews("u1")
     assert {i.company for i in interviews} == {"Sentinelpay", "Ledgerline"}
+    # Confirm queue only — never directly confirmed/scheduled records.
     assert all(i.stage is InterviewStage.DETECTED for i in interviews)
     for interview in interviews:
-        packet = deps.interview_repository.get_prep_packet(interview.id)
-        assert packet is not None and interview.company in packet.content
+        assert interview.evidence_quote  # hard provenance stored with the record
+        assert deps.interview_repository.get_prep_packet(interview.id) is None
+
+    runs = deps.validation_log.list_runs("u1", KIND_INTERVIEW_VERIFICATION)
+    assert len(runs) == 2
+    assert all(run.passed for run in runs)
 
 
-async def test_packet_links_to_matching_application(scan_settings: Settings) -> None:
+async def test_confirm_generates_the_prep_packet(scan_settings: Settings) -> None:
     deps = _deps()
     await run_interview_scan(deps, scan_settings, now=_NOW)
     ledgerline = next(
         i for i in deps.interview_repository.list_interviews("u1") if i.company == "Ledgerline"
     )
+
+    _confirm(deps, ledgerline.id)
+
+    confirmed = deps.interview_repository.get_interview(ledgerline.id)
+    assert confirmed is not None and confirmed.stage is InterviewStage.CONFIRMED
     packet = deps.interview_repository.get_prep_packet(ledgerline.id)
     assert packet is not None
     # Grounded in the application's tailored materials, not generic filler.
     assert "Fit for Staff Backend Engineer at Ledgerline." in packet.content
 
 
+async def test_scan_backfills_packets_for_confirmed_interviews_only(
+    scan_settings: Settings,
+) -> None:
+    deps = _deps()
+    await run_interview_scan(deps, scan_settings, now=_NOW)
+    interviews = deps.interview_repository.list_interviews("u1")
+    confirmed = deps.interview_repository.transition_interview(
+        interviews[0].id, InterviewStage.CONFIRMED
+    )
+
+    second = await run_interview_scan(deps, scan_settings, now=_NOW)
+
+    assert second.packets_generated == 1  # only the confirmed one
+    assert deps.interview_repository.get_prep_packet(confirmed.id) is not None
+    assert deps.interview_repository.get_prep_packet(interviews[1].id) is None
+
+
 async def test_rescan_is_idempotent_and_preserves_stage(scan_settings: Settings) -> None:
     deps = _deps()
     first = await run_interview_scan(deps, scan_settings, now=_NOW)
-    scheduled = deps.interview_repository.list_interviews("u1")[0]
-    deps.interview_repository.transition_interview(scheduled.id, InterviewStage.SCHEDULED)
+    advanced = deps.interview_repository.list_interviews("u1")[0]
+    deps.interview_repository.transition_interview(advanced.id, InterviewStage.CONFIRMED)
+    deps.interview_repository.transition_interview(advanced.id, InterviewStage.SCHEDULED)
 
     second = await run_interview_scan(deps, scan_settings, now=_NOW)
 
     assert first.new_interviews == 2
     assert second.new_interviews == 0
-    assert second.packets_generated == 0  # existing packets untouched
     assert len(deps.interview_repository.list_interviews("u1")) == 2
-    reread = deps.interview_repository.get_interview(scheduled.id)
+    reread = deps.interview_repository.get_interview(advanced.id)
     assert reread is not None and reread.stage is InterviewStage.SCHEDULED
 
 
@@ -143,7 +197,7 @@ async def test_flag_off_means_zero_inbox_reads(scan_settings: Settings) -> None:
     result = await run_interview_scan(deps, disabled, now=_NOW)
 
     assert spy.calls == 0  # the scanner is never touched
-    assert result == type(result)(scanned=0, detected=0, new_interviews=0, packets_generated=0)
+    assert result == type(result)(0, 0, 0, 0, 0, 0)
 
 
 async def test_scan_window_excludes_old_mail(scan_settings: Settings) -> None:

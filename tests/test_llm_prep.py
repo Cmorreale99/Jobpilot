@@ -21,10 +21,11 @@ from app.services.prep_factory import create_prep_generator
 _INTERVIEW = Interview(
     id=7,
     user_id="u1",
-    source_message_id="m1",
+    gmail_message_id="m1",
+    evidence_quote="We'd love to set up a 30-minute phone screen.",
     company="Ledgerline",
     job_title="Staff Backend Engineer",
-    stage=InterviewStage.DETECTED,
+    stage=InterviewStage.CONFIRMED,
 )
 
 _CV = MasterCv(

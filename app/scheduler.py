@@ -21,6 +21,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.config import Settings, get_settings
+from app.integrations.mock.inbox import MockInboxScanner
+from app.integrations.mock.mail import MockMailClient
 from app.services.interview_scan import (
     InterviewScanDependencies,
     build_default_interview_dependencies,
@@ -36,6 +38,40 @@ logger = logging.getLogger(__name__)
 
 APPLICATION_PIPELINE_JOB_ID = "application-pipeline"
 INTERVIEW_SCAN_JOB_ID = "interview-scan"
+
+
+class ModeGuardError(RuntimeError):
+    """Raised at startup when the real scheduler would run against mock mail surfaces."""
+
+
+def assert_mode_guard(
+    settings: Settings,
+    dependencies: PipelineDependencies | None = None,
+    interview_dependencies: InterviewScanDependencies | None = None,
+) -> None:
+    """The real scheduler must never run against ``MockMailClient``/``MockInboxScanner``.
+
+    With ``GMAIL_ENABLED=false`` (the declared dev/mock mode) nothing can leave the
+    machine and mocks are the point — the guard passes. With ``GMAIL_ENABLED=true``
+    this is a real deployment: a mock mail client would silently swallow sends, and a
+    mock inbox would make interview provenance verification verify against fixtures —
+    hallucination with extra steps. Injected mock dependencies then fail startup loudly.
+    """
+    if not settings.gmail_enabled:
+        return
+    mocks: list[str] = []
+    if dependencies is not None and isinstance(dependencies.mail_client, MockMailClient):
+        mocks.append("pipeline mail_client is MockMailClient")
+    if interview_dependencies is not None and isinstance(
+        interview_dependencies.inbox_scanner, MockInboxScanner
+    ):
+        mocks.append("interview inbox_scanner is MockInboxScanner")
+    if mocks:
+        raise ModeGuardError(
+            "GMAIL_ENABLED=true but the scheduler was given mock mail surfaces: "
+            + "; ".join(mocks)
+            + ". Refusing to start — verification against fixtures proves nothing."
+        )
 
 
 async def run_job_safely[T](name: str, coro_factory: Callable[[], Awaitable[T]], /) -> T | None:
@@ -153,6 +189,11 @@ def main(
     args = parser.parse_args(argv)
     settings = settings or get_settings()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+
+    # Mode guard at startup, before any job can fire (lazily built default
+    # dependencies are constructed by the factories, which honor GMAIL_ENABLED;
+    # the guard catches injected mocks and future composition mistakes).
+    assert_mode_guard(settings, dependencies, interview_dependencies)
 
     if args.once:
         return asyncio.run(_run_once(settings, dependencies, interview_dependencies, args.job))

@@ -248,6 +248,29 @@ def test_second_failure_lands_in_the_queue_flagged() -> None:
     assert flagged.result_status is ResultStatus.UNVERIFIED
 
 
+async def test_par_validator_runs_are_logged(
+    drive_client: MockDriveClient,
+    github_client: MockGitHubClient,
+    claims_settings: Settings,
+) -> None:
+    from app.domain.validation_runs import KIND_PAR_VALIDATION
+    from app.services.validation_run_log import InMemoryValidationRunLog
+
+    repo = InMemoryClaimRepository()
+    log = InMemoryValidationRunLog()
+    report = await run_claim_extraction(
+        drive_client, github_client, "u1", repo, claims_settings, validation_log=log
+    )
+
+    runs = log.list_runs("u1", KIND_PAR_VALIDATION)
+    assert len(runs) == len(report.claims)  # one auditable row per persisted claim
+    by_subject = {run.subject_ref: run for run in runs}
+    for claim in report.claims:
+        run = by_subject[f"claim:{claim.id}"]
+        assert run.passed is (not claim.validation_flags)
+        assert run.detail == claim.validation_flags
+
+
 def test_clean_extraction_does_not_bounce() -> None:
     class _CleanExtractor:
         def __init__(self) -> None:

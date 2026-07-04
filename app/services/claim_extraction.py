@@ -38,6 +38,7 @@ from app.domain.claims import (
     StorableClaim,
 )
 from app.domain.par_validation import validate_claim
+from app.domain.validation_runs import KIND_PAR_VALIDATION, ValidationRunLog
 from app.integrations.base import (
     DriveClient,
     DriveResponseError,
@@ -204,8 +205,14 @@ async def run_claim_extraction(
     repository: ClaimRepository,
     settings: Settings | None = None,
     extractor: ClaimExtractor | None = None,
+    *,
+    validation_log: ValidationRunLog | None = None,
 ) -> ExtractionReport:
-    """End-to-end: gather evidence, extract, PAR-validate, persist. Idempotent."""
+    """End-to-end: gather evidence, extract, PAR-validate, persist. Idempotent.
+
+    With a ``validation_log``, every persisted claim's final PAR verdict is recorded
+    as a ``validation_runs`` row (pass, or fail with the specific violations).
+    """
     settings = settings or get_settings()
     if extractor is None:
         from app.services.extractor_factory import create_claim_extractor
@@ -223,7 +230,17 @@ async def run_claim_extraction(
         for chunk in group.chunks:
             repository.upsert_evidence(user_id, chunk)
         storables = extract_and_validate_group(extractor, group)
-        persisted.extend(repository.replace_unreviewed_claims(user_id, experience.id, storables))
+        inserted = repository.replace_unreviewed_claims(user_id, experience.id, storables)
+        if validation_log is not None:
+            for claim in inserted:
+                validation_log.record(
+                    user_id,
+                    KIND_PAR_VALIDATION,
+                    subject_ref=f"claim:{claim.id}",
+                    passed=not claim.validation_flags,
+                    detail=claim.validation_flags,
+                )
+        persisted.extend(inserted)
 
     report = ExtractionReport(claims=persisted)
     logger.info(

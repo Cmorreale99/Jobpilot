@@ -26,6 +26,7 @@ from app.services.interview_scan import InterviewScanDependencies
 from app.services.job_repository import InMemoryJobRepository
 from app.services.master_cv_repository import InMemoryMasterCvRepository
 from app.services.pipeline import PipelineDependencies
+from app.services.validation_run_log import InMemoryValidationRunLog
 
 from tests.conftest import (
     FIXTURES_DIR,
@@ -44,6 +45,7 @@ def _interview_deps() -> InterviewScanDependencies:
         interview_repository=InMemoryInterviewRepository(),
         master_cv_repository=InMemoryMasterCvRepository(),
         application_repository=InMemoryApplicationRepository(),
+        validation_log=InMemoryValidationRunLog(),
     )
 
 

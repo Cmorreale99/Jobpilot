@@ -123,6 +123,32 @@ def test_upgrade_creates_claims_schema_and_downgrade_drops_it(tmp_path: Path) ->
     assert not (v2_tables & remaining)
 
 
+def test_upgrade_renames_interview_provenance_and_creates_validation_runs(
+    tmp_path: Path,
+) -> None:
+    url = _sqlite_url(tmp_path, "provenance.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+
+    inspector = sa.inspect(sa.create_engine(url))
+    interview_columns = {c["name"] for c in inspector.get_columns("interviews")}
+    assert "gmail_message_id" in interview_columns
+    assert "evidence_quote" in interview_columns
+    assert "source_message_id" not in interview_columns
+    uniques = {u["name"] for u in inspector.get_unique_constraints("interviews")}
+    assert "uq_interviews_user_message" in uniques
+    assert "validation_runs" in inspector.get_table_names()
+    run_columns = {c["name"] for c in inspector.get_columns("validation_runs")}
+    assert {"kind", "subject_ref", "passed", "detail"} <= run_columns
+
+    command.downgrade(cfg, "0006")
+    inspector = sa.inspect(sa.create_engine(url))
+    downgraded = {c["name"] for c in inspector.get_columns("interviews")}
+    assert "source_message_id" in downgraded
+    assert "gmail_message_id" not in downgraded
+    assert "validation_runs" not in inspector.get_table_names()
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")

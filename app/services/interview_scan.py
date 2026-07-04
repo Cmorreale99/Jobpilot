@@ -1,16 +1,26 @@
-"""The interview-scan job: scoped inbox search → detect invites → prep packets.
+"""The interview-scan job: scoped inbox search → detect → VERIFY → confirm queue.
 
 The second of the two independent nightly jobs (a failure here never blocks the
 application pipeline, and vice versa — the scheduler isolates them). Scheduler-free,
 like :mod:`app.services.pipeline`, so it ports to EventBridge→Lambda untouched.
 
+V2 anti-hallucination flow, mirroring the claims pipeline (deterministic provenance
+check, then a human queue):
+
+    detect invite (with verbatim body quote)
+        -> re-fetch the message by id from the provider
+        -> assert the quote is a substring of the REAL body (before any insert)
+        -> failure: rejected + logged to validation_runs, no record ever created
+        -> success: logged, interview lands in the CONFIRM QUEUE (stage=detected)
+
+Prep packets are generated **only for confirmed interviews** — confirmation is the
+human gate, so a detected-but-unconfirmed interview never spends prep effort. The scan
+also back-fills packets for confirmed interviews that lack one (idempotent).
+
 Privacy is enforced at three layers: ``INTERVIEW_INBOX_SCAN=false`` disables all inbox
 reads; the search *query* scopes what a read can ever return; and the detector only
 keeps messages with explicit invite language — everything else is dropped on the floor,
 never stored.
-
-**Idempotent:** interviews dedupe on the source message id, re-scans never regress a
-stage the user advanced, and packets are only generated for interviews that lack one.
 """
 
 from __future__ import annotations
@@ -24,15 +34,20 @@ from app.db.application_repository import SqlApplicationRepository
 from app.db.interview_repository import SqlInterviewRepository
 from app.db.master_cv_repository import SqlMasterCvRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
+from app.db.validation_run_log import SqlValidationRunLog
 from app.domain.applications import Application, ApplicationRepository
 from app.domain.cv import MasterCv, MasterCvRepository
 from app.domain.interviews import (
     HeuristicInviteDetector,
+    Interview,
     InterviewRepository,
+    InterviewStage,
     InviteDetector,
     PrepPacketGenerator,
     normalize_company,
+    verify_invite_provenance,
 )
+from app.domain.validation_runs import KIND_INTERVIEW_VERIFICATION, ValidationRunLog
 from app.integrations.base import InboxScanner
 from app.integrations.inbox_factory import create_inbox_scanner
 from app.services.prep_factory import create_prep_generator
@@ -50,6 +65,7 @@ class InterviewScanDependencies:
     interview_repository: InterviewRepository
     master_cv_repository: MasterCvRepository
     application_repository: ApplicationRepository
+    validation_log: ValidationRunLog
 
 
 @dataclass(frozen=True)
@@ -58,6 +74,8 @@ class InterviewScanResult:
 
     scanned: int
     detected: int
+    verified: int
+    rejected: int
     new_interviews: int
     packets_generated: int
 
@@ -94,11 +112,54 @@ def build_default_interview_dependencies(
         interview_repository=SqlInterviewRepository(session_factory),
         master_cv_repository=SqlMasterCvRepository(session_factory),
         application_repository=SqlApplicationRepository(session_factory),
+        validation_log=SqlValidationRunLog(session_factory),
     )
 
 
 def _application_index(applications: list[Application]) -> dict[str, Application]:
     return {normalize_company(a.job_company): a for a in applications}
+
+
+def generate_prep_packet(
+    interview_repository: InterviewRepository,
+    master_cv_repository: MasterCvRepository,
+    application_repository: ApplicationRepository,
+    prep_generator: PrepPacketGenerator,
+    interview: Interview,
+    user_id: str,
+) -> None:
+    """Generate (or refresh) the prep packet for one CONFIRMED interview."""
+    if interview.stage is not InterviewStage.CONFIRMED:
+        raise ValueError(
+            f"prep packets are only generated for confirmed interviews (stage: {interview.stage})"
+        )
+    stored_cv = master_cv_repository.get_latest(user_id)
+    master_cv = stored_cv.master_cv if stored_cv else MasterCv()
+    applications = _application_index(application_repository.list_applications(user_id))
+    application = applications.get(normalize_company(interview.company))
+    packet = prep_generator.generate(interview, master_cv, application)
+    interview_repository.save_prep_packet(packet)
+
+
+def confirm_interview(
+    interview_repository: InterviewRepository,
+    master_cv_repository: MasterCvRepository,
+    application_repository: ApplicationRepository,
+    prep_generator: PrepPacketGenerator,
+    interview_id: int,
+    user_id: str,
+) -> Interview:
+    """The human confirm action: ``detected -> confirmed``, then generate the packet."""
+    interview = interview_repository.transition_interview(interview_id, InterviewStage.CONFIRMED)
+    generate_prep_packet(
+        interview_repository,
+        master_cv_repository,
+        application_repository,
+        prep_generator,
+        interview,
+        user_id,
+    )
+    return interview
 
 
 async def run_interview_scan(
@@ -108,12 +169,12 @@ async def run_interview_scan(
     since: datetime | None = None,
     now: datetime | None = None,
 ) -> InterviewScanResult:
-    """One scan: search the inbox (scoped), record new interviews, generate packets."""
+    """One scan: search (scoped), detect, verify provenance, queue for confirmation."""
     settings = settings or get_settings()
     user_id = settings.pipeline_user_id
     if not settings.interview_inbox_scan:
         logger.info("interview scan disabled (INTERVIEW_INBOX_SCAN=false); no inbox reads.")
-        return InterviewScanResult(scanned=0, detected=0, new_interviews=0, packets_generated=0)
+        return InterviewScanResult(0, 0, 0, 0, 0, 0)
 
     now = now or datetime.now(tz=UTC)
     since = since or now - timedelta(hours=settings.interview_scan_since_hours)
@@ -122,36 +183,73 @@ async def run_interview_scan(
         "interview scan[%s]: %d message(s) in scope since %s", user_id, len(messages), since
     )
 
-    stored_cv = deps.master_cv_repository.get_latest(user_id)
-    master_cv = stored_cv.master_cv if stored_cv else MasterCv()
-    applications = _application_index(deps.application_repository.list_applications(user_id))
-
-    detected = new_interviews = packets = 0
+    detected = verified = rejected = new_interviews = 0
     for message in messages:
         invite = deps.detector.detect(message)
         if invite is None:
             continue
         detected += 1
+
+        # The anti-hallucination gate: re-fetch and verify BEFORE any insert.
+        fetched = (
+            await deps.inbox_scanner.get_message(message.message_id)
+            if message.message_id.strip()
+            else None
+        )
+        failure = verify_invite_provenance(message.message_id, invite.evidence_quote, fetched)
+        deps.validation_log.record(
+            user_id,
+            KIND_INTERVIEW_VERIFICATION,
+            subject_ref=f"message:{message.message_id or '(missing id)'}",
+            passed=failure is None,
+            detail=(failure,) if failure else (),
+        )
+        if failure is not None:
+            rejected += 1
+            logger.warning(
+                "interview scan[%s]: rejected detection from %r: %s",
+                user_id,
+                message.sender,
+                failure,
+            )
+            continue
+        verified += 1
+
         interview, created = deps.interview_repository.upsert_interview(
             user_id, message.message_id, invite, message.received_at
         )
         if created:
             new_interviews += 1
             logger.info(
-                "interview scan[%s]: new interview at %s (%s)",
+                "interview scan[%s]: %s (%s) verified -> confirm queue",
                 user_id,
                 interview.company,
                 interview.job_title or "role not stated",
             )
-        if created or deps.interview_repository.get_prep_packet(interview.id) is None:
-            application = applications.get(normalize_company(invite.company))
-            packet = deps.prep_generator.generate(interview, master_cv, application)
-            deps.interview_repository.save_prep_packet(packet)
+
+    # Back-fill packets for confirmed interviews that lack one (idempotent catch-up);
+    # detected-but-unconfirmed interviews never get one.
+    packets = 0
+    for interview in deps.interview_repository.list_interviews(user_id):
+        if (
+            interview.stage is InterviewStage.CONFIRMED
+            and deps.interview_repository.get_prep_packet(interview.id) is None
+        ):
+            generate_prep_packet(
+                deps.interview_repository,
+                deps.master_cv_repository,
+                deps.application_repository,
+                deps.prep_generator,
+                interview,
+                user_id,
+            )
             packets += 1
 
     return InterviewScanResult(
         scanned=len(messages),
         detected=detected,
+        verified=verified,
+        rejected=rejected,
         new_interviews=new_interviews,
         packets_generated=packets,
     )

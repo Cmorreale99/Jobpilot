@@ -376,6 +376,15 @@ class InboxScanner(Protocol):
         """Return messages matching ``query`` (optionally received after ``since``)."""
         ...
 
+    async def get_message(self, message_id: str) -> InboxMessage | None:
+        """Re-fetch one message by its provider id, or ``None`` if it does not exist.
+
+        The V2 anti-hallucination gate: before an interview is recorded, its evidence
+        quote is verified against THIS re-fetched body — never against the copy the
+        detector already had.
+        """
+        ...
+
 
 # =================================================================================
 # Contact research (outreach)

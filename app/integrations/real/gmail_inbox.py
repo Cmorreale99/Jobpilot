@@ -38,6 +38,25 @@ class GmailInboxScanner:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._credentials.access_token}"}
 
+    async def get_message(self, message_id: str) -> InboxMessage | None:
+        """Re-fetch one message for provenance verification (404 -> ``None``).
+
+        Uses the same metadata+snippet surface as the search, so the verified body is
+        exactly the surface detection saw — and full bodies are still never stored.
+        """
+        response = await self._client.get(
+            f"{self._api_base}/messages/{message_id}",
+            params={
+                "format": "metadata",
+                "metadataHeaders": ["Subject", "From", "Date"],
+            },
+            headers=self._headers(),
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return _map_message(response.json())
+
     async def search_messages(
         self, query: str, since: datetime | None = None
     ) -> list[InboxMessage]:

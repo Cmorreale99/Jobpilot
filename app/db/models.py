@@ -146,16 +146,21 @@ class OutreachRow(Base):
 
 
 class InterviewRow(Base):
-    """A detected interview, deduped on ``(user_id, source_message_id)``."""
+    """A detected interview, deduped on ``(user_id, gmail_message_id)``.
+
+    Hard provenance (V2): ``gmail_message_id`` NOT NULL and ``evidence_quote`` (the
+    verbatim trigger text, re-verified against the provider before insert) required.
+    """
 
     __tablename__ = "interviews"
     __table_args__ = (
-        UniqueConstraint("user_id", "source_message_id", name="uq_interviews_user_message"),
+        UniqueConstraint("user_id", "gmail_message_id", name="uq_interviews_user_message"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[str] = mapped_column(String(255), index=True)
-    source_message_id: Mapped[str] = mapped_column(String(255))
+    gmail_message_id: Mapped[str] = mapped_column(String(255))
+    evidence_quote: Mapped[str] = mapped_column(Text, default="")
     company: Mapped[str] = mapped_column(String(512))
     job_title: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     stage: Mapped[str] = mapped_column(String(16))
@@ -269,6 +274,20 @@ class ClaimEvidenceRow(Base):
     evidence_id: Mapped[int] = mapped_column(Integer)
     field: Mapped[str] = mapped_column(String(16))
     outcome_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ValidationRunRow(Base):
+    """One recorded verification run (PAR validation or interview provenance check)."""
+
+    __tablename__ = "validation_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    subject_ref: Mapped[str] = mapped_column(String(512))
+    passed: Mapped[bool] = mapped_column(Boolean)
+    detail: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class JobMatchRow(Base):
