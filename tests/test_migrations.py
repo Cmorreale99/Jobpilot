@@ -149,6 +149,20 @@ def test_upgrade_renames_interview_provenance_and_creates_validation_runs(
     assert "validation_runs" not in inspector.get_table_names()
 
 
+def test_upgrade_creates_artifacts(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "artifacts.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    assert "artifacts" in inspector.get_table_names()
+    columns = {c["name"] for c in inspector.get_columns("artifacts")}
+    assert {"kind", "file_path", "master_cv_version"} <= columns
+    uniques = {u["name"] for u in inspector.get_unique_constraints("artifacts")}
+    assert "uq_artifacts_user_kind_version" in uniques
+    command.downgrade(cfg, "0007")
+    assert "artifacts" not in sa.inspect(sa.create_engine(url)).get_table_names()
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")

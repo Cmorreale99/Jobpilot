@@ -1,0 +1,12 @@
+{
+  "name": "Jordan Rivera",
+  "tagline": "Turns broken data systems into decision infrastructure",
+  "contact_line": "Worcester, MA • jordan@example.com • github.com/jordanrivera",
+  "education": [
+    {"institution": "Worcester Polytechnic Institute", "detail": "MS Data Science (May 2026)"}
+  ],
+  "skills": [
+    {"name": "Languages & Development", "skill_list": ["Python", "SQL", "TypeScript"]},
+    {"name": "Data Engineering", "skill_list": ["ETL Pipelines", "Kafka", "Postgres"]}
+  ]
+}

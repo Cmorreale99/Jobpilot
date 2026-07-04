@@ -137,6 +137,17 @@ class Settings(BaseSettings):
     # How far back the job fetch looks ("fresh roles" window).
     jobs_since_hours: int = 24
 
+    # --- Master CV rendering (V2 M11) ------------------------------------------------
+    # The docxtpl template extracted from the real CV — integrated as-is, never edited.
+    resume_template_path: str = "templates/resume_template.docx"
+    # The user's profile JSON (name/tagline/contact_line/education/skills — the
+    # non-claim resume data). Empty disables rendering with a clear error, never a
+    # resume with invented header data.
+    resume_profile_path: str = ""
+    # Where rendered artifacts (context JSON + docx) are written; rows in `artifacts`
+    # point into this directory.
+    artifacts_dir: str = "var/artifacts"
+
     # --- Dashboard (Next.js dev server origin allowed to call this API) -------------
     dashboard_origins: str = "http://localhost:3000"
 
