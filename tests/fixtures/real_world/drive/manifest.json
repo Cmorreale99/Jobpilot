@@ -1,0 +1,13 @@
+{
+  "description": "Anonymized reality-shaped regression fixture (audit Phase 4): one multi-job resume with the production damage patterns — a contact header, word-per-line PDF extraction runs, run-on sentences, and a date-range job header. The eval regression test asserts the pipeline turns THIS into zero fragments and zero unspecific problems.",
+  "sources": [
+    {
+      "id": "drv_rw_resume",
+      "name": "resume_export_mangled.pdf",
+      "mime_type": "text/markdown",
+      "folder_id": "career_docs",
+      "modified_time": "2026-06-25T09:00:00Z",
+      "path": "resume_export_mangled.md"
+    }
+  ]
+}
