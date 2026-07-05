@@ -186,6 +186,68 @@ def test_llm_failure_raises_loudly_instead_of_falling_back() -> None:
         LlmTwoPassExtractor(client).extract(_GROUP)
 
 
+def test_oversized_groups_split_into_batches() -> None:
+    """A commit-heavy group extracts in multiple small calls, not one giant prompt."""
+    from app.llm import extraction as extraction_module
+
+    chunks = tuple(
+        EvidenceChunk(SOURCE_GITHUB_COMMIT, f"o/r@c{i}", f"Fixed ingest bug number {i} in Python")
+        for i in range(70)
+    )
+    group = EvidenceGroup(
+        experience=ExperienceSeed(name="big-repo", section=ExperienceSection.PROJECTS_HACKATHONS),
+        chunks=chunks,
+    )
+    batches = extraction_module._split_group(group)
+    assert len(batches) == 3  # 70 chunks under the 30-chunk budget
+    assert [len(b.chunks) for b in batches] == [30, 30, 10]
+    assert tuple(c for b in batches for c in b.chunks) == chunks  # nothing lost/reordered
+
+    # Two passes per batch: 6 calls total, drafts concatenated across batches.
+    responses = []
+    for batch in batches:
+        quote = batch.chunks[0].chunk_text
+        responses.append(
+            _pass1(
+                [
+                    {
+                        "chunk_index": 0,
+                        "action": quote,
+                        "tools": ["Python"],
+                        "action_quote": quote,
+                        "problem": None,
+                    }
+                ]
+            )
+        )
+        responses.append(_pass2([]))
+    client = FakeLlmClient(responses)
+    drafts = LlmTwoPassExtractor(client).extract(group)
+    assert len(client.calls) == 6
+    assert [d.action_text for d in drafts] == [
+        "Fixed ingest bug number 0 in Python",
+        "Fixed ingest bug number 30 in Python",
+        "Fixed ingest bug number 60 in Python",
+    ]
+    # Every citation resolves to a real chunk of the ORIGINAL group.
+    group_refs = {c.source_ref for c in chunks}
+    assert all(ref.chunk.source_ref in group_refs for d in drafts for ref in d.evidence)
+
+
+def test_char_budget_also_splits() -> None:
+    from app.llm import extraction as extraction_module
+
+    big = "x" * 20_000
+    group = EvidenceGroup(
+        experience=ExperienceSeed(name="r", section=ExperienceSection.PROJECTS_HACKATHONS),
+        chunks=(
+            EvidenceChunk(SOURCE_GITHUB_README, "o/r#chars=0-1", big),
+            EvidenceChunk(SOURCE_GITHUB_README, "o/r#chars=1-2", big),
+        ),
+    )
+    assert len(extraction_module._split_group(group)) == 2
+
+
 def test_bounced_violations_are_folded_into_the_prompts() -> None:
     client = FakeLlmClient([_GROUNDED_PASS1, _pass2([])])
     LlmTwoPassExtractor(client).extract(

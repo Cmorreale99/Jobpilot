@@ -302,6 +302,35 @@ def test_one_outcome_span_supports_at_most_one_claim() -> None:
     assert DUPLICATE_OUTCOME_FLAG in second.validation_flags
 
 
+async def test_targeted_rerun_touches_only_the_named_groups(
+    drive_client: MockDriveClient,
+    github_client: MockGitHubClient,
+    roster_settings: Settings,
+) -> None:
+    repo = InMemoryClaimRepository()
+    ids = await _reviewed_roster(drive_client, github_client, roster_settings, repo)
+    await run_roster_assignment(drive_client, github_client, "u1", repo, roster_settings)
+    baseline = await run_claim_extraction(drive_client, github_client, "u1", repo, roster_settings)
+    assert baseline.claims
+
+    # Restrict the re-run to one entity with an extractor that yields nothing:
+    # its unreviewed claims are replaced (emptied); every other entity is untouched.
+    report = await run_claim_extraction(
+        drive_client,
+        github_client,
+        "u1",
+        repo,
+        roster_settings,
+        extractor=_Scripted([]),
+        experience_names=["wellington platform rebuild"],  # case-insensitive
+    )
+    assert report.claims == []
+    remaining = repo.list_claims("u1")
+    assert all(c.experience_id != ids["wellington"] for c in remaining)
+    untouched = [c for c in baseline.claims if c.experience_id != ids["wellington"]]
+    assert {c.id for c in remaining} == {c.id for c in untouched}
+
+
 async def test_no_confirmed_roster_falls_back_to_per_file_groups(
     drive_client: MockDriveClient,
     github_client: MockGitHubClient,

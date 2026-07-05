@@ -7,7 +7,8 @@ Flow (per evidence group):
                    the legacy per-file grouping, loudly logged
         -> extract (two-pass; heuristic default, LLM behind a flag)
         -> PAR-validate every draft
-        -> failures bounce to re-extraction ONCE, carrying the specific violations
+        -> FIXABLE failures bounce to re-extraction ONCE, carrying the violations
+           (a problem the evidence never stated is not fixable — no bounce for it)
         -> STRUCTURAL failures after the bounce are DROPPED (logged, never queued):
            unspecific problems, fragment actions, and any claim citing evidence
            outside its own group (the project boundary — cross-project Results are
@@ -30,7 +31,9 @@ claim. Idempotent by construction: evidence and experiences upsert, and
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 
@@ -82,6 +85,7 @@ class ExtractionReport:
     dropped: list[str] = field(default_factory=list)  # structurally invalid, never queued
     deduped: list[str] = field(default_factory=list)  # duplicates of already-queued content
     failed_groups: list[str] = field(default_factory=list)  # extraction failed outright
+    skipped_unchanged: list[str] = field(default_factory=list)  # evidence fingerprint matched
 
     @property
     def flagged(self) -> list[Claim]:
@@ -213,6 +217,12 @@ DUPLICATE_OUTCOME_FLAG = (
     "Result; the Result was removed - attest the real impact or approve action-only"
 )
 
+# Violations a re-extraction cannot fix: when the evidence states no pain point, no
+# amount of re-prompting conjures one (the prompt already says "use null"). Bouncing
+# on these doubled the LLM cost of every commit-heavy group for zero benefit —
+# they queue as advisory flags for the human instead.
+_UNFIXABLE_BY_REEXTRACTION = frozenset({"problem_missing", "problem_not_pain_point"})
+
 
 def _outside_group_codes(draft: DraftClaim, group: EvidenceGroup) -> tuple[str, ...]:
     """Structural violations for evidence cited from outside the group's chunks.
@@ -250,9 +260,12 @@ def _strip_result(draft: DraftClaim) -> DraftClaim:
 
 
 def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) -> GroupExtraction:
-    """Extract one group's claims, bouncing validator failures to re-extraction once.
+    """Extract one group's claims, bouncing FIXABLE validator failures once.
 
-    The re-extraction carries the specific violations. After the bounce:
+    Violations in :data:`_UNFIXABLE_BY_REEXTRACTION` (the evidence states no pain
+    point) never trigger the bounce — re-prompting cannot fix them and used to double
+    the LLM cost of every commit-heavy group. The re-extraction carries the full
+    violation list as context. After the bounce:
 
     * claims with STRUCTURAL violations (unspecific Problems, fragment Actions,
       evidence cited from outside the group) are dropped — not reviewable candidates;
@@ -266,8 +279,13 @@ def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) 
     drafts = extractor.extract(group)
     violations_per_draft = [validate_claim(d) for d in drafts]
 
+    # Bounce only when at least one violation is FIXABLE by re-extraction; the full
+    # violation list still rides along as context when it does.
+    fixable = [
+        v for vs in violations_per_draft for v in vs if v.code not in _UNFIXABLE_BY_REEXTRACTION
+    ]
     all_violations = [str(v) for vs in violations_per_draft for v in vs]
-    if all_violations:
+    if fixable:
         logger.info(
             "PAR validation bounced %d/%d claim(s) for %r; re-extracting once",
             sum(1 for vs in violations_per_draft if vs),
@@ -320,6 +338,15 @@ def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) 
     return result
 
 
+def _group_fingerprint(group: EvidenceGroup) -> str:
+    """Stable hash of a group's evidence content (what extraction actually reads)."""
+    material = "\x1e".join(
+        f"{chunk.source_type}\x1f{chunk.source_ref}\x1f{chunk.chunk_text}"
+        for chunk in sorted(group.chunks, key=lambda c: (c.source_type, c.source_ref))
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def gather_roster_groups(user_id: str, repository: ClaimRepository) -> list[EvidenceGroup]:
     """One evidence group per CONFIRMED roster entity, from its assigned chunks only.
 
@@ -361,6 +388,8 @@ async def run_claim_extraction(
     extractor: ClaimExtractor | None = None,
     *,
     validation_log: ValidationRunLog | None = None,
+    experience_names: Collection[str] | None = None,
+    force: bool = False,
 ) -> ExtractionReport:
     """End-to-end: build groups, extract, PAR-validate, persist. Idempotent.
 
@@ -368,6 +397,14 @@ async def run_claim_extraction(
     roster detection + confirmation + assignment first); otherwise the legacy
     per-file grouping runs, with a loud log — file-shaped boundaries are the audit's
     root cause and survive only until the roster review has happened.
+
+    ``experience_names`` restricts the run to the named groups (case-insensitive) —
+    the targeted re-run after one group failed; other entities' claims are untouched.
+    Naming groups implies ``force`` for them: an explicit re-run never silently no-ops.
+
+    A group whose evidence fingerprint matches its last successful extraction is
+    SKIPPED (the queued claims already reflect it — no LLM spend); ``force=True``
+    re-extracts everything regardless.
 
     With a ``validation_log``, every persisted claim's final PAR verdict is recorded
     as a ``validation_runs`` row (pass, or fail with the specific violations).
@@ -397,12 +434,31 @@ async def run_claim_extraction(
             *await gather_github_groups(github_client, user_id, settings),
         ]
 
+    if experience_names is not None:
+        wanted = {name.casefold() for name in experience_names}
+        groups = [g for g in groups if g.experience.name.casefold() in wanted]
+        force = True  # an explicitly requested re-run never silently no-ops
+        logger.info(
+            "claim extraction for %s: restricted to %d group(s): %s",
+            user_id,
+            len(groups),
+            ", ".join(g.experience.name for g in groups) or "(none matched)",
+        )
+
     persisted: list[Claim] = []
     dropped: list[str] = []
     deduped: list[str] = []
     failed_groups: list[str] = []
+    skipped_unchanged: list[str] = []
     for group in groups:
         experience = repository.upsert_experience(user_id, group.experience)
+        group_hash = _group_fingerprint(group)
+        if not force and experience.extraction_hash == group_hash:
+            # The queued claims already reflect exactly this evidence: extraction
+            # would reproduce them at full LLM cost. Skip (force=True overrides).
+            logger.info("skipping %r: evidence unchanged since last extraction", experience.name)
+            skipped_unchanged.append(experience.name)
+            continue
         for chunk in group.chunks:
             repository.upsert_evidence(user_id, chunk)
         try:
@@ -472,13 +528,21 @@ async def run_claim_extraction(
                     detail=claim.validation_flags,
                 )
         persisted.extend(inserted)
+        # Only a fully successful group records its fingerprint — a failed or skipped
+        # group stays eligible for the next run.
+        repository.set_extraction_hash(experience.id, group_hash)
 
     report = ExtractionReport(
-        claims=persisted, dropped=dropped, deduped=deduped, failed_groups=failed_groups
+        claims=persisted,
+        dropped=dropped,
+        deduped=deduped,
+        failed_groups=failed_groups,
+        skipped_unchanged=skipped_unchanged,
     )
     logger.info(
         "claim extraction for %s: %d claim(s) pending review (%d flagged, %d missing results); "
-        "%d dropped as structurally invalid, %d dropped as duplicates, %d group(s) failed",
+        "%d dropped as structurally invalid, %d dropped as duplicates, %d group(s) failed, "
+        "%d group(s) skipped (evidence unchanged)",
         user_id,
         len(report.claims),
         len(report.flagged),
@@ -486,5 +550,6 @@ async def run_claim_extraction(
         len(report.dropped),
         len(report.deduped),
         len(report.failed_groups),
+        len(report.skipped_unchanged),
     )
     return report

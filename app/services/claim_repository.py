@@ -163,6 +163,14 @@ class InMemoryClaimRepository(ClaimRepository):
         self._experiences[experience_id] = experience
         return experience
 
+    def set_extraction_hash(self, experience_id: int, value: str | None) -> Experience:
+        experience = self._experiences.get(experience_id)
+        if experience is None:
+            raise LookupError(f"no experience with id {experience_id}")
+        updated = replace(experience, extraction_hash=value)
+        self._experiences[experience_id] = updated
+        return updated
+
     # --- evidence --------------------------------------------------------------------
 
     def upsert_evidence(self, user_id: str, chunk: EvidenceChunk) -> StoredEvidence:

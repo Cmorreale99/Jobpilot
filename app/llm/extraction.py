@@ -36,6 +36,7 @@ from app.domain.claims import (
     ClaimField,
     CostDimension,
     DraftClaim,
+    EvidenceChunk,
     EvidenceGroup,
     Inefficiency,
     ResultKind,
@@ -47,6 +48,37 @@ from app.llm.json_completion import complete_json
 from app.llm.types import LlmMessage, ModelTier
 
 logger = logging.getLogger("app.llm.extraction")
+
+# Commit-heavy repos produce groups of 100+ chunks; one prompt that size reliably
+# times out. Groups are split into batches under BOTH budgets and extracted per batch
+# (two passes each). Results attach within their batch only — an outcome statement in
+# another batch stays an honest missing Result rather than a cross-batch guess.
+# The char budget also bounds the OUTPUT: pass-1 JSON quotes the input verbatim, so a
+# batch must be small enough that its claims + quotes fit under max_tokens (observed
+# live: a 24K-char batch of dense commit bodies truncated an 8192-token completion).
+_MAX_BATCH_CHUNKS = 30
+_MAX_BATCH_CHARS = 14_000
+
+
+def _split_group(group: EvidenceGroup) -> list[EvidenceGroup]:
+    """Split one group into extraction batches under the chunk/char budgets."""
+    batches: list[list[EvidenceChunk]] = [[]]
+    size = 0
+    for chunk in group.chunks:
+        chunk_len = len(chunk.chunk_text)
+        if batches[-1] and (
+            len(batches[-1]) >= _MAX_BATCH_CHUNKS or size + chunk_len > _MAX_BATCH_CHARS
+        ):
+            batches.append([])
+            size = 0
+        batches[-1].append(chunk)
+        size += chunk_len
+    return [
+        EvidenceGroup(experience=group.experience, chunks=tuple(batch))
+        for batch in batches
+        if batch
+    ]
+
 
 _PASS1_SYSTEM = (
     "You extract career claims from evidence chunks (commit messages, READMEs, project "
@@ -141,10 +173,32 @@ class LlmTwoPassExtractor:
     def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
         if not any(chunk.chunk_text.strip() for chunk in group.chunks):
             return []
+        batches = _split_group(group)
+        if len(batches) > 1:
+            logger.info(
+                "splitting %r into %d extraction batches (%d chunks)",
+                group.experience.name,
+                len(batches),
+                len(group.chunks),
+            )
+        drafts: list[DraftClaim] = []
+        for batch in batches:
+            drafts.extend(self._extract_batch(batch, violations))
+        return drafts
+
+    def _extract_batch(
+        self, group: EvidenceGroup, violations: Sequence[str] = ()
+    ) -> list[DraftClaim]:
+        # The evidence chunks are the shared, expensive block: they go in the CACHED
+        # system prefix, identical across both passes (and a bounce), so pass 2 reads
+        # pass 1's cache at ~10% of the input price. The pass-specific instructions
+        # ride in the user message — putting them in `system` would change the prefix
+        # and defeat the cache.
+        chunk_context = f"Evidence chunks:\n{_render_chunks(group)}"
         try:
             pass1 = complete_json(
                 self._client,
-                system=_PASS1_SYSTEM,
+                cached_context=chunk_context,
                 messages=[LlmMessage.user(_pass1_prompt(group, violations))],
                 tier=self._tier,
                 validator=_parse_pass1,
@@ -155,7 +209,7 @@ class LlmTwoPassExtractor:
                 return []
             pass2 = complete_json(
                 self._client,
-                system=_PASS2_SYSTEM,
+                cached_context=chunk_context,
                 messages=[LlmMessage.user(_pass2_prompt(group, grounded, violations))],
                 tier=self._tier,
                 validator=_parse_pass2,
@@ -286,9 +340,9 @@ def _violations_note(violations: Sequence[str]) -> str:
 
 def _pass1_prompt(group: EvidenceGroup, violations: Sequence[str]) -> str:
     return (
+        f"{_PASS1_SYSTEM}\n\n"
         f"Experience: {group.experience.name}\n"
-        "Evidence chunks:\n"
-        f"{_render_chunks(group)}\n"
+        "The evidence chunks are provided in the system context above."
         f"{_violations_note(violations)}\n"
         "Extract the pass-1 claims (work statements + problem context) per the rules."
     )
@@ -304,9 +358,9 @@ def _pass2_prompt(
         for index, claim in enumerate(claims)
     )
     return (
+        f"{_PASS2_SYSTEM}\n\n"
         f"Experience: {group.experience.name}\n"
-        "Evidence chunks:\n"
-        f"{_render_chunks(group)}\n\n"
+        "The evidence chunks are provided in the system context above.\n\n"
         "Pass-1 claims:\n"
         f"{claim_lines}\n"
         f"{_violations_note(violations)}\n"
