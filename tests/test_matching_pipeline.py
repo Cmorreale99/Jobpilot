@@ -1,4 +1,4 @@
-"""End-to-end matching: build a Master CV from mocks, rank fixture jobs, persist."""
+"""End-to-end matching: rank fixture jobs against an approved-claims Master CV, persist."""
 
 from __future__ import annotations
 
@@ -6,21 +6,48 @@ import sqlalchemy as sa
 from app.config import Settings
 from app.db.job_repository import SqlJobRepository
 from app.db.session import create_all, create_session_factory
-from app.integrations.mock.drive import MockDriveClient
-from app.integrations.mock.github import MockGitHubClient
+from app.domain.cv import MasterCv, ParClaim
 from app.integrations.mock.jobs import MockJobSource
 from app.services.job_repository import InMemoryJobRepository
-from app.services.master_cv_ingestion import build_master_cv
 from app.services.matching import run_matching
 
 
+def _cv() -> MasterCv:
+    """A Master CV shaped like the adapter's output: approved claims, claim:<id> refs."""
+
+    def claim(claim_id: int, action: str, result: str | None = None) -> ParClaim:
+        return ParClaim(
+            action=action,
+            result=result,
+            source_type="approved_claim",
+            source_ref=f"claim:{claim_id}",
+        )
+
+    return MasterCv(
+        claims=[
+            claim(
+                1,
+                "Re-architected the settlement pipeline over Kafka in Python for payments",
+                "Cut settlement batch runtime by 70%",
+            ),
+            claim(2, "Built streaming payment reconciliation and ledger services with SQL"),
+            claim(
+                3,
+                "Deployed distributed systems with Kubernetes and Terraform across regions",
+                "Reduced deploy latency by half",
+            ),
+            claim(4, "Developed fraud detection models and anomaly scoring in Python"),
+            claim(5, "Instrumented observability for high-throughput backend APIs with Grafana"),
+        ],
+        version=1,
+    )
+
+
 async def test_pipeline_ranks_relevant_jobs_first(
-    mock_client: MockDriveClient,
-    mock_github_client: MockGitHubClient,
     mock_job_source: MockJobSource,
     settings: Settings,
 ) -> None:
-    cv = await build_master_cv(mock_client, mock_github_client, "u1", settings)
+    cv = _cv()
     repo = InMemoryJobRepository()
 
     matches = await run_matching(mock_job_source, cv, "u1", repo, settings)
@@ -42,12 +69,10 @@ async def test_pipeline_ranks_relevant_jobs_first(
 
 
 async def test_pipeline_is_idempotent_and_dedupes_jobs(
-    mock_client: MockDriveClient,
-    mock_github_client: MockGitHubClient,
     mock_job_source: MockJobSource,
     settings: Settings,
 ) -> None:
-    cv = await build_master_cv(mock_client, mock_github_client, "u1", settings)
+    cv = _cv()
     engine = sa.create_engine("sqlite+pysqlite:///:memory:")
     create_all(engine)
     repo = SqlJobRepository(create_session_factory(engine))

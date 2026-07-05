@@ -25,6 +25,7 @@ from app.domain.claims import (
     SOURCE_DRIVE,
     SOURCE_GITHUB_COMMIT,
     SOURCE_GITHUB_README,
+    SOURCE_UPLOAD,
     ClaimRepository,
     EvidenceChunk,
     Experience,
@@ -39,9 +40,15 @@ from app.integrations.base import (
     DriveResponseError,
     GitHubClient,
     GitHubResponseError,
+    UploadsClient,
 )
+from app.integrations.uploads import create_uploads_client
 from app.services.roster_factory import create_chunk_assigner, create_roster_proposer
-from app.services.source_policy import apply_repo_policy, apply_source_policy
+from app.services.source_policy import (
+    apply_repo_policy,
+    apply_source_policy,
+    apply_upload_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +75,15 @@ async def gather_source_documents(
     github_client: GitHubClient,
     user_id: str,
     settings: Settings | None = None,
+    *,
+    uploads_client: UploadsClient | None = None,
 ) -> list[SourceDocument]:
-    """Every policy-approved source as one normalized document (Drive, READMEs, commits)."""
+    """Every policy-approved source as one normalized document.
+
+    Drive docs, repo READMEs + commits, and — when ``UPLOADS_DIR`` is configured (or a
+    client injected) — local uploads, all normalized before anything downstream reads
+    them. This is the single evidence-gathering path of V2.
+    """
     settings = settings or get_settings()
     documents: list[SourceDocument] = []
 
@@ -113,6 +127,20 @@ async def gather_source_documents(
                 )
         except GitHubResponseError as exc:
             logger.warning("no commit evidence for %s: %s", repo.repo_ref, exc)
+
+    uploads_client = uploads_client or create_uploads_client(settings)
+    if uploads_client is not None:
+        candidates = await uploads_client.list_candidate_uploads()
+        for candidate in apply_upload_policy(candidates, settings):
+            upload = await uploads_client.read_upload(candidate.upload_ref)
+            documents.append(
+                SourceDocument(
+                    source_type=SOURCE_UPLOAD,
+                    source_ref=upload.upload_ref,
+                    title=upload.title,
+                    text=normalize_source_text(upload.text),
+                )
+            )
 
     return documents
 

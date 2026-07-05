@@ -84,3 +84,60 @@ def test_tailoring_is_deterministic() -> None:
 def test_materials_json_round_trip() -> None:
     materials = HeuristicMaterialsTailorer().tailor(_cv(), _match(_PAYMENTS_JOB))
     assert TailoredMaterials.from_json(materials.to_json()) == materials
+
+
+# --- Phase 3: claim-id traceability + the number-factuality gate ---------------------------
+
+
+def test_claim_ref_id_parses_ledger_refs_only() -> None:
+    from app.domain.tailoring import claim_ref_id
+
+    ledger = ParClaim(action="x", source_type="approved_claim", source_ref="claim:41")
+    assert claim_ref_id(ledger) == 41
+    assert claim_ref_id(ParClaim(action="x", source_ref="resume")) is None
+    assert claim_ref_id(ParClaim(action="x", source_ref="claim:not-a-number")) is None
+
+
+def test_heuristic_highlights_carry_their_claim_ids() -> None:
+    from app.domain.tailoring import claim_ref_id, select_claims
+
+    cv = MasterCv(
+        claims=[
+            ParClaim(
+                action=c.action,
+                problem=c.problem,
+                result=c.result,
+                source_type="approved_claim",
+                source_ref=f"claim:{i + 10}",
+            )
+            for i, c in enumerate([_PAYMENTS_CLAIM, _TRACING_CLAIM])
+        ],
+        version=3,
+    )
+    materials = HeuristicMaterialsTailorer().tailor(cv, _match(_PAYMENTS_JOB))
+    assert len(materials.highlight_claim_ids) == len(materials.highlights)
+    selected = select_claims(cv, _match(_PAYMENTS_JOB))
+    assert materials.highlight_claim_ids == tuple(claim_ref_id(c) or 0 for c in selected)
+    assert all(i >= 10 for i in materials.highlight_claim_ids)
+
+
+def test_unsupported_numbers_finds_invented_metrics() -> None:
+    from app.domain.tailoring import unsupported_numbers
+
+    allowed = ["Cut settlement runtime by 70%", "took 10 hours per week"]
+    assert unsupported_numbers("Cut runtime by 70% in 10 hours", allowed) == []
+    assert unsupported_numbers("Drove $8M in savings, 70% faster", allowed) == ["8"]
+    assert unsupported_numbers("Improved 1,000 pipelines", ["handled 1000 pipelines"]) == []
+
+
+def test_materials_json_round_trip_including_legacy_rows() -> None:
+    materials = TailoredMaterials(
+        summary="s",
+        highlights=("h1", "h2"),
+        cover_letter="c",
+        highlight_claim_ids=(41, 42),
+    )
+    assert TailoredMaterials.from_json(materials.to_json()) == materials
+    # Legacy rows predate highlight_claim_ids: they deserialize with an empty tuple.
+    legacy = {"summary": "s", "highlights": ["h1"], "cover_letter": "c"}
+    assert TailoredMaterials.from_json(legacy).highlight_claim_ids == ()

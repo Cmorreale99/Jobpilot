@@ -1,7 +1,7 @@
 """Selects the two-stage matchers (scorer + reranker) from config.
 
 Service-layer factory, so it may import ``app/llm/`` (``domain/`` may not). Same shape and
-footgun guard as :mod:`app.services.cv_builder_factory`: heuristic by default, LLM-backed
+footgun guard as :mod:`app.services.extractor_factory`: heuristic by default, LLM-backed
 when ``matching_llm_ranking`` is on and a real client is available; otherwise it logs and
 falls back to the heuristic rather than handing the matchers the offline fake (which returns
 non-JSON and fails). An explicitly injected ``llm_client`` is always honored.

@@ -118,12 +118,16 @@ async def test_pipeline_runs_end_to_end(
     assert all(a.status is ApplicationStatus.DRAFTED for a in applications)
     assert all(a.materials.highlights for a in applications)
     # Every highlight is a verbatim rendering of an APPROVED claim — nothing invented,
-    # nothing from the retired V1 path.
-    approved_actions = {
-        c.action_text for c in deps.claim_repository.list_claims("u1", status=ClaimStatus.APPROVED)
-    }
+    # nothing from the retired V1 path — and carries that claim's ledger id (the
+    # Phase 3 exit test: prose that leaves the machine is claim-traceable).
+    approved = deps.claim_repository.list_claims("u1", status=ClaimStatus.APPROVED)
+    approved_actions = {c.action_text for c in approved}
+    approved_ids = {c.id for c in approved}
     for application in applications:
-        for highlight in application.materials.highlights:
+        materials = application.materials
+        assert len(materials.highlight_claim_ids) == len(materials.highlights)
+        assert set(materials.highlight_claim_ids) <= approved_ids
+        for highlight in materials.highlights:
             assert any(highlight.startswith(action) for action in approved_actions)
 
 
