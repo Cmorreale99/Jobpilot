@@ -59,9 +59,11 @@ from app.domain.claims import (
     StorableClaim,
     claim_content_fingerprint,
 )
+from app.domain.evaluation import compute_slop_metrics
 from app.domain.par_validation import is_structural, validate_claim
 from app.domain.text_normalization import normalize_source_text
 from app.domain.validation_runs import (
+    KIND_EXTRACTION_EVAL,
     KIND_EXTRACTION_FAILURE,
     KIND_PAR_VALIDATION,
     ValidationRunLog,
@@ -539,6 +541,17 @@ async def run_claim_extraction(
         failed_groups=failed_groups,
         skipped_unchanged=skipped_unchanged,
     )
+    if validation_log is not None and report.claims:
+        # The per-run scorecard (audit Phase 4): extractor/prompt changes get a
+        # tracked metric row instead of vibes. Boundary violations fail the row.
+        metrics = compute_slop_metrics(report.claims, repository.get_evidence)
+        validation_log.record(
+            user_id,
+            KIND_EXTRACTION_EVAL,
+            subject_ref="extraction_run",
+            passed=metrics.boundary_clean,
+            detail=metrics.detail_lines(),
+        )
     logger.info(
         "claim extraction for %s: %d claim(s) pending review (%d flagged, %d missing results); "
         "%d dropped as structurally invalid, %d dropped as duplicates, %d group(s) failed, "

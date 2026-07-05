@@ -20,6 +20,8 @@ KIND_PAR_VALIDATION = "par_validation"
 KIND_INTERVIEW_VERIFICATION = "interview_verification"
 # One row per evidence group whose LLM extraction failed outright (no silent fallback).
 KIND_EXTRACTION_FAILURE = "extraction_failure"
+# One scorecard row per extraction run: the slop metrics (audit Phase 4).
+KIND_EXTRACTION_EVAL = "extraction_eval"
 
 
 @dataclass(frozen=True)
