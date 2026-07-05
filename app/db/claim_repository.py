@@ -18,7 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import ClaimEvidenceRow, ClaimRow, EvidenceRow, ExperienceRow
+from app.domain.applications import validate_transition
 from app.domain.claims import (
+    EXPERIENCE_TRANSITIONS,
     Claim,
     ClaimEditPlan,
     ClaimEvidenceLink,
@@ -27,8 +29,10 @@ from app.domain.claims import (
     CostDimension,
     EvidenceChunk,
     Experience,
+    ExperienceKind,
     ExperienceSection,
     ExperienceSeed,
+    ExperienceStatus,
     Inefficiency,
     ResultKind,
     ResultStatus,
@@ -59,6 +63,10 @@ def _to_experience(row: ExperienceRow) -> Experience:
         subtitle=row.subtitle,
         dates=row.dates,
         sort_order=row.sort_order,
+        kind=ExperienceKind(row.kind),
+        status=ExperienceStatus(row.status),
+        aliases=tuple(row.aliases or []),
+        merged_into_id=row.merged_into_id,
     )
 
 
@@ -70,6 +78,7 @@ def _to_evidence(row: EvidenceRow) -> StoredEvidence:
         source_ref=row.source_ref,
         chunk_text=row.chunk_text,
         created_at=row.created_at,
+        experience_id=row.experience_id,
     )
 
 
@@ -115,32 +124,111 @@ class SqlClaimRepository:
     # --- experiences ---------------------------------------------------------------
 
     def upsert_experience(self, user_id: str, seed: ExperienceSeed) -> Experience:
+        return self._upsert(user_id, seed, ExperienceStatus.CONFIRMED)
+
+    def propose_experience(self, user_id: str, seed: ExperienceSeed) -> Experience:
+        return self._upsert(user_id, seed, ExperienceStatus.PROPOSED)
+
+    def _upsert(self, user_id: str, seed: ExperienceSeed, status: ExperienceStatus) -> Experience:
         with self._session_factory() as session:
-            row = session.scalar(
-                select(ExperienceRow).where(
-                    ExperienceRow.user_id == user_id, ExperienceRow.name == seed.name
-                )
-            )
-            if row is not None:
-                # Existing row wins: section/sort_order are user-assigned in review.
-                return _to_experience(row)
-            count = len(
-                session.scalars(
-                    select(ExperienceRow.id).where(ExperienceRow.user_id == user_id)
-                ).all()
-            )
+            rows = session.scalars(
+                select(ExperienceRow).where(ExperienceRow.user_id == user_id)
+            ).all()
+            for row in rows:
+                # Existing row (matched by name OR alias, both directions) wins: its
+                # status, section, and sort_order are human decisions.
+                existing = _to_experience(row)
+                if existing.matches_name(seed.name) or any(
+                    existing.matches_name(alias) for alias in seed.aliases
+                ):
+                    return existing
             row = ExperienceRow(
                 user_id=user_id,
                 name=seed.name,
                 subtitle=seed.subtitle,
                 dates=seed.dates,
                 section=seed.section.value,
-                sort_order=count,
+                sort_order=len(rows),
+                kind=seed.kind.value,
+                status=status.value,
+                aliases=list(seed.aliases),
             )
             session.add(row)
             session.commit()
             session.refresh(row)
             return _to_experience(row)
+
+    def set_experience_status(self, experience_id: int, status: ExperienceStatus) -> Experience:
+        with self._session_factory() as session:
+            row = session.get(ExperienceRow, experience_id)
+            if row is None:
+                raise LookupError(f"no experience with id {experience_id}")
+            validate_transition(EXPERIENCE_TRANSITIONS, ExperienceStatus(row.status), status)
+            row.status = status.value
+            session.commit()
+            session.refresh(row)
+            return _to_experience(row)
+
+    def update_experience_details(
+        self,
+        experience_id: int,
+        *,
+        name: str | None = None,
+        subtitle: str | None = None,
+        dates: str | None = None,
+        kind: ExperienceKind | None = None,
+        aliases: tuple[str, ...] | None = None,
+    ) -> Experience:
+        with self._session_factory() as session:
+            row = session.get(ExperienceRow, experience_id)
+            if row is None:
+                raise LookupError(f"no experience with id {experience_id}")
+            if name is not None and name.strip() and name != row.name:
+                # A rename keeps the old name recognizable to future detections.
+                row.aliases = list(dict.fromkeys([*(row.aliases or []), row.name]))
+                row.name = name.strip()
+            if subtitle is not None:
+                row.subtitle = subtitle or None
+            if dates is not None:
+                row.dates = dates or None
+            if kind is not None:
+                row.kind = kind.value
+            if aliases is not None:
+                row.aliases = list(dict.fromkeys(aliases))
+            session.commit()
+            session.refresh(row)
+            return _to_experience(row)
+
+    def merge_experiences(self, source_id: int, target_id: int) -> Experience:
+        with self._session_factory() as session:
+            source = session.get(ExperienceRow, source_id)
+            target = session.get(ExperienceRow, target_id)
+            if source is None or target is None:
+                missing = source_id if source is None else target_id
+                raise LookupError(f"no experience with id {missing}")
+            if source_id == target_id:
+                raise ValueError("cannot merge an experience into itself")
+            source_status = ExperienceStatus(source.status)
+            if source_status in (ExperienceStatus.MERGED, ExperienceStatus.DISCARDED):
+                raise ValueError(f"experience {source_id} is {source.status} and cannot be merged")
+            if ExperienceStatus(target.status) is not ExperienceStatus.CONFIRMED:
+                raise ValueError("merge target must be a confirmed experience")
+            for claim_row in session.scalars(
+                select(ClaimRow).where(ClaimRow.experience_id == source_id)
+            ):
+                claim_row.experience_id = target_id
+            for evidence_row in session.scalars(
+                select(EvidenceRow).where(EvidenceRow.experience_id == source_id)
+            ):
+                evidence_row.experience_id = target_id
+            target.aliases = list(
+                dict.fromkeys([*(target.aliases or []), source.name, *(source.aliases or [])])
+            )
+            source.status = ExperienceStatus.MERGED.value
+            source.merged_into_id = target_id
+            session.commit()
+            session.refresh(target)
+            return _to_experience(target)
 
     def list_experiences(self, user_id: str) -> list[Experience]:
         with self._session_factory() as session:
@@ -183,6 +271,28 @@ class SqlClaimRepository:
         with self._session_factory() as session:
             row = session.get(EvidenceRow, evidence_id)
             return _to_evidence(row) if row is not None else None
+
+    def assign_evidence(self, evidence_id: int, experience_id: int | None) -> StoredEvidence:
+        with self._session_factory() as session:
+            row = session.get(EvidenceRow, evidence_id)
+            if row is None:
+                raise LookupError(f"no evidence with id {evidence_id}")
+            row.experience_id = experience_id
+            session.commit()
+            session.refresh(row)
+            return _to_evidence(row)
+
+    def list_assigned_evidence(self, user_id: str, experience_id: int) -> list[StoredEvidence]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(EvidenceRow)
+                .where(
+                    EvidenceRow.user_id == user_id,
+                    EvidenceRow.experience_id == experience_id,
+                )
+                .order_by(EvidenceRow.id)
+            )
+            return [_to_evidence(row) for row in rows]
 
     @staticmethod
     def _upsert_evidence_row(session: Session, user_id: str, chunk: EvidenceChunk) -> EvidenceRow:

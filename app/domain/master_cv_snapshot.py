@@ -23,7 +23,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
-from app.domain.claims import Claim, ClaimStatus, Experience, ExperienceSection
+from app.domain.claims import (
+    Claim,
+    ClaimStatus,
+    Experience,
+    ExperienceSection,
+    ExperienceStatus,
+)
 from app.domain.cv import MasterCv, ParClaim
 
 SNAPSHOT_KIND = "approved_claims"
@@ -68,7 +74,8 @@ def build_snapshot_content(
 
     Any claim that is not ``approved`` is dropped here regardless of what the caller
     passed — the belt to the service query's suspenders. Experiences with no approved
-    claims do not appear (nothing to render).
+    claims do not appear (nothing to render), and neither does any roster entity that
+    is not ``confirmed`` — a proposed, merged, or discarded entity never renders.
     """
     approved = [c for c in claims if c.status is ClaimStatus.APPROVED]
     claims_by_experience: dict[int, list[Claim]] = {}
@@ -80,6 +87,8 @@ def build_snapshot_content(
         ExperienceSection.PROJECTS_HACKATHONS.value: [],
     }
     for experience in sorted(experiences, key=lambda e: (e.sort_order, e.id)):
+        if experience.status is not ExperienceStatus.CONFIRMED:
+            continue
         experience_claims = claims_by_experience.get(experience.id)
         if not experience_claims:
             continue

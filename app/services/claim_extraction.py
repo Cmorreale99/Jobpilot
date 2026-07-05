@@ -1,13 +1,19 @@
 """Claim extraction service: evidence gathering -> two-pass extraction -> PAR gate.
 
-Flow (per experience-sized evidence group):
+Flow (per evidence group):
 
-    gather evidence (Drive docs, GitHub READMEs + commits, via the existing policies;
-                     source text is normalized before it becomes a chunk)
+    build groups — ROSTER MODE when the user has confirmed entities with assigned
+                   evidence (one group per confirmed entity, its chunks only); else
+                   the legacy per-file grouping, loudly logged
         -> extract (two-pass; heuristic default, LLM behind a flag)
         -> PAR-validate every draft
         -> failures bounce to re-extraction ONCE, carrying the specific violations
-        -> STRUCTURAL failures after the bounce are DROPPED (logged, never queued)
+        -> STRUCTURAL failures after the bounce are DROPPED (logged, never queued):
+           unspecific problems, fragment actions, and any claim citing evidence
+           outside its own group (the project boundary — cross-project Results are
+           unrepresentable in roster mode and rejected everywhere)
+        -> one outcome span supports at most ONE claim's Result: later claims keep
+           the work, lose the Result (back to missing, flagged for review)
         -> advisory failures land in the review queue flagged (validation_flags)
         -> duplicates of content already queued anywhere for the user are dropped
         -> persist evidence, experiences, claims + claim_evidence links
@@ -26,6 +32,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 
 from app.config import Settings, get_settings
 from app.domain.claims import (
@@ -35,6 +42,7 @@ from app.domain.claims import (
     Claim,
     ClaimExtractionError,
     ClaimExtractor,
+    ClaimField,
     ClaimRepository,
     ClaimStatus,
     DraftClaim,
@@ -42,6 +50,7 @@ from app.domain.claims import (
     EvidenceGroup,
     ExperienceSection,
     ExperienceSeed,
+    ExperienceStatus,
     ResultKind,
     ResultStatus,
     StorableClaim,
@@ -197,13 +206,61 @@ class GroupExtraction:
     dropped: list[tuple[DraftClaim, tuple[str, ...]]] = field(default_factory=list)
 
 
+# Flag stamped on a claim whose Result was removed because its outcome span already
+# supports another claim in the same group (one span, one Result).
+DUPLICATE_OUTCOME_FLAG = (
+    "duplicate_outcome_span: this outcome quote already supports another claim's "
+    "Result; the Result was removed - attest the real impact or approve action-only"
+)
+
+
+def _outside_group_codes(draft: DraftClaim, group: EvidenceGroup) -> tuple[str, ...]:
+    """Structural violations for evidence cited from outside the group's chunks.
+
+    In roster mode a group is one confirmed entity's evidence, so an outside citation
+    IS a project-boundary violation — a Result imported from another project.
+    """
+    group_keys = {(chunk.source_type, chunk.source_ref) for chunk in group.chunks}
+    codes: list[str] = []
+    for ref in draft.evidence:
+        if (ref.chunk.source_type, ref.chunk.source_ref) in group_keys:
+            continue
+        if ref.field is ClaimField.RESULT:
+            codes.append(
+                "result_project_mismatch: the Result cites evidence outside this "
+                f"entity's own chunks ({ref.chunk.source_ref})"
+            )
+        else:
+            codes.append(
+                "evidence_outside_project: the claim cites evidence outside this "
+                f"entity's own chunks ({ref.chunk.source_ref})"
+            )
+    return tuple(codes)
+
+
+def _strip_result(draft: DraftClaim) -> DraftClaim:
+    """Remove a draft's Result honestly (back to missing, no links, no metric)."""
+    return dc_replace(
+        draft,
+        result_text=None,
+        result_kind=ResultKind.MISSING,
+        result_metric_json=None,
+        evidence=tuple(ref for ref in draft.evidence if ref.field is not ClaimField.RESULT),
+    )
+
+
 def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) -> GroupExtraction:
     """Extract one group's claims, bouncing validator failures to re-extraction once.
 
-    The re-extraction carries the specific violations. After the bounce, claims with
-    STRUCTURAL violations (one-word Problems, fragment Actions) are dropped — they are
-    not reviewable candidates; advisory violations land in the queue as flags. A
-    failure on the bounce itself falls back to the first pass's drafts (flagged)
+    The re-extraction carries the specific violations. After the bounce:
+
+    * claims with STRUCTURAL violations (unspecific Problems, fragment Actions,
+      evidence cited from outside the group) are dropped — not reviewable candidates;
+    * one outcome span supports at most ONE claim's Result — later claims keep their
+      work, lose the Result (missing + flagged);
+    * advisory violations land in the queue as flags.
+
+    A failure on the bounce itself falls back to the first pass's drafts (flagged)
     rather than losing them.
     """
     drafts = extractor.extract(group)
@@ -228,19 +285,71 @@ def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) 
             )
 
     result = GroupExtraction()
+    seen_outcome_spans: set[tuple[str, str]] = set()
     for draft, violations in zip(drafts, violations_per_draft, strict=True):
-        structural = tuple(str(v) for v in violations if is_structural(v))
+        structural = [str(v) for v in violations if is_structural(v)]
+        structural.extend(_outside_group_codes(draft, group))
         if structural:
             logger.warning(
-                "dropping structurally invalid claim for %r (%s): %s",
+                "dropping structurally invalid claim for %r: %s",
                 group.experience.name,
-                "; ".join(v.code for v in violations if is_structural(v)),
                 draft.action_text[:80],
             )
-            result.dropped.append((draft, structural))
+            result.dropped.append((draft, tuple(structural)))
             continue
-        result.storables.append(_to_storable(draft, [str(v) for v in violations]))
+
+        flags = [str(v) for v in violations]
+        result_spans = {
+            (ref.chunk.source_ref, " ".join((ref.outcome_quote or "").split()))
+            for ref in draft.evidence
+            if ref.field is ClaimField.RESULT and (ref.outcome_quote or "").strip()
+        }
+        if result_spans & seen_outcome_spans:
+            draft = _strip_result(draft)
+            flags = [str(v) for v in validate_claim(draft)]
+            flags.append(DUPLICATE_OUTCOME_FLAG)
+            logger.warning(
+                "outcome span reused for %r; Result removed from: %s",
+                group.experience.name,
+                draft.action_text[:80],
+            )
+        else:
+            seen_outcome_spans |= result_spans
+
+        result.storables.append(_to_storable(draft, flags))
     return result
+
+
+def gather_roster_groups(user_id: str, repository: ClaimRepository) -> list[EvidenceGroup]:
+    """One evidence group per CONFIRMED roster entity, from its assigned chunks only.
+
+    This is the project boundary made physical: the extractor can only cite chunks
+    that belong to the entity it is extracting for, so a cross-project Result is
+    unrepresentable. Entities with no assigned evidence contribute no group.
+    """
+    groups: list[EvidenceGroup] = []
+    for experience in repository.list_experiences(user_id):
+        if experience.status is not ExperienceStatus.CONFIRMED:
+            continue
+        stored = repository.list_assigned_evidence(user_id, experience.id)
+        if not stored:
+            continue
+        groups.append(
+            EvidenceGroup(
+                experience=ExperienceSeed(
+                    name=experience.name,
+                    section=experience.section,
+                    subtitle=experience.subtitle,
+                    dates=experience.dates,
+                    kind=experience.kind,
+                    aliases=experience.aliases,
+                ),
+                chunks=tuple(
+                    EvidenceChunk(e.source_type, e.source_ref, e.chunk_text) for e in stored
+                ),
+            )
+        )
+    return groups
 
 
 async def run_claim_extraction(
@@ -253,7 +362,12 @@ async def run_claim_extraction(
     *,
     validation_log: ValidationRunLog | None = None,
 ) -> ExtractionReport:
-    """End-to-end: gather evidence, extract, PAR-validate, persist. Idempotent.
+    """End-to-end: build groups, extract, PAR-validate, persist. Idempotent.
+
+    ROSTER MODE when the user has confirmed entities with assigned evidence (run
+    roster detection + confirmation + assignment first); otherwise the legacy
+    per-file grouping runs, with a loud log — file-shaped boundaries are the audit's
+    root cause and survive only until the roster review has happened.
 
     With a ``validation_log``, every persisted claim's final PAR verdict is recorded
     as a ``validation_runs`` row (pass, or fail with the specific violations).
@@ -264,10 +378,24 @@ async def run_claim_extraction(
 
         extractor = create_claim_extractor(settings)
 
-    groups = [
-        *await gather_drive_groups(drive_client, user_id, settings),
-        *await gather_github_groups(github_client, user_id, settings),
-    ]
+    groups = gather_roster_groups(user_id, repository)
+    if groups:
+        logger.info(
+            "claim extraction for %s: ROSTER MODE — %d confirmed entity group(s)",
+            user_id,
+            len(groups),
+        )
+    else:
+        logger.warning(
+            "claim extraction for %s: no confirmed roster with assigned evidence; "
+            "falling back to per-file grouping (experiences will be file-shaped — "
+            "run roster detection and confirm the roster to fix the boundaries)",
+            user_id,
+        )
+        groups = [
+            *await gather_drive_groups(drive_client, user_id, settings),
+            *await gather_github_groups(github_client, user_id, settings),
+        ]
 
     persisted: list[Claim] = []
     dropped: list[str] = []

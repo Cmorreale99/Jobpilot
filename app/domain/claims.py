@@ -99,6 +99,38 @@ class ExperienceSection(StrEnum):
     PROJECTS_HACKATHONS = "projects_hackathons"
 
 
+class ExperienceKind(StrEnum):
+    """What kind of real-world entity an experience is (roster-assigned)."""
+
+    EMPLOYER_ROLE = "employer_role"
+    PROJECT = "project"
+
+
+class ExperienceStatus(StrEnum):
+    """Roster lifecycle of an experience (``experiences.status``).
+
+    Detection proposes entities; only a HUMAN confirms them. Extraction scopes claims
+    to confirmed entities exclusively. ``merged``/``discarded`` are terminal — a
+    re-detection that re-proposes a discarded name returns the discarded row unchanged
+    (junk is never re-queued), mirroring the claim-review retention rule.
+    """
+
+    PROPOSED = "proposed"
+    CONFIRMED = "confirmed"
+    MERGED = "merged"
+    DISCARDED = "discarded"
+
+
+# proposed -> confirmed | discarded; confirmed -> discarded; merged/discarded terminal.
+# (A merge is performed by ``merge_experiences``, which stamps ``merged`` directly.)
+EXPERIENCE_TRANSITIONS: dict[ExperienceStatus, frozenset[ExperienceStatus]] = {
+    ExperienceStatus.PROPOSED: frozenset({ExperienceStatus.CONFIRMED, ExperienceStatus.DISCARDED}),
+    ExperienceStatus.CONFIRMED: frozenset({ExperienceStatus.DISCARDED}),
+    ExperienceStatus.MERGED: frozenset(),
+    ExperienceStatus.DISCARDED: frozenset(),
+}
+
+
 # Evidence source types (documented values; deliberately NOT a CHECK constraint —
 # the content gate lives in the PAR validator, where it belongs).
 SOURCE_DRIVE = "drive"
@@ -154,6 +186,8 @@ class ExperienceSeed:
     section: ExperienceSection
     subtitle: str | None = None
     dates: str | None = None
+    kind: ExperienceKind = ExperienceKind.PROJECT
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -194,7 +228,12 @@ class DraftClaim:
 
 @dataclass(frozen=True)
 class Experience:
-    """A persisted experience (groups claims; user assigns section + order in review)."""
+    """A persisted experience — a real-world entity (employer role or project).
+
+    V2.1 (roster layer): ``kind``/``status``/``aliases`` make the experience the
+    project boundary everything scopes to. ``section``/``sort_order`` remain the
+    user-assigned render placement.
+    """
 
     id: int
     user_id: str
@@ -203,11 +242,25 @@ class Experience:
     subtitle: str | None = None
     dates: str | None = None
     sort_order: int = 0
+    kind: ExperienceKind = ExperienceKind.PROJECT
+    status: ExperienceStatus = ExperienceStatus.CONFIRMED
+    aliases: tuple[str, ...] = ()
+    merged_into_id: int | None = None
+
+    def matches_name(self, candidate: str) -> bool:
+        """Case-insensitive identity check against the name and every alias."""
+        needle = " ".join(candidate.split()).casefold()
+        names = (self.name, *self.aliases)
+        return any(" ".join(n.split()).casefold() == needle for n in names)
 
 
 @dataclass(frozen=True)
 class StoredEvidence:
-    """A persisted evidence chunk."""
+    """A persisted evidence chunk.
+
+    ``experience_id`` is the chunk's project assignment (roster layer) — ``None``
+    until a confirmed roster claims it; unassigned chunks never feed extraction.
+    """
 
     id: int
     user_id: str
@@ -215,6 +268,7 @@ class StoredEvidence:
     source_ref: str
     chunk_text: str
     created_at: datetime | None = None
+    experience_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -369,6 +423,8 @@ _WORK_VERBS = frozenset(
         "deploy",
         "instrumented",
         "rewrote",
+        "rebuilt",
+        "rebuild",
         "backfilled",
         "reworked",
         "replaced",
@@ -532,12 +588,19 @@ class _Statement:
     label: str | None = None  # explicit problem/action/result label, if any
 
 
-def _split_statements(chunk: EvidenceChunk) -> list[_Statement]:
-    """Split a chunk into verbatim statements (lines, minus bullet markers).
+# Sentence boundary within a reflowed line: terminal punctuation, space, capital/digit.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
 
-    Statements must remain exact substrings of ``chunk_text`` so quotes taken from
-    them satisfy the verbatim checks. Bullet markers are stripped (the remainder is
-    still a substring); headers and blank lines are dropped.
+
+def _split_statements(chunk: EvidenceChunk) -> list[_Statement]:
+    """Split a chunk into verbatim statements (lines, then sentences within a line).
+
+    Normalized text reflows wrapped paragraphs into multi-sentence lines, so a line is
+    split at sentence boundaries — each sentence is one classifiable statement.
+    Statements must remain exact substrings of ``chunk_text`` (whitespace-reflow
+    tolerant) so quotes taken from them satisfy the verbatim checks. Bullet markers
+    are stripped (the remainder is still a substring); headers and blank lines are
+    dropped; an explicitly labeled line stays one statement.
     """
     statements: list[_Statement] = []
     for raw_line in chunk.chunk_text.splitlines():
@@ -553,8 +616,10 @@ def _split_statements(chunk: EvidenceChunk) -> list[_Statement]:
                     label=label_match.group(1).lower(),
                 )
             )
-        else:
-            statements.append(_Statement(text=line, chunk=chunk))
+            continue
+        for sentence in _SENTENCE_SPLIT_RE.split(line):
+            if sentence.strip():
+                statements.append(_Statement(text=sentence.strip(), chunk=chunk))
     return statements
 
 
@@ -720,7 +785,47 @@ class ClaimRepository(Protocol):
 
     def upsert_experience(self, user_id: str, seed: ExperienceSeed) -> Experience: ...
 
+    def propose_experience(self, user_id: str, seed: ExperienceSeed) -> Experience:
+        """Roster detection's write: a NEW entity lands as ``proposed``.
+
+        Dedupes against the existing roster by name AND aliases (both directions);
+        an existing row of any status is returned unchanged — detection can never
+        downgrade a confirmed entity or resurrect a discarded one.
+        """
+        ...
+
+    def set_experience_status(self, experience_id: int, status: ExperienceStatus) -> Experience:
+        """Confirm or discard a roster entity (validated by EXPERIENCE_TRANSITIONS)."""
+        ...
+
+    def update_experience_details(
+        self,
+        experience_id: int,
+        *,
+        name: str | None = None,
+        subtitle: str | None = None,
+        dates: str | None = None,
+        kind: ExperienceKind | None = None,
+        aliases: tuple[str, ...] | None = None,
+    ) -> Experience:
+        """Human roster edits (rename keeps the old name as an alias)."""
+        ...
+
+    def merge_experiences(self, source_id: int, target_id: int) -> Experience:
+        """Fold one entity into another: claims + evidence assignments move to the
+        target, the source's name joins the target's aliases, and the source becomes
+        ``merged`` (terminal) with ``merged_into_id`` set. Returns the target."""
+        ...
+
     def upsert_evidence(self, user_id: str, chunk: EvidenceChunk) -> StoredEvidence: ...
+
+    def assign_evidence(self, evidence_id: int, experience_id: int | None) -> StoredEvidence:
+        """Set (or clear) a chunk's project assignment."""
+        ...
+
+    def list_assigned_evidence(self, user_id: str, experience_id: int) -> list[StoredEvidence]:
+        """Every chunk assigned to one experience (the extraction group's evidence)."""
+        ...
 
     def get_evidence(self, evidence_id: int) -> StoredEvidence | None: ...
 
@@ -758,14 +863,37 @@ class ClaimRepository(Protocol):
         ...
 
 
+# Sub-document chunk spans ride in the source_ref as a distinctive fragment suffix
+# (``<base>#chars=<start>-<end>``), so evidence stays unique per chunk without a schema
+# change and every consumer of the base ref (URLs, dedupe) strips the span first.
+_SPAN_SUFFIX = "#chars="
+
+
+def span_ref(base_ref: str, start: int, end: int) -> str:
+    """Encode a char-span chunk reference: ``doc123#chars=1204-1688``."""
+    return f"{base_ref}{_SPAN_SUFFIX}{start}-{end}"
+
+
+def split_span_ref(source_ref: str) -> tuple[str, tuple[int, int] | None]:
+    """Split a source_ref into (base ref, optional (start, end) span)."""
+    base, sep, span = source_ref.rpartition(_SPAN_SUFFIX)
+    if not sep:
+        return source_ref, None
+    start_text, dash, end_text = span.partition("-")
+    if dash and start_text.isdigit() and end_text.isdigit():
+        return base, (int(start_text), int(end_text))
+    return source_ref, None
+
+
 def evidence_source_url(source_type: str, source_ref: str) -> str | None:
     """The click-through URL for one evidence source, when one exists.
 
     Deterministic mapping from stored provenance to the place a human can read it:
     GitHub READMEs/commits and Drive files resolve; uploads and user attestations are
     local by nature and return ``None`` (the review card shows the quote itself).
+    Chunk-span suffixes are stripped — the URL is the whole document.
     """
-    ref = source_ref.strip()
+    ref, _ = split_span_ref(source_ref.strip())
     if not ref:
         return None
     if source_type == SOURCE_GITHUB_README:
@@ -959,6 +1087,7 @@ def plan_claim_edit(claim: Claim, edits: ClaimEdits) -> ClaimEditPlan:
 
 __all__ = [
     "CLAIM_TRANSITIONS",
+    "EXPERIENCE_TRANSITIONS",
     "AttestationLink",
     "Claim",
     "ClaimEditError",
@@ -976,8 +1105,10 @@ __all__ = [
     "EvidenceChunk",
     "EvidenceGroup",
     "Experience",
+    "ExperienceKind",
     "ExperienceSection",
     "ExperienceSeed",
+    "ExperienceStatus",
     "HeuristicTwoPassExtractor",
     "Inefficiency",
     "RejectionReasonRequiredError",
@@ -995,5 +1126,7 @@ __all__ = [
     "derive_resolves",
     "evidence_source_url",
     "plan_claim_edit",
+    "span_ref",
+    "split_span_ref",
     "validate_claim_transition",
 ]

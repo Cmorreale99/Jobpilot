@@ -1,0 +1,29 @@
+{
+  "description": "Reality-shaped Drive fixtures for the roster layer: one multi-project case-study doc with word-per-line PDF mangling, plus two near-duplicate resume versions describing the same employer role. Mirrors the live failure modes in docs/V2_AUDIT.md.",
+  "sources": [
+    {
+      "id": "drv_case_studies",
+      "name": "Data Systems Case Studies (2).pdf",
+      "mime_type": "text/markdown",
+      "folder_id": "career_docs",
+      "modified_time": "2026-06-20T09:00:00Z",
+      "path": "case_studies.md"
+    },
+    {
+      "id": "drv_resume_v1",
+      "name": "resume_final (1).pdf",
+      "mime_type": "text/markdown",
+      "folder_id": "career_docs",
+      "modified_time": "2026-05-01T09:00:00Z",
+      "path": "resume_v1.md"
+    },
+    {
+      "id": "drv_resume_v2",
+      "name": "resume_final_FINAL.pdf",
+      "mime_type": "text/markdown",
+      "folder_id": "career_docs",
+      "modified_time": "2026-06-01T09:00:00Z",
+      "path": "resume_v2.md"
+    }
+  ]
+}

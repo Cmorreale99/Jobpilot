@@ -15,6 +15,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.interviews import router as interviews_router
 from app.api.oauth import router as oauth_router
 from app.api.outreach import router as outreach_router
+from app.api.roster import router as roster_router
 from app.config import Settings, get_settings
 from app.domain.applications import ApplicationRepository
 from app.domain.artifacts import ArtifactStore
@@ -60,6 +61,7 @@ def create_app(
     app.include_router(dashboard_router)
     app.include_router(interviews_router)
     app.include_router(claims_router)
+    app.include_router(roster_router)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

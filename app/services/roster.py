@@ -1,0 +1,229 @@
+"""Roster services: detection (propose entities) and assignment (scope the evidence).
+
+The human-in-the-loop order the audit demands (docs/V2_AUDIT.md §8):
+
+    gather normalized sources
+        -> run_roster_detection: propose entities        [machine]
+        -> confirm / merge / rename / discard            [HUMAN — the roster review]
+        -> run_roster_assignment: chunk + assign evidence [machine]
+        -> claim extraction per confirmed entity          (services/claim_extraction.py)
+
+Detection is idempotent and decision-preserving: proposals dedupe against the whole
+roster by name and alias, an existing entity of any status is returned unchanged, and
+a discarded entity is never re-proposed. Assignment is idempotent too — re-running
+reassigns the same chunks (evidence upserts on its span ref).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+
+from app.config import Settings, get_settings
+from app.domain.chunking import chunk_normalized_text
+from app.domain.claims import (
+    SOURCE_DRIVE,
+    SOURCE_GITHUB_COMMIT,
+    SOURCE_GITHUB_README,
+    ClaimRepository,
+    EvidenceChunk,
+    Experience,
+    ExperienceStatus,
+    span_ref,
+    split_span_ref,
+)
+from app.domain.roster import ChunkAssigner, RosterProposer, SourceDocument
+from app.domain.text_normalization import normalize_source_text
+from app.integrations.base import (
+    DriveClient,
+    DriveResponseError,
+    GitHubClient,
+    GitHubResponseError,
+)
+from app.services.roster_factory import create_chunk_assigner, create_roster_proposer
+from app.services.source_policy import apply_repo_policy, apply_source_policy
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RosterDetectionReport:
+    """What one detection run proposed (per user)."""
+
+    documents: int
+    proposed: list[Experience] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RosterAssignmentReport:
+    """What one assignment run scoped (per user)."""
+
+    chunks: int
+    assigned: int
+    unassigned: int
+
+
+async def gather_source_documents(
+    drive_client: DriveClient,
+    github_client: GitHubClient,
+    user_id: str,
+    settings: Settings | None = None,
+) -> list[SourceDocument]:
+    """Every policy-approved source as one normalized document (Drive, READMEs, commits)."""
+    settings = settings or get_settings()
+    documents: list[SourceDocument] = []
+
+    for source in apply_source_policy(await drive_client.list_candidate_sources(user_id), settings):
+        try:
+            document = await drive_client.read_source(source.source_ref)
+        except DriveResponseError as exc:
+            logger.warning("skipping Drive source %s: %s", source.title, exc)
+            continue
+        documents.append(
+            SourceDocument(
+                source_type=SOURCE_DRIVE,
+                source_ref=document.source_ref,
+                title=document.title,
+                text=normalize_source_text(document.text),
+            )
+        )
+
+    for repo in apply_repo_policy(await github_client.list_candidate_repos(user_id), settings):
+        try:
+            readme = await github_client.read_repo(repo.repo_ref)
+            documents.append(
+                SourceDocument(
+                    source_type=SOURCE_GITHUB_README,
+                    source_ref=repo.repo_ref,
+                    title=repo.name,
+                    text=normalize_source_text(readme.text),
+                )
+            )
+        except GitHubResponseError as exc:
+            logger.warning("no README evidence for %s: %s", repo.repo_ref, exc)
+        try:
+            for commit in await github_client.list_commits(repo.repo_ref):
+                documents.append(
+                    SourceDocument(
+                        source_type=SOURCE_GITHUB_COMMIT,
+                        source_ref=f"{repo.repo_ref}@{commit.sha}",
+                        title=repo.name,
+                        text=normalize_source_text(commit.message),
+                    )
+                )
+        except GitHubResponseError as exc:
+            logger.warning("no commit evidence for %s: %s", repo.repo_ref, exc)
+
+    return documents
+
+
+async def run_roster_detection(
+    drive_client: DriveClient,
+    github_client: GitHubClient,
+    user_id: str,
+    repository: ClaimRepository,
+    settings: Settings | None = None,
+    proposer: RosterProposer | None = None,
+) -> RosterDetectionReport:
+    """Gather sources, propose entities, persist NEW proposals (existing rows win)."""
+    settings = settings or get_settings()
+    proposer = proposer or create_roster_proposer(settings)
+    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+
+    known = {e.id for e in repository.list_experiences(user_id)}
+    proposed: list[Experience] = []
+    for entity in proposer.propose(documents):
+        experience = repository.propose_experience(user_id, entity.to_seed())
+        if experience.id not in known and experience.status is ExperienceStatus.PROPOSED:
+            proposed.append(experience)  # genuinely new this run
+    logger.info(
+        "roster detection for %s: %d document(s), %d proposal(s) awaiting review",
+        user_id,
+        len(documents),
+        len(proposed),
+    )
+    return RosterDetectionReport(documents=len(documents), proposed=proposed)
+
+
+def _confirmed_roster(repository: ClaimRepository, user_id: str) -> list[Experience]:
+    return [
+        e for e in repository.list_experiences(user_id) if e.status is ExperienceStatus.CONFIRMED
+    ]
+
+
+def _repo_entity(roster: list[Experience], repo_ref: str) -> Experience | None:
+    """The confirmed entity a repo's evidence belongs to (matched by name/alias)."""
+    for entity in roster:
+        if entity.matches_name(repo_ref):
+            return entity
+    return None
+
+
+async def run_roster_assignment(
+    drive_client: DriveClient,
+    github_client: GitHubClient,
+    user_id: str,
+    repository: ClaimRepository,
+    settings: Settings | None = None,
+    assigner: ChunkAssigner | None = None,
+) -> RosterAssignmentReport:
+    """Chunk every source with char spans and assign each chunk to a confirmed entity.
+
+    Repo evidence (README chunks + commits) assigns directly to the entity whose
+    name/aliases match the repo ref; document chunks go through the assigner. A chunk
+    nothing matches stays honestly unassigned and never feeds extraction.
+    """
+    settings = settings or get_settings()
+    assigner = assigner or create_chunk_assigner(settings)
+    roster = _confirmed_roster(repository, user_id)
+    if not roster:
+        logger.warning(
+            "roster assignment for %s: no confirmed entities — confirm the roster first", user_id
+        )
+        return RosterAssignmentReport(chunks=0, assigned=0, unassigned=0)
+
+    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+    chunks = 0
+    assigned = 0
+    for document in documents:
+        if document.source_type == SOURCE_GITHUB_COMMIT:
+            base_ref, _ = split_span_ref(document.source_ref)
+            repo_ref = base_ref.rpartition("@")[0]
+            entity = _repo_entity(roster, repo_ref)
+            stored = repository.upsert_evidence(
+                user_id,
+                EvidenceChunk(document.source_type, document.source_ref, document.text),
+            )
+            repository.assign_evidence(stored.id, entity.id if entity else None)
+            chunks += 1
+            assigned += 1 if entity else 0
+            continue
+
+        pieces = chunk_normalized_text(document.text)
+        if document.source_type == SOURCE_GITHUB_README:
+            entity = _repo_entity(roster, document.source_ref)
+            targets: list[int | None] = [entity.id if entity else None] * len(pieces)
+        else:
+            targets = assigner.assign([piece.text for piece in pieces], roster)
+        for piece, target in zip(pieces, targets, strict=True):
+            stored = repository.upsert_evidence(
+                user_id,
+                EvidenceChunk(
+                    document.source_type,
+                    span_ref(document.source_ref, piece.start, piece.end),
+                    piece.text,
+                ),
+            )
+            repository.assign_evidence(stored.id, target)
+            chunks += 1
+            assigned += 1 if target is not None else 0
+
+    report = RosterAssignmentReport(chunks=chunks, assigned=assigned, unassigned=chunks - assigned)
+    logger.info(
+        "roster assignment for %s: %d chunk(s), %d assigned, %d honestly unassigned",
+        user_id,
+        report.chunks,
+        report.assigned,
+        report.unassigned,
+    )
+    return report
