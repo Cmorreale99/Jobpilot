@@ -246,6 +246,7 @@ class Experience:
     status: ExperienceStatus = ExperienceStatus.CONFIRMED
     aliases: tuple[str, ...] = ()
     merged_into_id: int | None = None
+    extraction_hash: str | None = None  # evidence fingerprint of the last extraction
 
     def matches_name(self, candidate: str) -> bool:
         """Case-insensitive identity check against the name and every alias."""
@@ -815,6 +816,10 @@ class ClaimRepository(Protocol):
         """Fold one entity into another: claims + evidence assignments move to the
         target, the source's name joins the target's aliases, and the source becomes
         ``merged`` (terminal) with ``merged_into_id`` set. Returns the target."""
+        ...
+
+    def set_extraction_hash(self, experience_id: int, value: str | None) -> Experience:
+        """Record the evidence fingerprint of a successful extraction (skip marker)."""
         ...
 
     def upsert_evidence(self, user_id: str, chunk: EvidenceChunk) -> StoredEvidence: ...

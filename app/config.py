@@ -192,7 +192,9 @@ class Settings(BaseSettings):
     # Ceiling on output tokens per call; individual calls may request fewer.
     anthropic_max_tokens: int = 4096
     # Per-request timeout and transient-error retry budget (handled by the SDK).
-    anthropic_timeout_seconds: float = 60.0
+    # Extraction calls emit thousands of output tokens; 60s reliably times out on
+    # them (observed live), so the budget must cover a full long completion.
+    anthropic_timeout_seconds: float = 300.0
     anthropic_max_retries: int = 2
 
     # --- OAuth authorization flow (obtains tokens for the credential store) --------

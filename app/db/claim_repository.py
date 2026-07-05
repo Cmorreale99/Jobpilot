@@ -67,6 +67,7 @@ def _to_experience(row: ExperienceRow) -> Experience:
         status=ExperienceStatus(row.status),
         aliases=tuple(row.aliases or []),
         merged_into_id=row.merged_into_id,
+        extraction_hash=row.extraction_hash,
     )
 
 
@@ -254,6 +255,16 @@ class SqlClaimRepository:
                 row.section = section.value
             if sort_order is not None:
                 row.sort_order = sort_order
+            session.commit()
+            session.refresh(row)
+            return _to_experience(row)
+
+    def set_extraction_hash(self, experience_id: int, value: str | None) -> Experience:
+        with self._session_factory() as session:
+            row = session.get(ExperienceRow, experience_id)
+            if row is None:
+                raise LookupError(f"no experience with id {experience_id}")
+            row.extraction_hash = value
             session.commit()
             session.refresh(row)
             return _to_experience(row)

@@ -292,6 +292,73 @@ def test_clean_extraction_does_not_bounce() -> None:
     assert extraction.storables[0].result_status is ResultStatus.UNVERIFIED
 
 
+def test_unfixable_violations_do_not_bounce() -> None:
+    """A problem the evidence never stated cannot be re-extracted into existence —
+    bouncing on it doubled the LLM cost of every commit-heavy group for nothing."""
+
+    class _Counting:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
+            self.calls += 1
+            return [
+                DraftClaim(
+                    action_text="Automated exception triage with Python",
+                    action_tools=("Python",),
+                    evidence=(ClaimEvidenceRef(chunk=_CHUNK, field=ClaimField.ACTION),),
+                )
+            ]
+
+    extractor = _Counting()
+    extraction = extract_and_validate_group(extractor, _GROUP)
+    assert extractor.calls == 1  # problem_missing alone never triggers the bounce
+    (storable,) = extraction.storables
+    assert any("problem_missing" in flag for flag in storable.validation_flags)
+
+
+async def test_unchanged_groups_are_skipped_and_force_reextracts(
+    drive_client: MockDriveClient,
+    github_client: MockGitHubClient,
+    claims_settings: Settings,
+) -> None:
+    class _Counting:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
+            self.calls += 1
+            return [
+                DraftClaim(
+                    action_text=f"Automated triage batch {self.calls} with Python",
+                    action_tools=("Python",),
+                    evidence=(ClaimEvidenceRef(chunk=group.chunks[0], field=ClaimField.ACTION),),
+                )
+            ]
+
+    repo = InMemoryClaimRepository()
+    extractor = _Counting()
+    first = await run_claim_extraction(
+        drive_client, github_client, "u1", repo, claims_settings, extractor=extractor
+    )
+    calls_after_first = extractor.calls
+    assert first.claims and first.skipped_unchanged == []
+
+    second = await run_claim_extraction(
+        drive_client, github_client, "u1", repo, claims_settings, extractor=extractor
+    )
+    assert extractor.calls == calls_after_first  # zero extraction calls on the re-run
+    assert len(second.skipped_unchanged) == 3  # all three fixture groups
+    assert second.claims == []
+    assert len(repo.list_claims("u1")) == len(first.claims)  # queue untouched
+
+    forced = await run_claim_extraction(
+        drive_client, github_client, "u1", repo, claims_settings, extractor=extractor, force=True
+    )
+    assert extractor.calls > calls_after_first
+    assert forced.skipped_unchanged == []
+
+
 # --- Phase 1: structural drops, dedupe, loud failure ---------------------------------------
 
 
@@ -374,16 +441,12 @@ async def test_same_content_never_queues_under_two_experiences(
     class _EchoExtractor:
         """Every group yields the SAME claim content, cited from its own chunk."""
 
-        def extract(
-            self, group: EvidenceGroup, violations: Sequence[str] = ()
-        ) -> list[DraftClaim]:
+        def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
             return [
                 DraftClaim(
                     action_text="Automated exception triage with Python",
                     action_tools=("Python",),
-                    evidence=(
-                        ClaimEvidenceRef(chunk=group.chunks[0], field=ClaimField.ACTION),
-                    ),
+                    evidence=(ClaimEvidenceRef(chunk=group.chunks[0], field=ClaimField.ACTION),),
                 )
             ]
 
@@ -429,6 +492,7 @@ async def test_extraction_failure_skips_the_group_loudly_and_keeps_existing_clai
         claims_settings,
         extractor=_ExplodingExtractor(),
         validation_log=log,
+        force=True,  # bypass the unchanged-evidence skip to exercise the failure path
     )
 
     assert report.claims == []

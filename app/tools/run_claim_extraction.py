@@ -63,7 +63,8 @@ async def _run() -> None:
     print(
         f"gates: {len(report.dropped)} dropped as structurally invalid, "
         f"{len(report.deduped)} dropped as duplicates, "
-        f"{len(report.failed_groups)} group(s) failed extraction"
+        f"{len(report.failed_groups)} group(s) failed extraction, "
+        f"{len(report.skipped_unchanged)} group(s) skipped (evidence unchanged)"
     )
     print(f"database: {settings.database_url}")
 
