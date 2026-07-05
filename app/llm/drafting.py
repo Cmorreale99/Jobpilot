@@ -28,7 +28,10 @@ from app.domain.tailoring import (
     MAX_HIGHLIGHTS,
     HeuristicMaterialsTailorer,
     TailoredMaterials,
+    claim_ref_id,
+    claim_text,
     render_claim,
+    unsupported_numbers,
 )
 from app.llm.client import LlmClient
 from app.llm.errors import LlmError
@@ -103,23 +106,43 @@ class LlmMaterialsTailorer:
 
         # Ground highlights in the real claims: unknown or duplicate ids are dropped.
         seen: set[str] = set()
-        highlights: list[str] = []
+        selected: list[ParClaim] = []
         for claim_id in highlight_ids:
             claim = by_id.get(claim_id)
             if claim is None or claim_id in seen:
                 continue
             seen.add(claim_id)
-            highlights.append(render_claim(claim))
-            if len(highlights) >= MAX_HIGHLIGHTS:
+            selected.append(claim)
+            if len(selected) >= MAX_HIGHLIGHTS:
                 break
-        if not highlights:
+        if not selected:
             logger.warning(
                 "LLM tailoring for job %s selected no valid claims; using heuristic.",
                 match.job.external_id,
             )
             return self._fallback.tailor(master_cv, match)
+
+        # Number-factuality gate (audit §9): every number in the generated prose must
+        # come from a selected claim or the posting itself. An invented metric fails
+        # closed to the deterministic tailorer — it never leaves the machine.
+        allowed = [
+            *(claim_text(claim) for claim in selected),
+            f"{match.job.title} {match.job.description}",
+        ]
+        invented = unsupported_numbers(f"{summary}\n{cover_letter}", allowed)
+        if invented:
+            logger.warning(
+                "LLM tailoring for job %s invented unsupported numbers %s; using heuristic.",
+                match.job.external_id,
+                invented,
+            )
+            return self._fallback.tailor(master_cv, match)
+
         return TailoredMaterials(
-            summary=summary, highlights=tuple(highlights), cover_letter=cover_letter
+            summary=summary,
+            highlights=tuple(render_claim(claim) for claim in selected),
+            cover_letter=cover_letter,
+            highlight_claim_ids=tuple(claim_ref_id(claim) or 0 for claim in selected),
         )
 
 

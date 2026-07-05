@@ -1,4 +1,4 @@
-"""Uploads ingestion: local client, format policy, merge into the Master CV builder."""
+"""Uploads: local client, format policy, and gathering into the V2 evidence path."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ from pathlib import Path
 
 import pytest
 from app.config import Settings
+from app.domain.claims import SOURCE_UPLOAD
 from app.integrations.base import UploadsConfigurationError
 from app.integrations.mock.drive import MockDriveClient
 from app.integrations.mock.github import MockGitHubClient
 from app.integrations.uploads import LocalUploadsClient, create_uploads_client
-from app.services.master_cv_ingestion import build_master_cv, ingest_upload_sources
+from app.services.roster import gather_source_documents
 
 from tests.conftest import (
     APPROVED_FOLDER_ID,
@@ -75,43 +76,31 @@ def test_factory_returns_none_when_unconfigured() -> None:
     assert create_uploads_client(Settings(uploads_dir="  ")) is None
 
 
-# --- policy + ingestion ----------------------------------------------------------------
+# --- policy + V2 gathering ---------------------------------------------------------------
 
 
-async def test_ingest_applies_format_policy_and_records_provenance(
-    uploads_client: LocalUploadsClient, uploads_settings: Settings
-) -> None:
-    sources = await ingest_upload_sources(uploads_client, uploads_settings)
-    refs = {s.external_ref for s in sources}
-    assert refs == {"consulting_engagement.md", "award_letter.txt"}  # .pdf excluded
-    assert all(s.source_type == "upload" for s in sources)
-    assert all(s.raw_text for s in sources)
-
-
-async def test_build_master_cv_merges_all_three_source_types(
+async def test_gathering_applies_format_policy_and_normalizes(
     uploads_settings: Settings,
 ) -> None:
-    cv = await build_master_cv(
+    documents = await gather_source_documents(
         MockDriveClient(FIXTURES_DIR),
         MockGitHubClient(GITHUB_FIXTURES_DIR),
         "u1",
         uploads_settings,
     )
-    source_types = {s.source_type for s in cv.sources}
-    assert source_types == {"gdrive", "github", "upload"}
-    upload_claims = [c for c in cv.claims if c.source_type == "upload"]
-    assert upload_claims, "upload evidence must yield PAR claims"
-    assert any("reconciliation" in c.action.lower() for c in upload_claims)
-    # Every upload claim traces back to a real uploaded file.
-    upload_refs = {s.external_ref for s in cv.sources if s.source_type == "upload"}
-    assert all(c.source_ref in upload_refs for c in upload_claims)
+    uploads = [d for d in documents if d.source_type == SOURCE_UPLOAD]
+    refs = {d.source_ref for d in uploads}
+    assert refs == {"consulting_engagement.md", "award_letter.txt"}  # .pdf excluded
+    assert all(d.text for d in uploads)
+    # All three source families feed the one V2 gathering path.
+    assert {d.source_type for d in documents} > {SOURCE_UPLOAD}
 
 
 async def test_uploads_skipped_entirely_when_unconfigured(settings: Settings) -> None:
-    cv = await build_master_cv(
+    documents = await gather_source_documents(
         MockDriveClient(FIXTURES_DIR),
         MockGitHubClient(GITHUB_FIXTURES_DIR),
         "u1",
         settings,  # conftest settings: uploads_dir empty
     )
-    assert all(s.source_type != "upload" for s in cv.sources)
+    assert all(d.source_type != SOURCE_UPLOAD for d in documents)

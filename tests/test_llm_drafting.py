@@ -89,6 +89,45 @@ def test_tailorer_with_no_valid_ids_falls_back_to_heuristic() -> None:
     assert materials == HeuristicMaterialsTailorer().tailor(_cv(), _MATCH)
 
 
+def test_invented_numbers_fail_closed_to_the_heuristic() -> None:
+    """Audit §9 tailoring safety: a number in no referenced claim never leaves."""
+    reply = json.dumps(
+        {
+            "summary": "Delivered 85% cost reduction at scale.",  # 85 is invented
+            "highlight_ids": ["c0"],
+            "cover_letter": "Dear team, …",
+        }
+    )
+    client = FakeLlmClient([reply])
+    materials = LlmMaterialsTailorer(client).tailor(_cv(), _MATCH)
+    assert materials == HeuristicMaterialsTailorer().tailor(_cv(), _MATCH)
+    assert "85" not in materials.summary
+
+
+def test_supported_numbers_pass_and_highlights_carry_claim_ids() -> None:
+    ledger_cv = MasterCv(
+        claims=[
+            ParClaim(
+                action="Re-architected the settlement pipeline over Kafka",
+                result="Cut runtime by 70%",
+                source_type="approved_claim",
+                source_ref="claim:41",
+            )
+        ],
+        version=3,
+    )
+    reply = json.dumps(
+        {
+            "summary": "Cut settlement runtime by 70%.",  # 70 comes from the claim
+            "highlight_ids": ["c0"],
+            "cover_letter": "Dear team, …",
+        }
+    )
+    materials = LlmMaterialsTailorer(FakeLlmClient([reply])).tailor(ledger_cv, _MATCH)
+    assert materials.summary == "Cut settlement runtime by 70%."
+    assert materials.highlight_claim_ids == (41,)  # traceable to the approved claim
+
+
 def test_tailorer_falls_back_on_persistent_llm_failure() -> None:
     client = FakeLlmClient(default_text="not json at all")
     materials = LlmMaterialsTailorer(client).tailor(_cv(), _MATCH)

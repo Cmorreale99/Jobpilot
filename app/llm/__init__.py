@@ -10,7 +10,6 @@ so the whole pipeline runs offline with no API key.
 
 from __future__ import annotations
 
-from app.llm.claim_structurer import LlmClaimStructurer
 from app.llm.client import AnthropicClient, LlmClient
 from app.llm.cost import CostTracker, ModelPrice
 from app.llm.errors import (
@@ -29,7 +28,6 @@ __all__ = [
     "AnthropicClient",
     "CostTracker",
     "FakeLlmClient",
-    "LlmClaimStructurer",
     "LlmClient",
     "LlmConfigurationError",
     "LlmError",

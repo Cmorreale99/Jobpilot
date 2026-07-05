@@ -1,6 +1,6 @@
 """Selects the claim extractor from config.
 
-Mirrors the other LLM factories (``cv_builder_factory`` et al.): safe default first —
+Mirrors the other LLM factories (``matching_factory`` et al.): safe default first —
 the deterministic :class:`HeuristicTwoPassExtractor` unless ``claims_llm_extraction``
 is on. Same footgun guard: the flag without a real client (``llm_enabled=false`` and
 no injected client) logs a warning and stays heuristic rather than handing the

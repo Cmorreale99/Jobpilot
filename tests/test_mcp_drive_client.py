@@ -157,8 +157,8 @@ async def test_non_json_text_payload_raises() -> None:
 
 
 async def test_pipeline_runs_through_mcp_client() -> None:
-    """The ingestion service is client-agnostic: it works against the MCP client too."""
-    from app.services.master_cv_ingestion import build_master_cv_from_drive
+    """The extraction gathering is client-agnostic: it works against the MCP client too."""
+    from app.services.claim_extraction import gather_drive_groups
 
     list_payload = {
         "files": [
@@ -186,13 +186,13 @@ async def test_pipeline_runs_through_mcp_client() -> None:
         }
     )
 
-    cv = await build_master_cv_from_drive(client, "user-1", _mcp_settings())
+    groups = await gather_drive_groups(client, "user-1", _mcp_settings())
 
-    assert len(cv.sources) == 1
-    assert cv.claims
-    claim = cv.claims[0]
-    assert claim.problem and claim.result
-    assert claim.source_ref == "1AbC"
+    (group,) = groups
+    assert group.experience.name == "Resume.txt"
+    (chunk,) = group.chunks
+    assert chunk.source_ref == "1AbC"
+    assert "Rebuilt the settlement pipeline." in chunk.chunk_text  # normalized, intact
 
 
 def test_stdio_transport_requires_a_launch_command() -> None:
