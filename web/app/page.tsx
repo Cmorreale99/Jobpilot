@@ -14,14 +14,17 @@ import {
   type MasterCvSummary,
   type MatchesResponse,
   type OutreachDraft,
+  type RosterEntity,
 } from "@/lib/api";
 import { ClaimsReviewSection } from "@/components/claims";
 import { EmptyRow, SectionHead, statusInk } from "@/components/ledger";
+import { RosterSection } from "@/components/roster";
 
 export default function Dashboard() {
   const [queue, setQueue] = useState<OutreachDraft[] | null>(null);
   const [claims, setClaims] = useState<ClaimCard[] | null>(null);
   const [experiences, setExperiences] = useState<Experience[] | null>(null);
+  const [roster, setRoster] = useState<RosterEntity[] | null>(null);
   const [missingOnly, setMissingOnly] = useState(false);
   const [matches, setMatches] = useState<MatchesResponse | null>(null);
   const [applications, setApplications] = useState<Application[] | null>(null);
@@ -31,10 +34,11 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const [q, c, x, m, a, i, cv] = await Promise.all([
+      const [q, c, x, r, m, a, i, cv] = await Promise.all([
         api.queue(),
         api.claimsQueue(missingOnly),
         api.experiences(),
+        api.roster(),
         api.matches(),
         api.applications(),
         api.interviews(),
@@ -43,6 +47,7 @@ export default function Dashboard() {
       setQueue(q);
       setClaims(c);
       setExperiences(x);
+      setRoster(r);
       setMatches(m);
       setApplications(a);
       setInterviews(i);
@@ -68,6 +73,7 @@ export default function Dashboard() {
         </p>
       )}
 
+      <RosterSection roster={roster} onChanged={load} />
       <ClaimsReviewSection
         claims={claims}
         experiences={experiences}
@@ -219,11 +225,10 @@ function Masthead({ masterCv }: { masterCv: MasterCvSummary | null }) {
       <p className="mt-2 font-mono text-xs text-annotation">
         {masterCv ? (
           <Link href="/master-cv" className="underline-offset-2 hover:underline">
-            Master CV v{masterCv.version} · {masterCv.claim_count} claims from{" "}
-            {masterCv.source_count} sources →
+            Master CV v{masterCv.version} · {masterCv.claim_count} approved claims →
           </Link>
         ) : (
-          "No Master CV yet — the nightly run builds one from your connected sources."
+          "No Master CV yet — approve claims, then a version is snapshotted from them."
         )}
       </p>
     </header>
@@ -433,9 +438,7 @@ function AccountsSection({ masterCv }: { masterCv: MasterCvSummary | null }) {
       <SectionHead title="Evidence sources" />
       <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 py-2 text-sm">
         <span className="text-annotation">
-          {masterCv
-            ? `${masterCv.source_count} sources on record`
-            : "Connect accounts so the pipeline can read your career evidence:"}
+          Connect accounts so the pipeline can read your career evidence:
         </span>
         <a className="stamp inline-block text-ink" href={oauthStartUrl("google")}>
           Connect Google Drive

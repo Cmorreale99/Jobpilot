@@ -14,7 +14,9 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from app.domain.applications import validate_transition
 from app.domain.claims import (
+    EXPERIENCE_TRANSITIONS,
     Claim,
     ClaimEditPlan,
     ClaimEvidenceLink,
@@ -22,8 +24,10 @@ from app.domain.claims import (
     ClaimStatus,
     EvidenceChunk,
     Experience,
+    ExperienceKind,
     ExperienceSection,
     ExperienceSeed,
+    ExperienceStatus,
     StorableClaim,
     StoredEvidence,
     claim_content_fingerprint,
@@ -45,10 +49,20 @@ class InMemoryClaimRepository(ClaimRepository):
     # --- experiences ---------------------------------------------------------------
 
     def upsert_experience(self, user_id: str, seed: ExperienceSeed) -> Experience:
+        return self._upsert(user_id, seed, ExperienceStatus.CONFIRMED)
+
+    def propose_experience(self, user_id: str, seed: ExperienceSeed) -> Experience:
+        return self._upsert(user_id, seed, ExperienceStatus.PROPOSED)
+
+    def _upsert(self, user_id: str, seed: ExperienceSeed, status: ExperienceStatus) -> Experience:
         for experience in self._experiences.values():
-            if experience.user_id == user_id and experience.name == seed.name:
-                # Existing row wins: section/sort_order are user-assigned in review
-                # and re-extraction never overrides them.
+            if experience.user_id != user_id:
+                continue
+            # Existing row (matched by name OR alias, both directions) wins: its
+            # status, section, and sort_order are human decisions — never overridden.
+            if experience.matches_name(seed.name) or any(
+                experience.matches_name(alias) for alias in seed.aliases
+            ):
                 return experience
         experience = Experience(
             id=self._next_experience_id,
@@ -58,6 +72,9 @@ class InMemoryClaimRepository(ClaimRepository):
             subtitle=seed.subtitle,
             dates=seed.dates,
             sort_order=sum(1 for e in self._experiences.values() if e.user_id == user_id),
+            kind=seed.kind,
+            status=status,
+            aliases=seed.aliases,
         )
         self._experiences[experience.id] = experience
         self._next_experience_id += 1
@@ -66,6 +83,68 @@ class InMemoryClaimRepository(ClaimRepository):
     def list_experiences(self, user_id: str) -> list[Experience]:
         rows = [e for e in self._experiences.values() if e.user_id == user_id]
         return sorted(rows, key=lambda e: (e.sort_order, e.id))
+
+    def set_experience_status(self, experience_id: int, status: ExperienceStatus) -> Experience:
+        experience = self._experiences.get(experience_id)
+        if experience is None:
+            raise LookupError(f"no experience with id {experience_id}")
+        validate_transition(EXPERIENCE_TRANSITIONS, experience.status, status)
+        updated = replace(experience, status=status)
+        self._experiences[experience_id] = updated
+        return updated
+
+    def update_experience_details(
+        self,
+        experience_id: int,
+        *,
+        name: str | None = None,
+        subtitle: str | None = None,
+        dates: str | None = None,
+        kind: ExperienceKind | None = None,
+        aliases: tuple[str, ...] | None = None,
+    ) -> Experience:
+        experience = self._experiences.get(experience_id)
+        if experience is None:
+            raise LookupError(f"no experience with id {experience_id}")
+        if name is not None and name.strip() and name != experience.name:
+            # A rename keeps the old name recognizable to future detections.
+            merged_aliases = tuple(dict.fromkeys((*experience.aliases, experience.name)))
+            experience = replace(experience, name=name.strip(), aliases=merged_aliases)
+        if subtitle is not None:
+            experience = replace(experience, subtitle=subtitle or None)
+        if dates is not None:
+            experience = replace(experience, dates=dates or None)
+        if kind is not None:
+            experience = replace(experience, kind=kind)
+        if aliases is not None:
+            experience = replace(experience, aliases=tuple(dict.fromkeys(aliases)))
+        self._experiences[experience_id] = experience
+        return experience
+
+    def merge_experiences(self, source_id: int, target_id: int) -> Experience:
+        source = self._experiences.get(source_id)
+        target = self._experiences.get(target_id)
+        if source is None or target is None:
+            raise LookupError(f"no experience with id {source_id if source is None else target_id}")
+        if source_id == target_id:
+            raise ValueError("cannot merge an experience into itself")
+        if source.status is ExperienceStatus.MERGED or source.status is ExperienceStatus.DISCARDED:
+            raise ValueError(f"experience {source_id} is {source.status} and cannot be merged")
+        if target.status is not ExperienceStatus.CONFIRMED:
+            raise ValueError("merge target must be a confirmed experience")
+        for claim_id, claim in self._claims.items():
+            if claim.experience_id == source_id:
+                self._claims[claim_id] = replace(claim, experience_id=target_id)
+        for evidence_id, stored in self._evidence.items():
+            if stored.experience_id == source_id:
+                self._evidence[evidence_id] = replace(stored, experience_id=target_id)
+        merged_aliases = tuple(dict.fromkeys((*target.aliases, source.name, *source.aliases)))
+        target = replace(target, aliases=merged_aliases)
+        self._experiences[target_id] = target
+        self._experiences[source_id] = replace(
+            source, status=ExperienceStatus.MERGED, merged_into_id=target_id
+        )
+        return target
 
     def update_experience_layout(
         self,
@@ -111,6 +190,22 @@ class InMemoryClaimRepository(ClaimRepository):
 
     def get_evidence(self, evidence_id: int) -> StoredEvidence | None:
         return self._evidence.get(evidence_id)
+
+    def assign_evidence(self, evidence_id: int, experience_id: int | None) -> StoredEvidence:
+        stored = self._evidence.get(evidence_id)
+        if stored is None:
+            raise LookupError(f"no evidence with id {evidence_id}")
+        updated = replace(stored, experience_id=experience_id)
+        self._evidence[evidence_id] = updated
+        return updated
+
+    def list_assigned_evidence(self, user_id: str, experience_id: int) -> list[StoredEvidence]:
+        rows = [
+            e
+            for e in self._evidence.values()
+            if e.user_id == user_id and e.experience_id == experience_id
+        ]
+        return sorted(rows, key=lambda e: e.id)
 
     # --- claims ----------------------------------------------------------------------
 

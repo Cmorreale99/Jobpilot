@@ -1,0 +1,28 @@
+{
+  "description": "One repo for the roster fixtures: its README and commit evidence must assign to the repo's confirmed project entity directly (matched by repo ref alias).",
+  "username": "jordanrivera",
+  "repos": [
+    {
+      "repo_ref": "jordanrivera/carrier-etl",
+      "name": "carrier-etl",
+      "owner": "jordanrivera",
+      "description": "Multi-carrier shipment ingestion pipeline.",
+      "primary_language": "Python",
+      "languages": ["Python"],
+      "is_fork": false,
+      "is_private": false,
+      "stars": 3,
+      "forks": 0,
+      "commit_count": 2,
+      "pushed_at": "2026-06-15T12:00:00Z",
+      "readme": "carrier-etl.md",
+      "commits": [
+        {
+          "sha": "c100",
+          "message": "Automated carrier exception triage with Python rules over the ingest feed",
+          "authored_at": "2026-06-01T10:00:00Z"
+        }
+      ]
+    }
+  ]
+}

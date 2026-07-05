@@ -370,6 +370,23 @@ async def test_same_content_never_queues_under_two_experiences(
     claims_settings: Settings,
 ) -> None:
     """Audit: claims 41/42 — one bullet from two resume versions queued twice."""
+
+    class _EchoExtractor:
+        """Every group yields the SAME claim content, cited from its own chunk."""
+
+        def extract(
+            self, group: EvidenceGroup, violations: Sequence[str] = ()
+        ) -> list[DraftClaim]:
+            return [
+                DraftClaim(
+                    action_text="Automated exception triage with Python",
+                    action_tools=("Python",),
+                    evidence=(
+                        ClaimEvidenceRef(chunk=group.chunks[0], field=ClaimField.ACTION),
+                    ),
+                )
+            ]
+
     repo = InMemoryClaimRepository()
     report = await run_claim_extraction(
         drive_client,
@@ -377,7 +394,7 @@ async def test_same_content_never_queues_under_two_experiences(
         "u1",
         repo,
         claims_settings,
-        extractor=_FixedExtractor([_GOOD]),  # every group extracts identical content
+        extractor=_EchoExtractor(),  # every group extracts identical content
     )
 
     assert len(report.claims) == 1  # first group queued it; every other group deduped

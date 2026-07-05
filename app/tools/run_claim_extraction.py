@@ -24,6 +24,7 @@ from app.db.validation_run_log import SqlValidationRunLog
 from app.integrations.drive_factory import create_drive_client
 from app.integrations.github_factory import create_github_client
 from app.services.claim_extraction import run_claim_extraction
+from app.services.roster import run_roster_assignment
 
 
 async def _run() -> None:
@@ -31,12 +32,27 @@ async def _run() -> None:
     engine = create_db_engine(settings)
     create_all(engine)
     session_factory = create_session_factory(engine)
+    repository = SqlClaimRepository(session_factory)
+    drive_client = create_drive_client(settings)
+    github_client = create_github_client(settings)
+
+    # Roster mode: with confirmed entities, refresh the chunk assignments first so
+    # extraction groups reflect the current sources. Without a confirmed roster this
+    # warns and no-ops, and extraction falls back to per-file grouping (loudly).
+    assignment = await run_roster_assignment(
+        drive_client, github_client, settings.pipeline_user_id, repository, settings
+    )
+    if assignment.chunks:
+        print(
+            f"roster assignment: {assignment.assigned}/{assignment.chunks} chunks assigned "
+            f"({assignment.unassigned} unassigned)"
+        )
 
     report = await run_claim_extraction(
-        create_drive_client(settings),
-        create_github_client(settings),
+        drive_client,
+        github_client,
         settings.pipeline_user_id,
-        SqlClaimRepository(session_factory),
+        repository,
         settings,
         validation_log=SqlValidationRunLog(session_factory),
     )

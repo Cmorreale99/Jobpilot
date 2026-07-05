@@ -181,6 +181,11 @@ class Settings(BaseSettings):
     # Swap the heuristic tailorer + outreach drafter for the LLM-backed ones (DEEP tier).
     # Off by default; same real-client requirement/fallback as the other LLM flags.
     tailoring_llm_drafting: bool = False
+    # Swap the heuristic roster proposer/chunk assigner (per-source proposals,
+    # alias-overlap assignment) for the LLM-backed ones (roster proposal DEEP, chunk
+    # assignment BULK). Off by default; same real-client requirement/fallback as the
+    # other LLM flags. Either way a HUMAN confirms the roster before extraction.
+    roster_llm_detection: bool = False
     anthropic_api_key: str = ""
     anthropic_model_bulk: str = "claude-sonnet-5"
     anthropic_model_deep: str = "claude-opus-4-8"

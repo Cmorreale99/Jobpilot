@@ -190,7 +190,12 @@ class PrepPacketRow(Base):
 
 
 class ExperienceRow(Base):
-    """An experience grouping claims; ``section``/``sort_order`` are user-assigned."""
+    """A roster entity (employer role or project) grouping claims.
+
+    ``section``/``sort_order`` are user-assigned render placement; ``kind``/``status``/
+    ``aliases`` are the roster layer — detection proposes, a human confirms, and only
+    confirmed entities scope extraction.
+    """
 
     __tablename__ = "experiences"
     __table_args__ = (UniqueConstraint("user_id", "name", name="uq_experiences_user_name"),)
@@ -202,6 +207,10 @@ class ExperienceRow(Base):
     dates: Mapped[str | None] = mapped_column(String(128), nullable=True)
     section: Mapped[str] = mapped_column(String(32), default="professional_experience")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(32), default="project", server_default="project")
+    status: Mapped[str] = mapped_column(String(16), default="confirmed", server_default="confirmed")
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    merged_into_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -226,6 +235,9 @@ class EvidenceRow(Base):
     source_type: Mapped[str] = mapped_column(String(32))
     source_ref: Mapped[str] = mapped_column(String(512))
     chunk_text: Mapped[str] = mapped_column(Text)
+    # Roster assignment: the confirmed experience this chunk belongs to (nullable —
+    # unassigned chunks never feed extraction).
+    experience_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
