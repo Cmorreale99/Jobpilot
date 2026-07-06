@@ -212,7 +212,7 @@ async def test_extraction_runs_per_confirmed_entity_and_claims_land_under_projec
     ids = await _reviewed_roster(drive_client, github_client, roster_settings, repo)
     await run_roster_assignment(drive_client, github_client, "u1", repo, roster_settings)
 
-    report = await run_claim_extraction(drive_client, github_client, "u1", repo, roster_settings)
+    report = await run_claim_extraction("u1", repo, roster_settings)
 
     assert report.claims
     confirmed_ids = set(ids.values())
@@ -310,14 +310,12 @@ async def test_targeted_rerun_touches_only_the_named_groups(
     repo = InMemoryClaimRepository()
     ids = await _reviewed_roster(drive_client, github_client, roster_settings, repo)
     await run_roster_assignment(drive_client, github_client, "u1", repo, roster_settings)
-    baseline = await run_claim_extraction(drive_client, github_client, "u1", repo, roster_settings)
+    baseline = await run_claim_extraction("u1", repo, roster_settings)
     assert baseline.claims
 
     # Restrict the re-run to one entity with an extractor that yields nothing:
     # its unreviewed claims are replaced (emptied); every other entity is untouched.
     report = await run_claim_extraction(
-        drive_client,
-        github_client,
         "u1",
         repo,
         roster_settings,
@@ -331,15 +329,16 @@ async def test_targeted_rerun_touches_only_the_named_groups(
     assert {c.id for c in remaining} == {c.id for c in untouched}
 
 
-async def test_no_confirmed_roster_falls_back_to_per_file_groups(
-    drive_client: MockDriveClient,
-    github_client: MockGitHubClient,
-    roster_settings: Settings,
-) -> None:
+async def test_no_confirmed_roster_refuses_extraction(roster_settings: Settings) -> None:
+    """Phase 0: the per-file fallback is DELETED — no confirmed roster, no extraction.
+
+    The fallback used to mint CONFIRMED, render-eligible, file-shaped entities with
+    zero human review (the V2 audit's root cause). Now the run refuses loudly and
+    creates nothing: no experiences, no evidence, no claims.
+    """
     repo = InMemoryClaimRepository()
     assert gather_roster_groups("u1", repo) == []
-    report = await run_claim_extraction(drive_client, github_client, "u1", repo, roster_settings)
-    # Legacy per-file grouping still works (loudly) before the roster review happens.
-    names = {e.name for e in repo.list_experiences("u1")}
-    assert "carrier-etl" in names
-    assert report.claims or report.dropped  # extraction ran end to end
+    report = await run_claim_extraction("u1", repo, roster_settings)
+    assert report.claims == [] and report.dropped == [] and report.failed_groups == []
+    assert repo.list_experiences("u1") == []  # nothing was minted
+    assert repo.list_claims("u1") == []

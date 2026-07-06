@@ -32,6 +32,8 @@ from app.services.claim_extraction import run_claim_extraction
 from app.services.claim_repository import InMemoryClaimRepository
 from app.services.validation_run_log import InMemoryValidationRunLog
 
+from tests.conftest import confirm_source_roster
+
 REAL_WORLD_FIXTURES = Path(__file__).parent / "fixtures" / "real_world"
 GITHUB_EMPTY = Path(__file__).parent / "fixtures" / "roster" / "github"
 
@@ -167,14 +169,14 @@ async def test_extraction_run_records_a_scorecard_and_survives_mangled_reality()
     )
     repo = InMemoryClaimRepository()
     log = InMemoryValidationRunLog()
-    report = await run_claim_extraction(
+    await confirm_source_roster(
         MockDriveClient(REAL_WORLD_FIXTURES / "drive"),
         MockGitHubClient(GITHUB_EMPTY),
         "u1",
         repo,
         settings,
-        validation_log=log,
     )
+    report = await run_claim_extraction("u1", repo, settings, validation_log=log)
 
     assert report.claims  # the mangled resume still yields reviewable claims
     metrics = compute_slop_metrics(report.claims, repo.get_evidence)

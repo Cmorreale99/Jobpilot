@@ -1,9 +1,10 @@
 """Seed the dev database with the V2 fixture loop — ``python -m app.tools.seed_v2_demo``.
 
-Runs claim extraction over the V2 claims fixtures (mock Drive + GitHub) and the
-interview scan over the inbox fixtures (mock scanner), persisting into the configured
-``DATABASE_URL``. Zero credentials, zero network — regardless of what the local
-``.env`` enables, this tool always uses the mocks (it is a demo seeder, not a live run).
+Confirms a per-source demo roster, runs claim extraction over the V2 claims fixtures
+(mock Drive + GitHub), and runs the interview scan over the inbox fixtures (mock
+scanner), persisting into the configured ``DATABASE_URL``. Zero credentials, zero
+network — regardless of what the local ``.env`` enables, this tool always uses the
+mocks (it is a demo seeder, not a live run).
 
 After seeding, the dashboard shows: pending claims in the review queue (one clean, one
 coupling-flagged, commit-derived ones missing results) and two verified interviews in
@@ -16,23 +17,75 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.application_repository import SqlApplicationRepository
 from app.db.claim_repository import SqlClaimRepository
 from app.db.interview_repository import SqlInterviewRepository
 from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.db.validation_run_log import SqlValidationRunLog
+from app.domain.chunking import chunk_normalized_text
+from app.domain.claims import (
+    SOURCE_GITHUB_COMMIT,
+    ClaimRepository,
+    EvidenceChunk,
+    ExperienceStatus,
+    span_ref,
+)
 from app.domain.interviews import HeuristicInviteDetector, HeuristicPrepPacketGenerator
+from app.domain.roster import HeuristicRosterProposer
+from app.integrations.base import DriveClient, GitHubClient
 from app.integrations.mock.drive import MockDriveClient
 from app.integrations.mock.github import MockGitHubClient
 from app.integrations.mock.inbox import MockInboxScanner
 from app.services.claim_extraction import run_claim_extraction
 from app.services.interview_scan import InterviewScanDependencies, run_interview_scan
+from app.services.roster import gather_source_documents
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CLAIMS_FIXTURES = _REPO_ROOT / "tests" / "fixtures" / "claims"
 _INBOX_FIXTURES = _REPO_ROOT / "tests" / "fixtures" / "inbox"
+
+
+async def _confirm_fixture_roster(
+    drive_client: DriveClient,
+    github_client: GitHubClient,
+    user_id: str,
+    repository: ClaimRepository,
+    settings: Settings,
+) -> int:
+    """The demo's roster review: adopt each fixture source as its own confirmed entity.
+
+    Extraction refuses to run without a confirmed roster with assigned evidence (V3
+    Phase 0 deleted the per-file fallback), so the seeder confirms the fixture
+    proposals explicitly and assigns each source's chunks to its own entity.
+    Twin logic lives in ``tests/conftest.py::confirm_source_roster``.
+    """
+    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+    confirmed: dict[str, int] = {}
+    for proposal in HeuristicRosterProposer().propose(documents):
+        experience = repository.propose_experience(user_id, proposal.to_seed())
+        repository.set_experience_status(experience.id, ExperienceStatus.CONFIRMED)
+        confirmed[proposal.name.casefold()] = experience.id
+    for document in documents:
+        target = confirmed.get(document.title.casefold())
+        if document.source_type == SOURCE_GITHUB_COMMIT:
+            stored = repository.upsert_evidence(
+                user_id, EvidenceChunk(document.source_type, document.source_ref, document.text)
+            )
+            repository.assign_evidence(stored.id, target)
+            continue
+        for piece in chunk_normalized_text(document.text):
+            stored = repository.upsert_evidence(
+                user_id,
+                EvidenceChunk(
+                    document.source_type,
+                    span_ref(document.source_ref, piece.start, piece.end),
+                    piece.text,
+                ),
+            )
+            repository.assign_evidence(stored.id, target)
+    return len(confirmed)
 
 
 async def _seed() -> None:
@@ -55,9 +108,13 @@ async def _seed() -> None:
     session_factory = create_session_factory(engine)
 
     claim_repo = SqlClaimRepository(session_factory)
+    drive_client = MockDriveClient(_CLAIMS_FIXTURES / "drive")
+    github_client = MockGitHubClient(_CLAIMS_FIXTURES / "github")
+    entities = await _confirm_fixture_roster(
+        drive_client, github_client, user_id, claim_repo, settings
+    )
+    print(f"roster: {entities} fixture entities confirmed")
     report = await run_claim_extraction(
-        MockDriveClient(_CLAIMS_FIXTURES / "drive"),
-        MockGitHubClient(_CLAIMS_FIXTURES / "github"),
         user_id,
         claim_repo,
         settings,

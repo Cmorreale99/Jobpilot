@@ -15,11 +15,16 @@ Encodes the non-negotiable rules (see ``app/domain/claims.py`` for the definitio
   declared ``problem_cost_dimension`` / ``problem_inefficiency`` values. A mismatch is
   flagged ``"result does not address stated problem"``.
 
-**Structural vs. advisory.** Violations whose code is in :data:`STRUCTURAL_CODES` mean
-the claim is not a reviewable candidate at all — a one-word Problem, a mid-clause
-Action fragment, a resume header extracted as a pain point. Extraction DROPS these
-(logged, never persisted); everything else is advisory and lands in the review queue
-as ``validation_flags``. This is the Phase-1 anti-slop gate (docs/V2_AUDIT.md §9).
+**Three violation families** (docs/V2_AUDIT.md §9 + docs/ARCHITECTURE_V3.md §3.5):
+
+* :data:`STRUCTURAL_CODES` — the claim is not a reviewable candidate at all (a one-word
+  Problem, a mid-clause Action fragment, a resume header extracted as a pain point).
+  Extraction DROPS these, logged, never persisted.
+* :data:`ABSENCE_CODES` — the evidence honestly states no pain point. Readiness data,
+  not a defect: never bounced on, never stored as a flag (the fact stays recomputable
+  from the claim itself — ``problem_text`` is empty).
+* Everything else is an INTEGRITY flag — it lands in the review queue as
+  ``validation_flags`` and blocks approve-as-is until edit-attested or rejected.
 
 Verbatim means an exact, case-sensitive substring after collapsing whitespace runs
 (quotes must survive text reflowing, nothing else).
@@ -46,6 +51,15 @@ COUPLING_FLAG = "result does not address stated problem"
 # Violation codes that make a claim structurally unreviewable: extraction drops these
 # pre-persistence instead of queueing them flagged.
 STRUCTURAL_CODES = frozenset({"problem_not_specific", "action_fragment"})
+
+# Absence-of-problem codes: the evidence honestly states no pain point. V3 Phase 0
+# (docs/ARCHITECTURE_V3.md §3.5) reclassifies absence as READINESS data — "this project
+# still needs a Problem" — not a claim defect: extraction neither bounces on these
+# (re-prompting cannot conjure a problem the evidence never stated) nor persists them
+# as validation_flags, so they never block approve-as-is. Everything else that flags is
+# an INTEGRITY violation (ungrounded tools, result/problem coupling, duplicate outcome
+# spans) and keeps blocking the approve gate.
+ABSENCE_CODES = frozenset({"problem_missing", "problem_not_pain_point"})
 
 _MIN_PROBLEM_TOKENS = 6
 _MIN_ACTION_TOKENS = 5
@@ -92,6 +106,11 @@ def verbatim_in(needle: str, haystack: str) -> bool:
 def is_structural(violation: Violation) -> bool:
     """True when the violation makes the claim unreviewable (drop, never queue)."""
     return violation.code in STRUCTURAL_CODES
+
+
+def is_absence(violation: Violation) -> bool:
+    """True when the violation reports a missing pain point (readiness data, no flag)."""
+    return violation.code in ABSENCE_CODES
 
 
 def _problem_specificity(claim: DraftClaim) -> list[Violation]:
@@ -305,9 +324,11 @@ def validate_claim(claim: DraftClaim) -> list[Violation]:
 
 
 __all__ = [
+    "ABSENCE_CODES",
     "COUPLING_FLAG",
     "STRUCTURAL_CODES",
     "Violation",
+    "is_absence",
     "is_structural",
     "validate_claim",
     "verbatim_in",

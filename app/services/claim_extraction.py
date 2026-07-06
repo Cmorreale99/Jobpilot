@@ -1,21 +1,27 @@
-"""Claim extraction service: evidence gathering -> two-pass extraction -> PAR gate.
+"""Claim extraction service: roster groups -> two-pass extraction -> PAR gate.
 
-Flow (per evidence group):
+Extraction runs in ROSTER MODE ONLY: one evidence group per CONFIRMED roster entity,
+built from its assigned chunks. **There is no per-file fallback** (V3 Phase 0 deleted
+it — it minted CONFIRMED, render-eligible, file-shaped entities with zero human
+review): with no confirmed roster with assigned evidence, extraction refuses loudly
+and returns an empty report. Run roster detection, confirm the roster, and run
+assignment first (``services/roster.py``).
 
-    build groups — ROSTER MODE when the user has confirmed entities with assigned
-                   evidence (one group per confirmed entity, its chunks only); else
-                   the legacy per-file grouping, loudly logged
+Flow (per entity group):
+
         -> extract (two-pass; heuristic default, LLM behind a flag)
         -> PAR-validate every draft
         -> FIXABLE failures bounce to re-extraction ONCE, carrying the violations
-           (a problem the evidence never stated is not fixable — no bounce for it)
+           (ABSENCE codes never bounce — a problem the evidence never stated cannot
+           be re-prompted into existence)
         -> STRUCTURAL failures after the bounce are DROPPED (logged, never queued):
            unspecific problems, fragment actions, and any claim citing evidence
            outside its own group (the project boundary — cross-project Results are
            unrepresentable in roster mode and rejected everywhere)
         -> one outcome span supports at most ONE claim's Result: later claims keep
            the work, lose the Result (back to missing, flagged for review)
-        -> advisory failures land in the review queue flagged (validation_flags)
+        -> INTEGRITY failures land in the review queue flagged (validation_flags);
+           ABSENCE codes are readiness data, never persisted as flags (V3 Phase 0)
         -> duplicates of content already queued anywhere for the user are dropped
         -> persist evidence, experiences, claims + claim_evidence links
 
@@ -39,9 +45,6 @@ from dataclasses import replace as dc_replace
 
 from app.config import Settings, get_settings
 from app.domain.claims import (
-    SOURCE_DRIVE,
-    SOURCE_GITHUB_COMMIT,
-    SOURCE_GITHUB_README,
     Claim,
     ClaimExtractionError,
     ClaimExtractor,
@@ -51,7 +54,6 @@ from app.domain.claims import (
     DraftClaim,
     EvidenceChunk,
     EvidenceGroup,
-    ExperienceSection,
     ExperienceSeed,
     ExperienceStatus,
     ResultKind,
@@ -60,21 +62,13 @@ from app.domain.claims import (
     claim_content_fingerprint,
 )
 from app.domain.evaluation import compute_slop_metrics
-from app.domain.par_validation import is_structural, validate_claim
-from app.domain.text_normalization import normalize_source_text
+from app.domain.par_validation import ABSENCE_CODES, is_absence, is_structural, validate_claim
 from app.domain.validation_runs import (
     KIND_EXTRACTION_EVAL,
     KIND_EXTRACTION_FAILURE,
     KIND_PAR_VALIDATION,
     ValidationRunLog,
 )
-from app.integrations.base import (
-    DriveClient,
-    DriveResponseError,
-    GitHubClient,
-    GitHubResponseError,
-)
-from app.services.source_policy import apply_repo_policy, apply_source_policy
 
 logger = logging.getLogger(__name__)
 
@@ -96,88 +90,6 @@ class ExtractionReport:
     @property
     def missing_results(self) -> list[Claim]:
         return [c for c in self.claims if c.result_kind is ResultKind.MISSING]
-
-
-async def gather_drive_groups(
-    client: DriveClient, user_id: str, settings: Settings
-) -> list[EvidenceGroup]:
-    """One evidence group per policy-approved Drive document (whole doc = one chunk)."""
-    candidates = await client.list_candidate_sources(user_id)
-    groups: list[EvidenceGroup] = []
-    for source in apply_source_policy(candidates, settings):
-        try:
-            document = await client.read_source(source.source_ref)
-        except DriveResponseError as exc:
-            logger.warning("skipping Drive source %s: %s", source.title, exc)
-            continue
-        groups.append(
-            EvidenceGroup(
-                experience=ExperienceSeed(
-                    name=document.title,
-                    section=ExperienceSection.PROFESSIONAL_EXPERIENCE,
-                ),
-                chunks=(
-                    EvidenceChunk(
-                        source_type=SOURCE_DRIVE,
-                        source_ref=document.source_ref,
-                        chunk_text=normalize_source_text(document.text),
-                    ),
-                ),
-            )
-        )
-    return groups
-
-
-async def gather_github_groups(
-    client: GitHubClient, user_id: str, settings: Settings
-) -> list[EvidenceGroup]:
-    """One evidence group per policy-approved repo: README chunk + one chunk per commit.
-
-    Commits are first-class evidence under the V2 content gate. A repo missing a
-    README (or with unreadable commits) contributes whatever evidence it does have;
-    a repo with no evidence at all is skipped, never a failed run.
-    """
-    candidates = await client.list_candidate_repos(user_id)
-    groups: list[EvidenceGroup] = []
-    for repo in apply_repo_policy(candidates, settings):
-        chunks: list[EvidenceChunk] = []
-        try:
-            document = await client.read_repo(repo.repo_ref)
-            chunks.append(
-                EvidenceChunk(
-                    source_type=SOURCE_GITHUB_README,
-                    source_ref=repo.repo_ref,
-                    chunk_text=normalize_source_text(document.text),
-                )
-            )
-        except GitHubResponseError as exc:
-            logger.warning("no README evidence for %s: %s", repo.repo_ref, exc)
-        try:
-            for commit in await client.list_commits(repo.repo_ref):
-                chunks.append(
-                    EvidenceChunk(
-                        source_type=SOURCE_GITHUB_COMMIT,
-                        # repo@sha: self-contained provenance, resolvable to a commit URL
-                        source_ref=f"{repo.repo_ref}@{commit.sha}",
-                        chunk_text=normalize_source_text(commit.message),
-                    )
-                )
-        except GitHubResponseError as exc:
-            logger.warning("no commit evidence for %s: %s", repo.repo_ref, exc)
-        if not chunks:
-            logger.warning("skipping GitHub repo %s: no readable evidence", repo.repo_ref)
-            continue
-        groups.append(
-            EvidenceGroup(
-                experience=ExperienceSeed(
-                    name=repo.name,
-                    section=ExperienceSection.PROJECTS_HACKATHONS,
-                    subtitle=repo.description,
-                ),
-                chunks=tuple(chunks),
-            )
-        )
-    return groups
 
 
 def _to_storable(draft: DraftClaim, violations: list[str]) -> StorableClaim:
@@ -219,11 +131,11 @@ DUPLICATE_OUTCOME_FLAG = (
     "Result; the Result was removed - attest the real impact or approve action-only"
 )
 
-# Violations a re-extraction cannot fix: when the evidence states no pain point, no
-# amount of re-prompting conjures one (the prompt already says "use null"). Bouncing
-# on these doubled the LLM cost of every commit-heavy group for zero benefit —
-# they queue as advisory flags for the human instead.
-_UNFIXABLE_BY_REEXTRACTION = frozenset({"problem_missing", "problem_not_pain_point"})
+# ABSENCE_CODES (par_validation) do double duty here: a re-extraction cannot fix them
+# — when the evidence states no pain point, no amount of re-prompting conjures one
+# (the prompt already says "use null"), and bouncing on them doubled the LLM cost of
+# every commit-heavy group for zero benefit — and they are readiness data, not claim
+# defects, so they are never persisted as validation_flags either (V3 Phase 0).
 
 
 def _outside_group_codes(draft: DraftClaim, group: EvidenceGroup) -> tuple[str, ...]:
@@ -264,16 +176,17 @@ def _strip_result(draft: DraftClaim) -> DraftClaim:
 def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) -> GroupExtraction:
     """Extract one group's claims, bouncing FIXABLE validator failures once.
 
-    Violations in :data:`_UNFIXABLE_BY_REEXTRACTION` (the evidence states no pain
-    point) never trigger the bounce — re-prompting cannot fix them and used to double
-    the LLM cost of every commit-heavy group. The re-extraction carries the full
-    violation list as context. After the bounce:
+    :data:`~app.domain.par_validation.ABSENCE_CODES` violations (the evidence states
+    no pain point) never trigger the bounce — re-prompting cannot fix them and used to
+    double the LLM cost of every commit-heavy group. The re-extraction carries the
+    full violation list as context. After the bounce:
 
     * claims with STRUCTURAL violations (unspecific Problems, fragment Actions,
       evidence cited from outside the group) are dropped — not reviewable candidates;
     * one outcome span supports at most ONE claim's Result — later claims keep their
       work, lose the Result (missing + flagged);
-    * advisory violations land in the queue as flags.
+    * INTEGRITY violations land in the queue as flags; ABSENCE violations do not
+      persist at all — a missing Problem is readiness data, not a claim defect.
 
     A failure on the bounce itself falls back to the first pass's drafts (flagged)
     rather than losing them.
@@ -283,9 +196,7 @@ def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) 
 
     # Bounce only when at least one violation is FIXABLE by re-extraction; the full
     # violation list still rides along as context when it does.
-    fixable = [
-        v for vs in violations_per_draft for v in vs if v.code not in _UNFIXABLE_BY_REEXTRACTION
-    ]
+    fixable = [v for vs in violations_per_draft for v in vs if v.code not in ABSENCE_CODES]
     all_violations = [str(v) for vs in violations_per_draft for v in vs]
     if fixable:
         logger.info(
@@ -318,7 +229,7 @@ def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) 
             result.dropped.append((draft, tuple(structural)))
             continue
 
-        flags = [str(v) for v in violations]
+        flags = [str(v) for v in violations if not is_absence(v)]
         result_spans = {
             (ref.chunk.source_ref, " ".join((ref.outcome_quote or "").split()))
             for ref in draft.evidence
@@ -326,7 +237,7 @@ def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) 
         }
         if result_spans & seen_outcome_spans:
             draft = _strip_result(draft)
-            flags = [str(v) for v in validate_claim(draft)]
+            flags = [str(v) for v in validate_claim(draft) if not is_absence(v)]
             flags.append(DUPLICATE_OUTCOME_FLAG)
             logger.warning(
                 "outcome span reused for %r; Result removed from: %s",
@@ -382,8 +293,6 @@ def gather_roster_groups(user_id: str, repository: ClaimRepository) -> list[Evid
 
 
 async def run_claim_extraction(
-    drive_client: DriveClient,
-    github_client: GitHubClient,
     user_id: str,
     repository: ClaimRepository,
     settings: Settings | None = None,
@@ -393,12 +302,13 @@ async def run_claim_extraction(
     experience_names: Collection[str] | None = None,
     force: bool = False,
 ) -> ExtractionReport:
-    """End-to-end: build groups, extract, PAR-validate, persist. Idempotent.
+    """End-to-end: build roster groups, extract, PAR-validate, persist. Idempotent.
 
-    ROSTER MODE when the user has confirmed entities with assigned evidence (run
-    roster detection + confirmation + assignment first); otherwise the legacy
-    per-file grouping runs, with a loud log — file-shaped boundaries are the audit's
-    root cause and survive only until the roster review has happened.
+    ROSTER MODE ONLY: one group per confirmed entity, from its assigned evidence.
+    With no confirmed roster with assigned evidence the run REFUSES loudly and
+    returns an empty report — the per-file fallback is gone (V3 Phase 0; it minted
+    CONFIRMED file-shaped entities with zero human review, the V2 audit's root
+    cause). Run roster detection, confirm the roster, and run assignment first.
 
     ``experience_names`` restricts the run to the named groups (case-insensitive) —
     the targeted re-run after one group failed; other entities' claims are untouched.
@@ -418,23 +328,20 @@ async def run_claim_extraction(
         extractor = create_claim_extractor(settings)
 
     groups = gather_roster_groups(user_id, repository)
-    if groups:
-        logger.info(
-            "claim extraction for %s: ROSTER MODE — %d confirmed entity group(s)",
-            user_id,
-            len(groups),
-        )
-    else:
+    if not groups:
         logger.warning(
-            "claim extraction for %s: no confirmed roster with assigned evidence; "
-            "falling back to per-file grouping (experiences will be file-shaped — "
-            "run roster detection and confirm the roster to fix the boundaries)",
+            "claim extraction for %s REFUSED: no confirmed roster entities with "
+            "assigned evidence. Run roster detection, confirm the roster, and run "
+            "assignment first — extraction has no per-file fallback (file-shaped "
+            "entities were the V2 audit's root cause).",
             user_id,
         )
-        groups = [
-            *await gather_drive_groups(drive_client, user_id, settings),
-            *await gather_github_groups(github_client, user_id, settings),
-        ]
+        return ExtractionReport()
+    logger.info(
+        "claim extraction for %s: %d confirmed entity group(s)",
+        user_id,
+        len(groups),
+    )
 
     if experience_names is not None:
         wanted = {name.casefold() for name in experience_names}
@@ -447,13 +354,18 @@ async def run_claim_extraction(
             ", ".join(g.experience.name for g in groups) or "(none matched)",
         )
 
+    # Groups come FROM confirmed entities, so extraction only ever looks one up —
+    # it is structurally incapable of creating an experience (Phase 0: nothing in
+    # this service can mint a CONFIRMED entity).
+    entities = {e.name.casefold(): e for e in repository.list_experiences(user_id)}
+
     persisted: list[Claim] = []
     dropped: list[str] = []
     deduped: list[str] = []
     failed_groups: list[str] = []
     skipped_unchanged: list[str] = []
     for group in groups:
-        experience = repository.upsert_experience(user_id, group.experience)
+        experience = entities[group.experience.name.casefold()]
         group_hash = _group_fingerprint(group)
         if not force and experience.extraction_hash == group_hash:
             # The queued claims already reflect exactly this evidence: extraction

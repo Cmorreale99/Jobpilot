@@ -43,6 +43,7 @@ def _seed_claim(
     action: str = "Fixed dedup key mismatch with Kafka",
     result_kind: ResultKind = ResultKind.MISSING,
     flags: tuple[str, ...] = (),
+    with_problem: bool = True,
 ) -> int:
     experience = repo.upsert_experience(
         "u1", ExperienceSeed(name="carrier-etl", section=ExperienceSection.PROJECTS_HACKATHONS)
@@ -55,9 +56,11 @@ def _seed_claim(
                 draft=DraftClaim(
                     action_text=action,
                     action_tools=("Kafka",),
-                    problem_text="Manual reconciliation took 10 hours per week",
-                    problem_cost_dimension=CostDimension.TIME,
-                    problem_inefficiency=Inefficiency.MANUAL,
+                    problem_text=(
+                        "Manual reconciliation took 10 hours per week" if with_problem else None
+                    ),
+                    problem_cost_dimension=CostDimension.TIME if with_problem else None,
+                    problem_inefficiency=Inefficiency.MANUAL if with_problem else None,
                     result_kind=result_kind,
                     evidence=(ClaimEvidenceRef(chunk=_CHUNK, field=ClaimField.ACTION),),
                 ),
@@ -103,6 +106,20 @@ def test_flagged_claim_cannot_be_approved_as_is() -> None:
     claim = repo.get_claim(claim_id)
     assert claim is not None and claim.status is ClaimStatus.PENDING_REVIEW  # untouched
     # test_edit_clears_validator_flags_human_supersedes covers the resolution path.
+
+
+def test_problemless_claim_approves_cleanly() -> None:
+    """Phase 0 flag split: a missing Problem is readiness data, not a claim defect.
+
+    Extraction no longer persists absence codes as validation_flags, so a claim whose
+    evidence honestly states no pain point carries no flags — and approve-as-is works.
+    Only INTEGRITY flags 409 (the test above).
+    """
+    repo = InMemoryClaimRepository()
+    claim_id = _seed_claim(repo, with_problem=False)
+    approved = approve_claim(repo, claim_id)
+    assert approved.status is ClaimStatus.APPROVED
+    assert approved.problem_text is None  # the absence fact stays on the claim itself
 
 
 def test_reject_requires_a_reason_and_retains_the_claim() -> None:
@@ -175,7 +192,7 @@ def test_supplying_a_result_resolves_missing_results_as_user_attested() -> None:
 
 def test_edit_clears_validator_flags_human_supersedes() -> None:
     repo = InMemoryClaimRepository()
-    claim_id = _seed_claim(repo, flags=("problem_missing: whatever",))
+    claim_id = _seed_claim(repo, flags=("action_tool_not_in_text: Kafka not cited",))
     updated = edit_and_approve_claim(
         repo, claim_id, ClaimEdits(problem_text="Manual triage was eating 10 hours per week")
     )
