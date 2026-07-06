@@ -157,3 +157,18 @@ def test_assign_evidence_sets_and_clears(repo: ClaimRepository) -> None:
     assert [e.id for e in repo.list_assigned_evidence("u1", entity.id)] == [stored.id]
     assert repo.assign_evidence(stored.id, None).experience_id is None
     assert repo.list_assigned_evidence("u1", entity.id) == []
+
+
+def test_unassigned_evidence_is_a_queryable_queue(repo: ClaimRepository) -> None:
+    """V3 Phase 1 (red-team 3): unclaimed chunks are listable, per user, in id order."""
+    entity = repo.propose_experience("u1", _seed("Wellington"))
+    repo.set_experience_status(entity.id, ExperienceStatus.CONFIRMED)
+    claimed = repo.upsert_evidence("u1", EvidenceChunk(SOURCE_DRIVE, "drv1", "assigned"))
+    repo.assign_evidence(claimed.id, entity.id)
+    orphan_a = repo.upsert_evidence("u1", EvidenceChunk(SOURCE_DRIVE, "drv2", "orphan a"))
+    orphan_b = repo.upsert_evidence("u1", EvidenceChunk(SOURCE_DRIVE, "drv3", "orphan b"))
+    repo.upsert_evidence("u2", EvidenceChunk(SOURCE_DRIVE, "drv4", "someone else's"))
+
+    assert [e.id for e in repo.list_unassigned_evidence("u1")] == [orphan_a.id, orphan_b.id]
+    repo.assign_evidence(orphan_a.id, entity.id)
+    assert [e.id for e in repo.list_unassigned_evidence("u1")] == [orphan_b.id]

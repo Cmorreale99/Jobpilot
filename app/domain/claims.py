@@ -832,6 +832,14 @@ class ClaimRepository(Protocol):
         """Every chunk assigned to one experience (the extraction group's evidence)."""
         ...
 
+    def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
+        """Every chunk no confirmed entity claimed — a review queue, not a log line.
+
+        These never feed extraction; surfacing them is how an unproposed project's
+        evidence stops silently vanishing (V3 Phase 1, red-team case 3).
+        """
+        ...
+
     def get_evidence(self, evidence_id: int) -> StoredEvidence | None: ...
 
     def replace_unreviewed_claims(

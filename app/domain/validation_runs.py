@@ -22,6 +22,8 @@ KIND_INTERVIEW_VERIFICATION = "interview_verification"
 KIND_EXTRACTION_FAILURE = "extraction_failure"
 # One scorecard row per extraction run: the slop metrics (audit Phase 4).
 KIND_EXTRACTION_EVAL = "extraction_eval"
+# One row per cross-entity overlap pass: merge prompts found (V3 Phase 1, §3.7).
+KIND_ENTITY_OVERLAP = "entity_overlap"
 
 
 @dataclass(frozen=True)

@@ -30,11 +30,18 @@ from app.domain.claims import (
     EvidenceChunk,
     Experience,
     ExperienceStatus,
+    StoredEvidence,
     span_ref,
     split_span_ref,
 )
-from app.domain.roster import ChunkAssigner, RosterProposer, SourceDocument
+from app.domain.roster import (
+    ChunkAssigner,
+    RosterProposer,
+    SourceDocument,
+    detect_entity_overlaps,
+)
 from app.domain.text_normalization import normalize_source_text
+from app.domain.validation_runs import KIND_ENTITY_OVERLAP, ValidationRunLog
 from app.integrations.base import (
     DriveClient,
     DriveResponseError,
@@ -68,6 +75,23 @@ class RosterAssignmentReport:
     chunks: int
     assigned: int
     unassigned: int
+
+
+@dataclass(frozen=True)
+class MergePrompt:
+    """Two confirmed entities sharing evidence — resolved by the existing roster merge."""
+
+    experience_a: Experience
+    experience_b: Experience
+    shared_outcome_quotes: tuple[str, ...]
+    shared_chunk_texts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RosterOverlapReport:
+    """What the cross-entity overlap pass found (per user)."""
+
+    prompts: list[MergePrompt] = field(default_factory=list)
 
 
 async def gather_source_documents(
@@ -177,6 +201,58 @@ def _confirmed_roster(repository: ClaimRepository, user_id: str) -> list[Experie
     return [
         e for e in repository.list_experiences(user_id) if e.status is ExperienceStatus.CONFIRMED
     ]
+
+
+def run_overlap_detection(
+    user_id: str,
+    repository: ClaimRepository,
+    *,
+    validation_log: ValidationRunLog | None = None,
+) -> RosterOverlapReport:
+    """The §3.7 cross-entity dedupe pass: shared evidence becomes merge prompts.
+
+    Runs over the whole confirmed corpus — the one vantage point per-entity synthesis
+    structurally lacks. Deterministic (exact normalized text), read-only: each prompt
+    is a suggestion the human resolves through the existing roster merge, never an
+    automatic merge and never a status. Recorded in ``validation_runs`` (kind
+    ``entity_overlap``) so "did anything share evidence?" is answerable per run.
+    """
+    roster = {e.id: e for e in _confirmed_roster(repository, user_id)}
+    evidence: list[StoredEvidence] = []
+    for experience_id in roster:
+        evidence.extend(repository.list_assigned_evidence(user_id, experience_id))
+    claims = [c for c in repository.list_claims(user_id) if c.experience_id in roster]
+
+    prompts = [
+        MergePrompt(
+            experience_a=roster[overlap.experience_a_id],
+            experience_b=roster[overlap.experience_b_id],
+            shared_outcome_quotes=overlap.shared_outcome_quotes,
+            shared_chunk_texts=overlap.shared_chunk_texts,
+        )
+        for overlap in detect_entity_overlaps(claims, evidence)
+        if overlap.experience_a_id in roster and overlap.experience_b_id in roster
+    ]
+    if validation_log is not None:
+        validation_log.record(
+            user_id,
+            KIND_ENTITY_OVERLAP,
+            subject_ref="roster",
+            passed=not prompts,
+            detail=tuple(
+                f"{p.experience_a.name} <-> {p.experience_b.name}: "
+                f"{len(p.shared_outcome_quotes)} shared outcome quote(s), "
+                f"{len(p.shared_chunk_texts)} shared chunk(s)"
+                for p in prompts
+            ),
+        )
+    logger.info(
+        "overlap detection for %s: %d confirmed entities, %d merge prompt(s)",
+        user_id,
+        len(roster),
+        len(prompts),
+    )
+    return RosterOverlapReport(prompts=prompts)
 
 
 def _repo_entity(roster: list[Experience], repo_ref: str) -> Experience | None:

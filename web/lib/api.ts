@@ -194,6 +194,20 @@ export interface MasterCvArtifact {
   file_path: string;
 }
 
+export interface RosterOverlap {
+  entity_a: { id: number; name: string };
+  entity_b: { id: number; name: string };
+  shared_outcome_quotes: string[];
+  shared_chunk_texts: string[];
+}
+
+export interface UnassignedEvidence {
+  id: number;
+  source_type: string;
+  source_ref: string;
+  chunk_text: string;
+}
+
 export const api = {
   queue: () => request<OutreachDraft[]>(`/outreach/queue?user_id=${USER_ID}`),
   approveDraft: (id: number) =>
@@ -260,6 +274,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
     }),
+  rosterOverlaps: () => request<RosterOverlap[]>(`/roster/overlaps?user_id=${USER_ID}`),
+  rosterUnassigned: () =>
+    request<{ count: number; items: UnassignedEvidence[] }>(
+      `/roster/unassigned?user_id=${USER_ID}`,
+    ),
+  assignEvidence: (evidenceId: number, experienceId: number) =>
+    request<{ id: number; experience_id: number; source_ref: string }>(
+      `/roster/evidence/${evidenceId}/assign`,
+      { method: "POST", body: JSON.stringify({ experience_id: experienceId }) },
+    ),
 };
 
 export const masterCvDownloadUrl = `${API_URL}/master-cv/download?user_id=${USER_ID}`;

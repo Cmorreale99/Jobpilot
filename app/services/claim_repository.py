@@ -215,6 +215,12 @@ class InMemoryClaimRepository(ClaimRepository):
         ]
         return sorted(rows, key=lambda e: e.id)
 
+    def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
+        rows = [
+            e for e in self._evidence.values() if e.user_id == user_id and e.experience_id is None
+        ]
+        return sorted(rows, key=lambda e: e.id)
+
     # --- claims ----------------------------------------------------------------------
 
     def replace_unreviewed_claims(
