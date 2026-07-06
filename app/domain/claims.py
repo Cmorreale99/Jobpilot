@@ -861,6 +861,17 @@ class ClaimRepository(Protocol):
 
     def get_evidence(self, evidence_id: int) -> StoredEvidence | None: ...
 
+    def get_evidence_by_ref(
+        self, user_id: str, source_type: str, source_ref: str
+    ) -> StoredEvidence | None:
+        """One evidence row by its natural key ``(user_id, source_type, source_ref)``.
+
+        The dedupe key ``upsert_evidence`` writes on. Used to look up user attestations
+        addressed by a stable ref — ``claim:{id}:{field}`` (edit-attest) and
+        ``story:{id}:{component}`` (story answers) — without scanning all evidence.
+        """
+        ...
+
     def replace_unreviewed_claims(
         self, user_id: str, experience_id: int, claims: Sequence[StorableClaim]
     ) -> list[Claim]: ...

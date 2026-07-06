@@ -24,6 +24,9 @@ KIND_EXTRACTION_FAILURE = "extraction_failure"
 KIND_EXTRACTION_EVAL = "extraction_eval"
 # One row per cross-entity overlap pass: merge prompts found (V3 Phase 1, §3.7).
 KIND_ENTITY_OVERLAP = "entity_overlap"
+# One row per confirmed entity synthesized or quarantined in a story-synthesis run
+# (V3 Phase 3): pass = a clean draft promoted to review; fail = fatal structural findings.
+KIND_STORY_SYNTHESIS = "story_synthesis"
 
 
 @dataclass(frozen=True)

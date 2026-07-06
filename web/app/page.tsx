@@ -15,14 +15,17 @@ import {
   type MatchesResponse,
   type OutreachDraft,
   type RosterEntity,
+  type StoryCard,
 } from "@/lib/api";
 import { ClaimsReviewSection } from "@/components/claims";
 import { EmptyRow, SectionHead, statusInk } from "@/components/ledger";
 import { RosterSection } from "@/components/roster";
+import { StoryReviewSection } from "@/components/stories";
 
 export default function Dashboard() {
   const [queue, setQueue] = useState<OutreachDraft[] | null>(null);
   const [claims, setClaims] = useState<ClaimCard[] | null>(null);
+  const [stories, setStories] = useState<StoryCard[] | null>(null);
   const [experiences, setExperiences] = useState<Experience[] | null>(null);
   const [roster, setRoster] = useState<RosterEntity[] | null>(null);
   const [missingOnly, setMissingOnly] = useState(false);
@@ -34,9 +37,10 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const [q, c, x, r, m, a, i, cv] = await Promise.all([
+      const [q, c, s, x, r, m, a, i, cv] = await Promise.all([
         api.queue(),
         api.claimsQueue(missingOnly),
+        api.stories().catch(() => []),
         api.experiences(),
         api.roster(),
         api.matches(),
@@ -46,6 +50,7 @@ export default function Dashboard() {
       ]);
       setQueue(q);
       setClaims(c);
+      setStories(s);
       setExperiences(x);
       setRoster(r);
       setMatches(m);
@@ -74,6 +79,7 @@ export default function Dashboard() {
       )}
 
       <RosterSection roster={roster} onChanged={load} />
+      <StoryReviewSection stories={stories} onChanged={load} />
       <ClaimsReviewSection
         claims={claims}
         experiences={experiences}

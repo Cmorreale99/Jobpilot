@@ -233,6 +233,7 @@ class QuestionKind(StrEnum):
     """The §3.6 question taxonomy (the derivable kinds)."""
 
     MISSING_PROBLEM = "missing_problem"
+    MISSING_ACTION = "missing_action"
     MISSING_RESULT = "missing_result"
     COUPLING_MISMATCH = "coupling_mismatch"
     METRIC_CONFLICT = "metric_conflict"
@@ -251,6 +252,10 @@ class StoryQuestion:
 
 MISSING_PROBLEM_QUESTION = (
     "What user, business, operational, or technical problem did this project solve?"
+)
+MISSING_ACTION_QUESTION = (
+    "What did you personally build or change on this project? "
+    "Name the concrete tools or systems involved."
 )
 MISSING_RESULT_QUESTION = (
     "What measurable or observable outcome came from this project? "
@@ -399,6 +404,14 @@ def _derive_questions(
     if problem is ComponentPresence.MISSING:
         questions.append(
             StoryQuestion(QuestionKind.MISSING_PROBLEM, COMPONENT_PROBLEM, MISSING_PROBLEM_QUESTION)
+        )
+    if actions == 0:
+        # No selected Action — a real gap the readiness `missing` tuple already marks,
+        # but which V3 Phase 2 never turned into a targeted prompt (audit delta #5).
+        # An Action is claim-derived, so this asks the user to supply the work; unlike
+        # Problem/Result it has no story-scoped attestation slot.
+        questions.append(
+            StoryQuestion(QuestionKind.MISSING_ACTION, COMPONENT_ACTIONS, MISSING_ACTION_QUESTION)
         )
     if result is ComponentPresence.MISSING:
         questions.append(
@@ -1001,6 +1014,7 @@ __all__ = [
     "FATAL_STORY_CODES",
     "MAX_STORY_ACTIONS",
     "METRIC_CONFLICT_QUESTION",
+    "MISSING_ACTION_QUESTION",
     "MISSING_PROBLEM_QUESTION",
     "MISSING_RESULT_QUESTION",
     "STORY_TRANSITIONS",

@@ -21,6 +21,7 @@ from app.db.models import ClaimEvidenceRow, ClaimRow, EvidenceRow, ExperienceRow
 from app.domain.applications import validate_transition
 from app.domain.claims import (
     EXPERIENCE_TRANSITIONS,
+    SOURCE_USER_ATTESTATION,
     Claim,
     ClaimEditPlan,
     ClaimEvidenceLink,
@@ -285,6 +286,19 @@ class SqlClaimRepository:
             row = session.get(EvidenceRow, evidence_id)
             return _to_evidence(row) if row is not None else None
 
+    def get_evidence_by_ref(
+        self, user_id: str, source_type: str, source_ref: str
+    ) -> StoredEvidence | None:
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(EvidenceRow).where(
+                    EvidenceRow.user_id == user_id,
+                    EvidenceRow.source_type == source_type,
+                    EvidenceRow.source_ref == source_ref,
+                )
+            )
+            return _to_evidence(row) if row is not None else None
+
     def assign_evidence(self, evidence_id: int, experience_id: int | None) -> StoredEvidence:
         with self._session_factory() as session:
             row = session.get(EvidenceRow, evidence_id)
@@ -314,6 +328,8 @@ class SqlClaimRepository:
                 .where(
                     EvidenceRow.user_id == user_id,
                     EvidenceRow.experience_id.is_(None),
+                    # Attestations (claim:/story: refs) are answers, not source chunks.
+                    EvidenceRow.source_type != SOURCE_USER_ATTESTATION,
                 )
                 .order_by(EvidenceRow.id)
             )
