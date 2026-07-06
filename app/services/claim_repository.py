@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from app.domain.applications import validate_transition
 from app.domain.claims import (
     EXPERIENCE_TRANSITIONS,
+    SOURCE_USER_ATTESTATION,
     Claim,
     ClaimEditPlan,
     ClaimEvidenceLink,
@@ -206,6 +207,20 @@ class InMemoryClaimRepository(ClaimRepository):
     def get_evidence(self, evidence_id: int) -> StoredEvidence | None:
         return self._evidence.get(evidence_id)
 
+    def get_evidence_by_ref(
+        self, user_id: str, source_type: str, source_ref: str
+    ) -> StoredEvidence | None:
+        return next(
+            (
+                e
+                for e in self._evidence.values()
+                if e.user_id == user_id
+                and e.source_type == source_type
+                and e.source_ref == source_ref
+            ),
+            None,
+        )
+
     def assign_evidence(self, evidence_id: int, experience_id: int | None) -> StoredEvidence:
         stored = self._evidence.get(evidence_id)
         if stored is None:
@@ -223,8 +238,14 @@ class InMemoryClaimRepository(ClaimRepository):
         return sorted(rows, key=lambda e: e.id)
 
     def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
+        # User attestations (claim:/story: refs) are human answers, never source
+        # chunks awaiting roster assignment — they must not surface in this queue.
         rows = [
-            e for e in self._evidence.values() if e.user_id == user_id and e.experience_id is None
+            e
+            for e in self._evidence.values()
+            if e.user_id == user_id
+            and e.experience_id is None
+            and e.source_type != SOURCE_USER_ATTESTATION
         ]
         return sorted(rows, key=lambda e: e.id)
 

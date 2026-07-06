@@ -208,6 +208,67 @@ export interface UnassignedEvidence {
   chunk_text: string;
 }
 
+export interface StoryEvidence {
+  source_type: string;
+  source_ref: string;
+  source_url: string | null;
+  chunk_text: string;
+}
+
+export interface StoryProblem {
+  text: string | null;
+  presence: string;
+  support: string;
+  evidence: StoryEvidence[];
+}
+
+export interface StoryActionComponent {
+  component_id: string;
+  summary: string;
+  tools: string[];
+  claim_ids: number[];
+  evidence: StoryEvidence[];
+}
+
+export interface StoryResultComponent {
+  component_id: string;
+  text: string;
+  outcome_quote: string | null;
+  claim_ids: number[];
+  evidence: StoryEvidence[];
+}
+
+export interface StoryReadiness {
+  problem: string;
+  actions: number;
+  result: string;
+  resume_ready: boolean;
+  missing: string[];
+  blockers: string[];
+}
+
+export interface StoryQuestion {
+  kind: string;
+  component: string;
+  text: string;
+  quotes: string[];
+}
+
+export interface StoryCard {
+  id: number;
+  experience_id: number;
+  experience_name: string | null;
+  section: string | null;
+  review_status: string;
+  reviewed_at: string | null;
+  decision_note: string | null;
+  readiness: StoryReadiness;
+  problem: StoryProblem | null;
+  actions: StoryActionComponent[];
+  results: StoryResultComponent[];
+  questions: StoryQuestion[];
+}
+
 export const api = {
   queue: () => request<OutreachDraft[]>(`/outreach/queue?user_id=${USER_ID}`),
   approveDraft: (id: number) =>
@@ -284,6 +345,24 @@ export const api = {
       `/roster/evidence/${evidenceId}/assign`,
       { method: "POST", body: JSON.stringify({ experience_id: experienceId }) },
     ),
+  stories: (status = "pending_review") =>
+    request<StoryCard[]>(`/stories?user_id=${USER_ID}&status=${status}`),
+  synthesizeStories: () =>
+    request<{ synthesized: number[]; quarantined: number[]; skipped: number[] }>(
+      `/stories/synthesize?user_id=${USER_ID}`,
+      { method: "POST" },
+    ),
+  approveStory: (id: number) => request<StoryCard>(`/stories/${id}/approve`, { method: "POST" }),
+  answerStory: (id: number, component: string, text: string) =>
+    request<StoryCard>(`/stories/${id}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ component, text }),
+    }),
+  excludeStory: (id: number, reason: string) =>
+    request<StoryCard>(`/stories/${id}/exclude`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
 };
 
 export const masterCvDownloadUrl = `${API_URL}/master-cv/download?user_id=${USER_ID}`;

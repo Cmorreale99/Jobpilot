@@ -17,6 +17,7 @@ from app.db.claim_repository import SqlClaimRepository
 from app.db.session import create_session_factory
 from app.domain.claims import (
     SOURCE_GITHUB_COMMIT,
+    SOURCE_USER_ATTESTATION,
     ClaimEvidenceRef,
     ClaimField,
     ClaimRepository,
@@ -113,6 +114,30 @@ def test_evidence_dedupes_and_updates_text(repo: ClaimRepository) -> None:
     assert updated.id == first.id
     assert repo.get_evidence(first.id) is not None
     assert repo.get_evidence(first.id).chunk_text == "amended message"  # type: ignore[union-attr]
+
+
+def test_get_evidence_by_ref_finds_the_row_by_natural_key(repo: ClaimRepository) -> None:
+    stored = repo.upsert_evidence("u1", _CHUNK)
+    found = repo.get_evidence_by_ref("u1", _CHUNK.source_type, _CHUNK.source_ref)
+    assert found is not None and found.id == stored.id
+    assert repo.get_evidence_by_ref("u1", _CHUNK.source_type, "no-such-ref") is None
+    assert repo.get_evidence_by_ref("u2", _CHUNK.source_type, _CHUNK.source_ref) is None
+
+
+def test_user_attestations_never_surface_in_the_unassigned_queue(repo: ClaimRepository) -> None:
+    """Story/claim attestations are human answers, not source chunks awaiting roster
+    assignment — they must not pollute the roster's unassigned-evidence review queue."""
+    source = repo.upsert_evidence("u1", _CHUNK)  # a real unassigned source chunk
+    assert [e.id for e in repo.list_unassigned_evidence("u1")] == [source.id]
+
+    attestation = repo.upsert_evidence(
+        "u1",
+        EvidenceChunk(SOURCE_USER_ATTESTATION, "story:1:problem", "Analysts reconciled by hand"),
+    )
+    # The attestation is retrievable by ref but stays out of the unassigned queue.
+    assert repo.get_evidence_by_ref("u1", SOURCE_USER_ATTESTATION, "story:1:problem") is not None
+    assert attestation.experience_id is None
+    assert [e.id for e in repo.list_unassigned_evidence("u1")] == [source.id]
 
 
 # --- claims: idempotent replace ----------------------------------------------------------

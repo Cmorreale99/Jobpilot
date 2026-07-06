@@ -9,8 +9,10 @@ from app.domain.claims import (
     ExperienceSeed,
     ExperienceStatus,
 )
+from app.domain.project_story import StoryContent, StoryReviewStatus
 from app.main import create_app
 from app.services.claim_repository import InMemoryClaimRepository
+from app.services.project_story_repository import InMemoryProjectStoryRepository
 from fastapi.testclient import TestClient
 
 
@@ -20,8 +22,13 @@ def repo() -> InMemoryClaimRepository:
 
 
 @pytest.fixture
-def client(repo: InMemoryClaimRepository) -> TestClient:
-    return TestClient(create_app(claim_repository=repo))
+def story_repo() -> InMemoryProjectStoryRepository:
+    return InMemoryProjectStoryRepository()
+
+
+@pytest.fixture
+def client(repo: InMemoryClaimRepository, story_repo: InMemoryProjectStoryRepository) -> TestClient:
+    return TestClient(create_app(claim_repository=repo, story_repository=story_repo))
 
 
 def _propose(repo: InMemoryClaimRepository, name: str) -> int:
@@ -95,3 +102,51 @@ def test_merge_into_unconfirmed_target_is_409(
 def test_unknown_entity_is_404(client: TestClient) -> None:
     assert client.post("/roster/999/confirm").status_code == 404
     assert client.patch("/roster/999", json={"name": "x"}).status_code == 404
+
+
+# --- story-invalidation cascade (V3 Phase 3) --------------------------------------------
+
+
+def _approved_story(story_repo: InMemoryProjectStoryRepository, user_id: str, experience_id: int):
+    story = story_repo.upsert_draft(
+        user_id, experience_id, StoryContent(problem_text="a real problem worth stating in full")
+    )
+    story_repo.transition_story(story.id, StoryReviewStatus.PENDING_REVIEW)
+    return story_repo.transition_story(story.id, StoryReviewStatus.APPROVED)
+
+
+def test_discard_invalidates_the_entitys_story(
+    client: TestClient,
+    repo: InMemoryClaimRepository,
+    story_repo: InMemoryProjectStoryRepository,
+) -> None:
+    entity_id = _propose(repo, "Wellington")
+    repo.set_experience_status(entity_id, ExperienceStatus.CONFIRMED)
+    story = _approved_story(story_repo, "u1", entity_id)
+
+    assert client.post(f"/roster/{entity_id}/discard").status_code == 200
+    invalidated = story_repo.get_story(story.id)
+    assert invalidated is not None
+    assert invalidated.review_status is StoryReviewStatus.DRAFT  # un-approved by the cascade
+    assert "discarded" in (invalidated.decision_note or "")
+
+
+def test_merge_invalidates_source_and_target_stories(
+    client: TestClient,
+    repo: InMemoryClaimRepository,
+    story_repo: InMemoryProjectStoryRepository,
+) -> None:
+    target_id = _propose(repo, "Coopersmith Data")
+    repo.set_experience_status(target_id, ExperienceStatus.CONFIRMED)
+    source_id = _propose(repo, "resume_final_FINAL.pdf")
+    repo.set_experience_status(source_id, ExperienceStatus.CONFIRMED)
+    target_story = _approved_story(story_repo, "u1", target_id)
+    source_story = _approved_story(story_repo, "u1", source_id)
+
+    response = client.post("/roster/merge", json={"source_id": source_id, "target_id": target_id})
+    assert response.status_code == 200
+    target_after = story_repo.get_story(target_story.id)
+    source_after = story_repo.get_story(source_story.id)
+    assert target_after is not None and target_after.review_status is StoryReviewStatus.DRAFT
+    assert source_after is not None and source_after.review_status is StoryReviewStatus.DRAFT
+    assert "merged" in (source_after.decision_note or "")

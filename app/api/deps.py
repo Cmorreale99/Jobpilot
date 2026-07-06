@@ -20,13 +20,17 @@ from app.db.credentials_store import SqlOAuthCredentialStore
 from app.db.interview_repository import SqlInterviewRepository
 from app.db.job_repository import SqlJobRepository
 from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
+from app.db.project_story_repository import SqlProjectStoryRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
+from app.db.validation_run_log import SqlValidationRunLog
 from app.domain.applications import ApplicationRepository
 from app.domain.artifacts import ArtifactStore
 from app.domain.claims import ClaimRepository
 from app.domain.interviews import InterviewRepository
 from app.domain.jobs import JobRepository
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore
+from app.domain.project_story import ProjectStoryRepository
+from app.domain.validation_runs import ValidationRunLog
 from app.integrations.base import MailClient, MailConfigurationError
 from app.integrations.mail_factory import create_mail_client
 from app.integrations.oauth.base import OAuthError
@@ -181,3 +185,29 @@ def get_artifact_store(request: Request) -> ArtifactStore:
     store = SqlArtifactStore(create_session_factory(engine))
     request.app.state.artifact_store = store
     return store
+
+
+def get_story_repository(request: Request) -> ProjectStoryRepository:
+    """Return the app's project-story repository, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "story_repository", None)
+    if isinstance(existing, ProjectStoryRepository):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    repository = SqlProjectStoryRepository(create_session_factory(engine))
+    request.app.state.story_repository = repository
+    return repository
+
+
+def get_validation_log(request: Request) -> ValidationRunLog:
+    """Return the app's validation-run log, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "validation_log", None)
+    if isinstance(existing, ValidationRunLog):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    log = SqlValidationRunLog(create_session_factory(engine))
+    request.app.state.validation_log = log
+    return log

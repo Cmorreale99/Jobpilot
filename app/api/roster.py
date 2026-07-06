@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from starlette.requests import Request
 
-from app.api.deps import get_claim_repository
+from app.api.deps import get_claim_repository, get_story_repository
 from app.config import Settings, get_settings
 from app.domain.applications import InvalidTransitionError
 from app.domain.claims import (
@@ -24,6 +24,7 @@ from app.domain.claims import (
     ExperienceKind,
     ExperienceStatus,
 )
+from app.domain.project_story import ProjectStoryRepository
 from app.domain.roster import RosterDetectionError
 from app.integrations.drive_factory import create_drive_client
 from app.integrations.github_factory import create_github_client
@@ -36,6 +37,7 @@ from app.services.roster import (
 router = APIRouter(prefix="/roster", tags=["roster"])
 
 RepositoryDep = Annotated[ClaimRepository, Depends(get_claim_repository)]
+StoryRepositoryDep = Annotated[ProjectStoryRepository, Depends(get_story_repository)]
 
 
 def _settings(request: Request) -> Settings:
@@ -210,9 +212,15 @@ def confirm(experience_id: int, repository: RepositoryDep) -> dict[str, Any]:
 
 
 @router.post("/{experience_id}/discard")
-def discard(experience_id: int, repository: RepositoryDep) -> dict[str, Any]:
+def discard(
+    experience_id: int, repository: RepositoryDep, story_repository: StoryRepositoryDep
+) -> dict[str, Any]:
     """Discard an entity (terminal; a re-detection never re-proposes it)."""
-    return _transition(repository, experience_id, ExperienceStatus.DISCARDED)
+    result = _transition(repository, experience_id, ExperienceStatus.DISCARDED)
+    # Cascade: a discarded entity's story is invalidated (back to draft, prior decision
+    # retained) so an approved story never outlives the entity it described.
+    story_repository.invalidate_story(experience_id, reason="roster entity discarded")
+    return result
 
 
 def _transition(
@@ -245,7 +253,9 @@ def edit(experience_id: int, body: RosterEditRequest, repository: RepositoryDep)
 
 
 @router.post("/merge")
-def merge(body: RosterMergeRequest, repository: RepositoryDep) -> dict[str, Any]:
+def merge(
+    body: RosterMergeRequest, repository: RepositoryDep, story_repository: StoryRepositoryDep
+) -> dict[str, Any]:
     """Fold one entity into another (claims + evidence move; the source is terminal)."""
     try:
         target = repository.merge_experiences(body.source_id, body.target_id)
@@ -253,4 +263,8 @@ def merge(body: RosterMergeRequest, repository: RepositoryDep) -> dict[str, Any]
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Cascade: the source is gone and the target's evidence changed — invalidate both
+    # stories so neither survives as an approved story over a stale entity boundary.
+    story_repository.invalidate_story(body.source_id, reason="roster entity merged away")
+    story_repository.invalidate_story(body.target_id, reason="roster entities merged")
     return _serialize(target, repository)

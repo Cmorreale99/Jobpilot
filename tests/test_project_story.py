@@ -222,6 +222,45 @@ def test_t9_single_gaps_ask_exactly_one_question(corpus: LiveCorpus) -> None:
     assert [q.kind for q in result_only.questions] == [QuestionKind.MISSING_RESULT]
 
 
+def test_t9_missing_action_is_asked_when_no_action_is_selected(corpus: LiveCorpus) -> None:
+    """A story with a Problem and Result but zero selected Actions asks the
+    missing-Action question (audit delta #5) and is not resume-ready. Built directly:
+    ``select_story_content`` always derives Actions from claims, so this gap only
+    appears on an edited/attested draft."""
+    claims_by_id = _claims_by_id(corpus)
+    massdep = corpus.entity("MassDEP")
+    both = next(
+        c
+        for c in claims_by_id.values()
+        if c.experience_id == massdep.id
+        and (c.problem_text or "").strip()
+        and not assess_problem_text(c.problem_text or "")
+        and c.result_kind is not ResultKind.MISSING
+    )
+    content = StoryContent(
+        problem_text=both.problem_text,
+        problem_refs=(both.id,),
+        actions=(),
+        results=(
+            StoryResult(
+                component_id("r", both.result_text or ""), both.result_text or "", (both.id,)
+            ),
+        ),
+    )
+    readiness = compute_readiness(content, massdep.id, claims_by_id)
+    assert readiness.problem is ComponentPresence.EVIDENCED
+    assert readiness.actions == 0
+    assert readiness.result is ComponentPresence.EVIDENCED
+    assert readiness.missing == ("actions",)
+    assert not readiness.resume_ready
+    kinds = {q.kind for q in readiness.questions}
+    assert QuestionKind.MISSING_ACTION in kinds
+    assert QuestionKind.MISSING_PROBLEM not in kinds
+    assert QuestionKind.MISSING_RESULT not in kinds
+    with pytest.raises(StoryNotReadyError):
+        assert_approvable(readiness)
+
+
 def test_t9_claim_less_entities_get_one_classify_decision(corpus: LiveCorpus) -> None:
     with_evidence = _readiness(corpus, "Jobpilot")  # 116 chunks, zero claims
     assert [q.kind for q in with_evidence.questions] == [QuestionKind.INCLUDE_OR_INVENTORY]
