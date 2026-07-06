@@ -41,6 +41,7 @@ from app.domain.claims import (
     claim_content_fingerprint,
     validate_claim_transition,
 )
+from app.domain.text_normalization import NORMALIZATION_VERSION
 
 _UNREVIEWED = (ClaimStatus.EXTRACTED.value, ClaimStatus.PENDING_REVIEW.value)
 
@@ -80,6 +81,7 @@ def _to_evidence(row: EvidenceRow) -> StoredEvidence:
         chunk_text=row.chunk_text,
         created_at=row.created_at,
         experience_id=row.experience_id,
+        normalization_version=row.normalization_version,
     )
 
 
@@ -328,13 +330,16 @@ class SqlClaimRepository:
         )
         if row is not None:
             if row.chunk_text != chunk.chunk_text:
+                # Fresh text = fresh normalizer output: re-stamp the generation.
                 row.chunk_text = chunk.chunk_text
+                row.normalization_version = NORMALIZATION_VERSION
             return row
         row = EvidenceRow(
             user_id=user_id,
             source_type=chunk.source_type,
             source_ref=chunk.source_ref,
             chunk_text=chunk.chunk_text,
+            normalization_version=NORMALIZATION_VERSION,
         )
         session.add(row)
         session.flush()

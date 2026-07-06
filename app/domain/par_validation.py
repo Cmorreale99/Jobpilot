@@ -103,6 +103,12 @@ def verbatim_in(needle: str, haystack: str) -> bool:
     return bool(needle.strip()) and collapse(needle.split()) in collapse(haystack.split())
 
 
+def looks_like_resume_artifact(text: str) -> bool:
+    """True when text matches a resume-artifact shape (contact line, link, file name,
+    or job header) — shared by the claim validator and the story layer's problem bar."""
+    return any(pattern.search(text) for pattern in _ARTIFACT_PATTERNS)
+
+
 def is_structural(violation: Violation) -> bool:
     """True when the violation makes the claim unreviewable (drop, never queue)."""
     return violation.code in STRUCTURAL_CODES
@@ -137,7 +143,7 @@ def _problem_specificity(claim: DraftClaim) -> list[Violation]:
                 "no pain point of its own",
             )
         )
-    if any(pattern.search(problem) for pattern in _ARTIFACT_PATTERNS):
+    if looks_like_resume_artifact(problem):
         violations.append(
             Violation(
                 "problem_not_specific",
@@ -330,6 +336,7 @@ __all__ = [
     "Violation",
     "is_absence",
     "is_structural",
+    "looks_like_resume_artifact",
     "validate_claim",
     "verbatim_in",
 ]

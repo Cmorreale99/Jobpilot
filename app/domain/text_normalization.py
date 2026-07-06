@@ -30,6 +30,13 @@ from __future__ import annotations
 
 import re
 
+# Chunk `#chars=` span refs are offsets into this module's OUTPUT, so evidence rows
+# are stamped with the normalizer generation that produced their text
+# (``evidence.normalization_version``). BUMP THIS on ANY change to the rules below —
+# that is what makes a normalizer change detectable instead of silently dangling
+# every stored span (docs/ARCHITECTURE_V3.md §2.2).
+NORMALIZATION_VERSION = 1
+
 _LINE_HYPHEN_RE = re.compile(r"(\w)-[ \t]*\n[ \t]*(?=\w)")
 _BULLET_RE = re.compile(r"^\s*(?:[-*•·]|\d+[.)])\s+")
 _LABEL_RE = re.compile(r"^\s*[A-Za-z][\w ]{0,24}:\s+\S")

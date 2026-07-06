@@ -33,6 +33,7 @@ from app.domain.claims import (
     claim_content_fingerprint,
     validate_claim_transition,
 )
+from app.domain.text_normalization import NORMALIZATION_VERSION
 
 
 class InMemoryClaimRepository(ClaimRepository):
@@ -181,7 +182,12 @@ class InMemoryClaimRepository(ClaimRepository):
                 and stored.source_ref == chunk.source_ref
             ):
                 if stored.chunk_text != chunk.chunk_text:
-                    stored = replace(stored, chunk_text=chunk.chunk_text)
+                    # Fresh text = fresh normalizer output: re-stamp the generation.
+                    stored = replace(
+                        stored,
+                        chunk_text=chunk.chunk_text,
+                        normalization_version=NORMALIZATION_VERSION,
+                    )
                     self._evidence[stored.id] = stored
                 return stored
         stored = StoredEvidence(
@@ -191,6 +197,7 @@ class InMemoryClaimRepository(ClaimRepository):
             source_ref=chunk.source_ref,
             chunk_text=chunk.chunk_text,
             created_at=datetime.now(tz=UTC),
+            normalization_version=NORMALIZATION_VERSION,
         )
         self._evidence[stored.id] = stored
         self._next_evidence_id += 1

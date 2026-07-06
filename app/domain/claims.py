@@ -261,6 +261,9 @@ class StoredEvidence:
 
     ``experience_id`` is the chunk's project assignment (roster layer) — ``None``
     until a confirmed roster claims it; unassigned chunks never feed extraction.
+    ``normalization_version`` is the normalizer generation whose output this text
+    (and any ``#chars=`` span in the ref) was taken from — ``None`` on rows written
+    before versioning (V3 §2.2).
     """
 
     id: int
@@ -270,6 +273,7 @@ class StoredEvidence:
     chunk_text: str
     created_at: datetime | None = None
     experience_id: int | None = None
+    normalization_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -553,6 +557,21 @@ def _problem_dimensions(
 def _is_problem_statement(statement: str) -> bool:
     cost, inefficiency = _problem_dimensions(statement)
     return cost is not None or inefficiency is not None
+
+
+def pain_point_tags(text: str) -> frozenset[str]:
+    """Every cost-dimension / inefficiency value whose lexicon appears in the text.
+
+    Unlike :func:`_problem_dimensions` (first match per family, for claim fields),
+    this returns ALL matching tags — the story layer's deterministic Problem↔Result
+    coupling check compares tag sets, not single values.
+    """
+    lowered = text.lower()
+    tags = {dim.value for dim, keys in _COST_DIMENSION_KEYWORDS if any(k in lowered for k in keys)}
+    tags |= {
+        ineff.value for ineff, keys in _INEFFICIENCY_KEYWORDS if any(k in lowered for k in keys)
+    }
+    return frozenset(tags)
 
 
 def derive_resolves(
@@ -1138,6 +1157,7 @@ __all__ = [
     "claim_content_fingerprint",
     "derive_resolves",
     "evidence_source_url",
+    "pain_point_tags",
     "plan_claim_edit",
     "span_ref",
     "split_span_ref",

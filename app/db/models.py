@@ -241,6 +241,10 @@ class EvidenceRow(Base):
     # Roster assignment: the confirmed experience this chunk belongs to (nullable —
     # unassigned chunks never feed extraction).
     experience_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Which normalizer generation produced this chunk's text: `#chars=` span refs are
+    # offsets into normalizer OUTPUT, so a rule change must be detectable instead of
+    # silently dangling every span (V3 §2.2). NULL = written before versioning.
+    normalization_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -290,6 +294,37 @@ class ClaimEvidenceRow(Base):
     evidence_id: Mapped[int] = mapped_column(Integer)
     field: Mapped[str] = mapped_column(String(16))
     outcome_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ProjectStoryRow(Base):
+    """One project story per confirmed roster entity (V3 story layer, §2.2).
+
+    ``review_status`` is the only lifecycle state (draft|pending_review|approved|
+    excluded); readiness is derived at read time and deliberately has no column.
+    Components cite claim ids only — ``problem_refs``/``actions_json``/``results_json``
+    hold presentation plus those ids, never bare evidence refs.
+    """
+
+    __tablename__ = "project_stories"
+    __table_args__ = (UniqueConstraint("experience_id", name="uq_project_stories_experience"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    experience_id: Mapped[int] = mapped_column(Integer)
+    review_status: Mapped[str] = mapped_column(String(16))
+    problem_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    problem_refs: Mapped[list[int]] = mapped_column(JSON, default=list)
+    actions_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    results_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # Fingerprint of the synthesis inputs (claims + assigned evidence); matching
+    # re-runs skip the entity, mirroring experiences.extraction_hash.
+    synthesis_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ArtifactRow(Base):

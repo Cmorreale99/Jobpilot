@@ -163,6 +163,36 @@ def test_upgrade_creates_artifacts(tmp_path: Path) -> None:
     assert "artifacts" not in sa.inspect(sa.create_engine(url)).get_table_names()
 
 
+def test_upgrade_creates_project_stories_and_normalizer_versioning(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "stories.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+
+    inspector = sa.inspect(sa.create_engine(url))
+    assert "project_stories" in inspector.get_table_names()
+    columns = {c["name"] for c in inspector.get_columns("project_stories")}
+    assert {
+        "experience_id",
+        "review_status",
+        "problem_text",
+        "problem_refs",
+        "actions_json",
+        "results_json",
+        "synthesis_hash",
+        "reviewed_at",
+        "decision_note",
+    } <= columns
+    uniques = {u["name"] for u in inspector.get_unique_constraints("project_stories")}
+    assert "uq_project_stories_experience" in uniques
+    evidence_columns = {c["name"] for c in inspector.get_columns("evidence")}
+    assert "normalization_version" in evidence_columns
+
+    command.downgrade(cfg, "0012")
+    inspector = sa.inspect(sa.create_engine(url))
+    assert "project_stories" not in inspector.get_table_names()
+    assert "normalization_version" not in {c["name"] for c in inspector.get_columns("evidence")}
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")
