@@ -41,11 +41,17 @@ def review_queue(
 
 
 class FlaggedClaimApprovalError(Exception):
-    """Approve-as-is was attempted on a claim with validation flags."""
+    """Approve-as-is was attempted on a claim with validation flags.
+
+    Persisted flags are INTEGRITY violations only (ungrounded tools, coupling,
+    duplicate outcome spans): absence codes never persist as flags — a missing
+    Problem is readiness data, not a claim defect (V3 Phase 0 flag split) — so
+    this gate never fires on honest absence.
+    """
 
 
 def approve_claim(repository: ClaimRepository, claim_id: int) -> Claim:
-    """Approve as-is (``pending_review -> approved``); refused for flagged claims."""
+    """Approve as-is (``pending_review -> approved``); refused for integrity flags."""
     claim = repository.get_claim(claim_id)
     if claim is None:
         raise LookupError(f"no claim with id {claim_id}")

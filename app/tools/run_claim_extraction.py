@@ -36,9 +36,10 @@ async def _run() -> None:
     drive_client = create_drive_client(settings)
     github_client = create_github_client(settings)
 
-    # Roster mode: with confirmed entities, refresh the chunk assignments first so
-    # extraction groups reflect the current sources. Without a confirmed roster this
-    # warns and no-ops, and extraction falls back to per-file grouping (loudly).
+    # Refresh the chunk assignments first so extraction groups reflect the current
+    # sources. Without a confirmed roster, assignment warns and no-ops — and
+    # extraction then REFUSES (there is no per-file fallback): run
+    # `python -m app.tools.run_roster_detection` and confirm the roster first.
     assignment = await run_roster_assignment(
         drive_client, github_client, settings.pipeline_user_id, repository, settings
     )
@@ -49,8 +50,6 @@ async def _run() -> None:
         )
 
     report = await run_claim_extraction(
-        drive_client,
-        github_client,
         settings.pipeline_user_id,
         repository,
         settings,

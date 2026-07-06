@@ -157,8 +157,11 @@ async def test_non_json_text_payload_raises() -> None:
 
 
 async def test_pipeline_runs_through_mcp_client() -> None:
-    """The extraction gathering is client-agnostic: it works against the MCP client too."""
-    from app.services.claim_extraction import gather_drive_groups
+    """The evidence gathering is client-agnostic: it works against the MCP client too."""
+    from app.integrations.mock.github import MockGitHubClient
+    from app.services.roster import gather_source_documents
+
+    from tests.conftest import GITHUB_FIXTURES_DIR
 
     list_payload = {
         "files": [
@@ -186,13 +189,16 @@ async def test_pipeline_runs_through_mcp_client() -> None:
         }
     )
 
-    groups = await gather_drive_groups(client, "user-1", _mcp_settings())
+    # No github_username in the settings, so the repo policy admits nothing — the
+    # documents come from the MCP Drive client alone.
+    documents = await gather_source_documents(
+        client, MockGitHubClient(GITHUB_FIXTURES_DIR), "user-1", _mcp_settings()
+    )
 
-    (group,) = groups
-    assert group.experience.name == "Resume.txt"
-    (chunk,) = group.chunks
-    assert chunk.source_ref == "1AbC"
-    assert "Rebuilt the settlement pipeline." in chunk.chunk_text  # normalized, intact
+    (document,) = documents
+    assert document.title == "Resume.txt"
+    assert document.source_ref == "1AbC"
+    assert "Rebuilt the settlement pipeline." in document.text  # normalized, intact
 
 
 def test_stdio_transport_requires_a_launch_command() -> None:

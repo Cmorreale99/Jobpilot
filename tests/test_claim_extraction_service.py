@@ -1,8 +1,8 @@
 """End-to-end claim extraction over the mock clients and V2 claims fixtures.
 
-Runs the full M8 slice offline: Drive docs + GitHub README/commits -> two-pass
-extraction -> PAR validation -> bounce-once -> persisted pending_review claims.
-Also exercises the bounce loop in isolation with scripted extractors.
+Runs the full M8 slice offline: confirmed roster (via ``confirm_source_roster``) ->
+two-pass extraction -> PAR validation -> bounce-once -> persisted pending_review
+claims. Also exercises the bounce loop in isolation with scripted extractors.
 """
 
 from __future__ import annotations
@@ -37,6 +37,8 @@ from app.services.claim_extraction import (
     run_claim_extraction,
 )
 from app.services.claim_repository import InMemoryClaimRepository
+
+from tests.conftest import confirm_source_roster
 
 CLAIMS_FIXTURES = Path(__file__).parent / "fixtures" / "claims"
 
@@ -91,9 +93,11 @@ async def test_full_extraction_loop_persists_pending_claims(
     claims_settings: Settings,
 ) -> None:
     repo = InMemoryClaimRepository()
-    report = await run_claim_extraction(drive_client, github_client, "u1", repo, claims_settings)
+    await confirm_source_roster(drive_client, github_client, "u1", repo, claims_settings)
+    report = await run_claim_extraction("u1", repo, claims_settings)
 
-    # Experiences: two Drive docs (professional) + one repo (projects).
+    # Experiences: two Drive docs (professional) + one repo (projects), all confirmed
+    # by the roster bootstrap — extraction itself creates nothing (Phase 0).
     experiences = {e.name: e for e in repo.list_experiences("u1")}
     assert set(experiences) == {
         "Shipment Reconciliation Writeup",
@@ -166,11 +170,12 @@ async def test_rerun_is_idempotent_and_preserves_review_decisions(
     claims_settings: Settings,
 ) -> None:
     repo = InMemoryClaimRepository()
-    first = await run_claim_extraction(drive_client, github_client, "u1", repo, claims_settings)
+    await confirm_source_roster(drive_client, github_client, "u1", repo, claims_settings)
+    first = await run_claim_extraction("u1", repo, claims_settings)
 
     approved = repo.transition_claim(first.claims[0].id, ClaimStatus.APPROVED)
 
-    second = await run_claim_extraction(drive_client, github_client, "u1", repo, claims_settings)
+    second = await run_claim_extraction("u1", repo, claims_settings)
 
     all_claims = repo.list_claims("u1")
     assert len(all_claims) == len(first.claims)  # no duplicates on re-run
@@ -248,7 +253,10 @@ def test_second_failure_lands_in_the_queue_flagged() -> None:
     assert len(extraction.storables) == 1
     flagged = extraction.storables[0]
     assert flagged.status is ClaimStatus.PENDING_REVIEW
-    assert any("problem_missing" in flag for flag in flagged.validation_flags)
+    # Only the INTEGRITY violation persists as a flag; the missing problem is
+    # readiness data, not a claim defect (Phase 0 flag split).
+    assert any("action_names_no_tools" in flag for flag in flagged.validation_flags)
+    assert not any("problem_missing" in flag for flag in flagged.validation_flags)
     assert flagged.result_status is ResultStatus.UNVERIFIED
 
 
@@ -261,10 +269,9 @@ async def test_par_validator_runs_are_logged(
     from app.services.validation_run_log import InMemoryValidationRunLog
 
     repo = InMemoryClaimRepository()
+    await confirm_source_roster(drive_client, github_client, "u1", repo, claims_settings)
     log = InMemoryValidationRunLog()
-    report = await run_claim_extraction(
-        drive_client, github_client, "u1", repo, claims_settings, validation_log=log
-    )
+    report = await run_claim_extraction("u1", repo, claims_settings, validation_log=log)
 
     runs = log.list_runs("u1", KIND_PAR_VALIDATION)
     assert len(runs) == len(report.claims)  # one auditable row per persisted claim
@@ -292,9 +299,11 @@ def test_clean_extraction_does_not_bounce() -> None:
     assert extraction.storables[0].result_status is ResultStatus.UNVERIFIED
 
 
-def test_unfixable_violations_do_not_bounce() -> None:
+def test_absence_violations_neither_bounce_nor_flag() -> None:
     """A problem the evidence never stated cannot be re-extracted into existence —
-    bouncing on it doubled the LLM cost of every commit-heavy group for nothing."""
+    bouncing on it doubled the LLM cost of every commit-heavy group for nothing.
+    And it is readiness data, not a claim defect: it never persists as a flag, so
+    it never blocks approve-as-is (Phase 0 flag split)."""
 
     class _Counting:
         def __init__(self) -> None:
@@ -314,7 +323,8 @@ def test_unfixable_violations_do_not_bounce() -> None:
     extraction = extract_and_validate_group(extractor, _GROUP)
     assert extractor.calls == 1  # problem_missing alone never triggers the bounce
     (storable,) = extraction.storables
-    assert any("problem_missing" in flag for flag in storable.validation_flags)
+    assert storable.validation_flags == ()  # absence is not a flag
+    assert storable.draft.problem_text is None  # ...and stays recomputable from the claim
 
 
 async def test_unchanged_groups_are_skipped_and_force_reextracts(
@@ -337,23 +347,20 @@ async def test_unchanged_groups_are_skipped_and_force_reextracts(
             ]
 
     repo = InMemoryClaimRepository()
+    await confirm_source_roster(drive_client, github_client, "u1", repo, claims_settings)
     extractor = _Counting()
-    first = await run_claim_extraction(
-        drive_client, github_client, "u1", repo, claims_settings, extractor=extractor
-    )
+    first = await run_claim_extraction("u1", repo, claims_settings, extractor=extractor)
     calls_after_first = extractor.calls
     assert first.claims and first.skipped_unchanged == []
 
-    second = await run_claim_extraction(
-        drive_client, github_client, "u1", repo, claims_settings, extractor=extractor
-    )
+    second = await run_claim_extraction("u1", repo, claims_settings, extractor=extractor)
     assert extractor.calls == calls_after_first  # zero extraction calls on the re-run
     assert len(second.skipped_unchanged) == 3  # all three fixture groups
     assert second.claims == []
     assert len(repo.list_claims("u1")) == len(first.claims)  # queue untouched
 
     forced = await run_claim_extraction(
-        drive_client, github_client, "u1", repo, claims_settings, extractor=extractor, force=True
+        "u1", repo, claims_settings, extractor=extractor, force=True
     )
     assert extractor.calls > calls_after_first
     assert forced.skipped_unchanged == []
@@ -413,10 +420,9 @@ async def test_dropped_claims_never_reach_the_repository(
         evidence=(ClaimEvidenceRef(chunk=_CHUNK, field=ClaimField.ACTION),),
     )
     repo = InMemoryClaimRepository()
+    await confirm_source_roster(drive_client, github_client, "u1", repo, claims_settings)
     log = InMemoryValidationRunLog()
     report = await run_claim_extraction(
-        drive_client,
-        github_client,
         "u1",
         repo,
         claims_settings,
@@ -451,9 +457,8 @@ async def test_same_content_never_queues_under_two_experiences(
             ]
 
     repo = InMemoryClaimRepository()
+    await confirm_source_roster(drive_client, github_client, "u1", repo, claims_settings)
     report = await run_claim_extraction(
-        drive_client,
-        github_client,
         "u1",
         repo,
         claims_settings,
@@ -476,7 +481,8 @@ async def test_extraction_failure_skips_the_group_loudly_and_keeps_existing_clai
     from app.services.validation_run_log import InMemoryValidationRunLog
 
     repo = InMemoryClaimRepository()
-    baseline = await run_claim_extraction(drive_client, github_client, "u1", repo, claims_settings)
+    await confirm_source_roster(drive_client, github_client, "u1", repo, claims_settings)
+    baseline = await run_claim_extraction("u1", repo, claims_settings)
     assert baseline.claims
 
     class _ExplodingExtractor:
@@ -485,8 +491,6 @@ async def test_extraction_failure_skips_the_group_loudly_and_keeps_existing_clai
 
     log = InMemoryValidationRunLog()
     report = await run_claim_extraction(
-        drive_client,
-        github_client,
         "u1",
         repo,
         claims_settings,

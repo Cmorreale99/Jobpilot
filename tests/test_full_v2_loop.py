@@ -28,6 +28,8 @@ from app.services.claim_repository import InMemoryClaimRepository
 from app.services.master_cv_snapshot import InMemorySnapshotStore
 from fastapi.testclient import TestClient
 
+from tests.conftest import confirm_source_roster
+
 CLAIMS_FIXTURES = Path(__file__).parent / "fixtures" / "claims"
 PROFILE = Path(__file__).parent / "fixtures" / "render" / "profile.json"
 TEMPLATE = Path(__file__).parent.parent / "templates" / "resume_template.docx"
@@ -57,14 +59,16 @@ async def test_full_fixture_loop_extract_review_approve_render_download(
         )
     )
 
-    # 1. EXTRACT — mocked Drive + GitHub through the real policies and validator.
-    report = await run_claim_extraction(
+    # 1. ROSTER + EXTRACT — confirmed per-source roster (extraction refuses without
+    # one), then mocked Drive + GitHub through the real policies and validator.
+    await confirm_source_roster(
         MockDriveClient(CLAIMS_FIXTURES / "drive"),
         MockGitHubClient(CLAIMS_FIXTURES / "github"),
         "u1",
         repo,
         settings,
     )
+    report = await run_claim_extraction("u1", repo, settings)
     assert report.claims  # extraction produced pending claims, none approved
     assert all(c.status is ClaimStatus.PENDING_REVIEW for c in report.claims)
 

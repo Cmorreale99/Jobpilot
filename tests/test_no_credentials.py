@@ -17,6 +17,7 @@ from tests.conftest import (
     FIXTURES_DIR,
     GITHUB_FIXTURES_DIR,
     GITHUB_USERNAME,
+    confirm_source_roster,
 )
 
 
@@ -51,13 +52,14 @@ async def test_claim_extraction_runs_without_credentials(monkeypatch: pytest.Mon
 
     settings = _offline_settings()
     repo = InMemoryClaimRepository()
-    report = await run_claim_extraction(
+    await confirm_source_roster(
         create_drive_client(settings),
         MockGitHubClient(GITHUB_FIXTURES_DIR),
         "user-1",
         repo,
         settings,
     )
+    report = await run_claim_extraction("user-1", repo, settings)
 
     assert report.claims  # the V2 pipeline produced pending claims, fully offline
     assert repo.list_experiences("user-1")
