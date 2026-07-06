@@ -305,6 +305,18 @@ class SqlClaimRepository:
             )
             return [_to_evidence(row) for row in rows]
 
+    def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(EvidenceRow)
+                .where(
+                    EvidenceRow.user_id == user_id,
+                    EvidenceRow.experience_id.is_(None),
+                )
+                .order_by(EvidenceRow.id)
+            )
+            return [_to_evidence(row) for row in rows]
+
     @staticmethod
     def _upsert_evidence_row(session: Session, user_id: str, chunk: EvidenceChunk) -> EvidenceRow:
         row = session.scalar(

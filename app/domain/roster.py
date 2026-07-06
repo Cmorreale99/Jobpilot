@@ -21,15 +21,20 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Protocol, runtime_checkable
 
 from app.domain.claims import (
     SOURCE_GITHUB_COMMIT,
     SOURCE_GITHUB_README,
+    Claim,
+    ClaimField,
+    ClaimStatus,
     Experience,
     ExperienceKind,
     ExperienceSection,
     ExperienceSeed,
+    StoredEvidence,
 )
 from app.domain.matching import tokenize
 
@@ -167,12 +172,99 @@ class HeuristicChunkAssigner:
         return assignments
 
 
+# --- cross-entity evidence overlap (V3 Phase 1, docs/ARCHITECTURE_V3.md §3.7) ---------
+
+# A shared chunk shorter than this never signals: short fragments (section headers,
+# tool lists, boilerplate lines) legitimately repeat across distinct projects.
+MIN_SHARED_CHUNK_CHARS = 60
+
+
+@dataclass(frozen=True)
+class EntityOverlap:
+    """Two entities sharing evidence — a merge prompt. A RELATION, never a status."""
+
+    experience_a_id: int
+    experience_b_id: int
+    shared_outcome_quotes: tuple[str, ...] = ()
+    shared_chunk_texts: tuple[str, ...] = ()
+
+
+def _normalized(text: str) -> str:
+    return " ".join(text.split())
+
+
+def detect_entity_overlaps(
+    claims: Sequence[Claim],
+    evidence: Sequence[StoredEvidence],
+) -> list[EntityOverlap]:
+    """Deterministic cross-entity duplicate detection — the §3.7 dedupe pass.
+
+    Per-entity synthesis structurally cannot see a duplicate across entities (each
+    call's input contains exactly one entity), so this runs as a corpus-wide pass
+    BEFORE synthesis. Two exact-text signals, no embeddings, no LLM:
+
+    * **Shared outcome quote**: the same normalized ``outcome_quote`` backs a Result
+      under two different entities — the live proof case: "Top 3 out of 100+ teams"
+      sitting under both a hackathon project and the portfolio container that
+      mentions it. Within-group span dedupe can't catch this; nothing else can.
+    * **Shared chunk text**: the same normalized chunk text (at least
+      :data:`MIN_SHARED_CHUNK_CHARS` chars — short repeated fragments never signal)
+      is assigned to two different entities.
+
+    Rejected claims don't signal (the human already ruled that content out). Two
+    projects merely sharing tools or an employer do NOT overlap — the match is
+    exact normalized text, not vocabulary. Each detected pair is a merge prompt
+    resolved through the existing roster merge, never a status on either entity.
+    """
+    quote_owners: dict[str, set[int]] = {}
+    for claim in claims:
+        if claim.status is ClaimStatus.REJECTED:
+            continue
+        for link in claim.evidence:
+            if link.field is not ClaimField.RESULT or not (link.outcome_quote or "").strip():
+                continue
+            quote_owners.setdefault(_normalized(link.outcome_quote or ""), set()).add(
+                claim.experience_id
+            )
+
+    chunk_owners: dict[str, set[int]] = {}
+    for stored in evidence:
+        if stored.experience_id is None:
+            continue
+        text = _normalized(stored.chunk_text)
+        if len(text) < MIN_SHARED_CHUNK_CHARS:
+            continue
+        chunk_owners.setdefault(text, set()).add(stored.experience_id)
+
+    shared_quotes: dict[tuple[int, int], set[str]] = {}
+    for quote, owners in quote_owners.items():
+        for pair in combinations(sorted(owners), 2):
+            shared_quotes.setdefault(pair, set()).add(quote)
+    shared_chunks: dict[tuple[int, int], set[str]] = {}
+    for text, owners in chunk_owners.items():
+        for pair in combinations(sorted(owners), 2):
+            shared_chunks.setdefault(pair, set()).add(text)
+
+    return [
+        EntityOverlap(
+            experience_a_id=a,
+            experience_b_id=b,
+            shared_outcome_quotes=tuple(sorted(shared_quotes.get((a, b), ()))),
+            shared_chunk_texts=tuple(sorted(shared_chunks.get((a, b), ()))),
+        )
+        for a, b in sorted(shared_quotes.keys() | shared_chunks.keys())
+    ]
+
+
 __all__ = [
+    "MIN_SHARED_CHUNK_CHARS",
     "ChunkAssigner",
+    "EntityOverlap",
     "HeuristicChunkAssigner",
     "HeuristicRosterProposer",
     "ProposedEntity",
     "RosterDetectionError",
     "RosterProposer",
     "SourceDocument",
+    "detect_entity_overlaps",
 ]

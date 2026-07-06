@@ -27,7 +27,11 @@ from app.domain.claims import (
 from app.domain.roster import RosterDetectionError
 from app.integrations.drive_factory import create_drive_client
 from app.integrations.github_factory import create_github_client
-from app.services.roster import run_roster_assignment, run_roster_detection
+from app.services.roster import (
+    run_overlap_detection,
+    run_roster_assignment,
+    run_roster_detection,
+)
 
 router = APIRouter(prefix="/roster", tags=["roster"])
 
@@ -51,6 +55,10 @@ class RosterEditRequest(BaseModel):
 class RosterMergeRequest(BaseModel):
     source_id: int
     target_id: int
+
+
+class EvidenceAssignRequest(BaseModel):
+    experience_id: int
 
 
 def _serialize(experience: Experience, repository: ClaimRepository) -> dict[str, Any]:
@@ -118,6 +126,80 @@ async def assign(user_id: str, request: Request, repository: RepositoryDep) -> d
         "chunks": report.chunks,
         "assigned": report.assigned,
         "unassigned": report.unassigned,
+    }
+
+
+@router.get("/overlaps")
+def overlaps(user_id: str, repository: RepositoryDep) -> list[dict[str, Any]]:
+    """Cross-entity duplicate signals (V3 §3.7) — each one a merge prompt.
+
+    Deterministic shared-evidence detection over the confirmed roster: the same
+    outcome quote backing Results under two entities, or the same chunk text
+    assigned to both. Resolved by POST /roster/merge — never automatically.
+    """
+    report = run_overlap_detection(user_id, repository)
+    return [
+        {
+            "entity_a": {"id": p.experience_a.id, "name": p.experience_a.name},
+            "entity_b": {"id": p.experience_b.id, "name": p.experience_b.name},
+            "shared_outcome_quotes": list(p.shared_outcome_quotes),
+            "shared_chunk_texts": list(p.shared_chunk_texts),
+        }
+        for p in report.prompts
+    ]
+
+
+@router.get("/unassigned")
+def unassigned(user_id: str, repository: RepositoryDep) -> dict[str, Any]:
+    """Evidence chunks no confirmed entity claimed — a review queue, not a log line.
+
+    These never feed extraction (red-team case 3: an unproposed project's chunks
+    used to vanish silently). Resolve by assigning to a confirmed entity
+    (POST /roster/evidence/{id}/assign) or by confirming a new entity and re-running
+    assignment.
+    """
+    rows = repository.list_unassigned_evidence(user_id)
+    return {
+        "count": len(rows),
+        "items": [
+            {
+                "id": e.id,
+                "source_type": e.source_type,
+                "source_ref": e.source_ref,
+                "chunk_text": e.chunk_text,
+            }
+            for e in rows
+        ],
+    }
+
+
+@router.post("/evidence/{evidence_id}/assign")
+def assign_evidence(
+    evidence_id: int, body: EvidenceAssignRequest, repository: RepositoryDep
+) -> dict[str, Any]:
+    """Manually assign a chunk to a CONFIRMED entity — the human overrides the assigner."""
+    stored = repository.get_evidence(evidence_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"no evidence with id {evidence_id}")
+    experience = next(
+        (e for e in repository.list_experiences(stored.user_id) if e.id == body.experience_id),
+        None,
+    )
+    if experience is None:
+        raise HTTPException(
+            status_code=404, detail=f"no experience with id {body.experience_id} for this user"
+        )
+    if experience.status is not ExperienceStatus.CONFIRMED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"experience {experience.id} is {experience.status.value}, not confirmed — "
+            "evidence assigns to confirmed entities only",
+        )
+    updated = repository.assign_evidence(evidence_id, experience.id)
+    return {
+        "id": updated.id,
+        "experience_id": updated.experience_id,
+        "source_ref": updated.source_ref,
     }
 
 
