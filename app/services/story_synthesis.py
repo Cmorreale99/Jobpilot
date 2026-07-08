@@ -23,10 +23,12 @@ from app.domain.claims import SOURCE_USER_ATTESTATION, ClaimRepository, Experien
 from app.domain.project_story import (
     COMPONENT_PROBLEM,
     COMPONENT_RESULT,
+    HeuristicStorySynthesizer,
     ProjectStoryRepository,
     StoryReplaceError,
     StoryReviewStatus,
-    select_story_content,
+    StorySynthesisError,
+    StorySynthesizer,
     story_synthesis_fingerprint,
     validate_story_structure,
 )
@@ -44,6 +46,7 @@ class StorySynthesisReport:
     synthesized: list[int] = field(default_factory=list)  # fresh pending_review drafts
     quarantined: list[int] = field(default_factory=list)  # fatal findings, not persisted
     skipped: list[int] = field(default_factory=list)  # decided / answered / unchanged
+    failed: list[int] = field(default_factory=list)  # synthesis errored (e.g. LLM call failed)
 
 
 def _story_has_answers(claim_repository: ClaimRepository, user_id: str, story_id: int) -> bool:
@@ -80,20 +83,24 @@ def run_story_synthesis(
     claim_repository: ClaimRepository,
     story_repository: ProjectStoryRepository,
     *,
+    synthesizer: StorySynthesizer | None = None,
     validation_log: ValidationRunLog | None = None,
     experience_ids: Collection[int] | None = None,
     force: bool = False,
 ) -> StorySynthesisReport:
-    """Synthesize one Project Story draft per confirmed entity (select → gate → persist).
+    """Synthesize one Project Story draft per confirmed entity (synthesize → gate → persist).
 
     For each confirmed entity: fingerprint its claims + assigned evidence; skip when a
     human already decided (approved/excluded), when typed answers exist, or when the
-    inputs are unchanged (unless ``force``). Otherwise select content verbatim and run
-    the structural validator — fatal findings quarantine (logged, not persisted); a clean
-    draft is persisted and promoted to ``pending_review`` and logged as passing.
+    inputs are unchanged (unless ``force``). Otherwise run the ``synthesizer`` (the
+    heuristic verbatim selector by default; the flag-gated LLM composer as a drop-in) and
+    the structural validator — a synthesis error skips the entity loudly (logged, recorded);
+    fatal structural findings quarantine (logged, not persisted); a clean draft is persisted,
+    promoted to ``pending_review``, and logged as passing.
 
     ``experience_ids`` scopes the run to specific entities (default: all confirmed).
     """
+    synthesizer = synthesizer or HeuristicStorySynthesizer()
     report = StorySynthesisReport()
     confirmed = [
         e
@@ -120,7 +127,26 @@ def run_story_synthesis(
                 report.skipped.append(experience.id)  # unchanged inputs — extraction_hash economics
                 continue
 
-        content = replace(select_story_content(experience.id, claims), synthesis_hash=fingerprint)
+        try:
+            draft = synthesizer.synthesize(
+                experience.id,
+                claims,
+                claim_repository.get_evidence,
+                experience_name=experience.name,
+            )
+        except StorySynthesisError as exc:
+            report.failed.append(experience.id)
+            _record(
+                validation_log,
+                user_id,
+                experience.id,
+                passed=False,
+                detail=[f"synthesis_failed: {exc}"],
+            )
+            logger.error("story synthesis failed for experience %s: %s", experience.id, exc)
+            continue
+
+        content = replace(draft, synthesis_hash=fingerprint)
         claims_by_id = {c.id: c for c in claims}
         violations = validate_story_structure(
             content, experience.id, claims_by_id, claim_repository.get_evidence
@@ -152,10 +178,11 @@ def run_story_synthesis(
         _record(validation_log, user_id, experience.id, passed=True)
 
     logger.info(
-        "story synthesis for %s: %d synthesized, %d quarantined, %d skipped",
+        "story synthesis for %s: %d synthesized, %d quarantined, %d skipped, %d failed",
         user_id,
         len(report.synthesized),
         len(report.quarantined),
         len(report.skipped),
+        len(report.failed),
     )
     return report

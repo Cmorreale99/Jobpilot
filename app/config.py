@@ -182,6 +182,12 @@ class Settings(BaseSettings):
     # assignment BULK). Off by default; same real-client requirement/fallback as the
     # other LLM flags. Either way a HUMAN confirms the roster before extraction.
     roster_llm_detection: bool = False
+    # Swap the heuristic story synthesizer (verbatim claim selection) for the LLM-backed one
+    # (DEEP tier): it composes the Problem Space and groups Actions, grounded against cited
+    # evidence and gated by validate_story_structure + the readiness gate. Off by default;
+    # same real-client requirement/fallback as the other LLM flags. Ships LAST (§3.8) — the
+    # human review gate and the render/number gates are all in place before prose is authored.
+    story_llm_synthesis: bool = False
     anthropic_api_key: str = ""
     anthropic_model_bulk: str = "claude-sonnet-5"
     anthropic_model_deep: str = "claude-opus-4-8"

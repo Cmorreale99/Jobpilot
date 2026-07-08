@@ -43,6 +43,7 @@ from app.services.story_review import (
     story_queue,
 )
 from app.services.story_synthesis import run_story_synthesis
+from app.services.story_synthesizer_factory import create_story_synthesizer
 
 router = APIRouter(prefix="/stories", tags=["stories"])
 
@@ -216,15 +217,22 @@ def synthesize(
     validation_log: ValidationLogDep,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Build one story draft per confirmed entity (offline, no LLM), promoting the
-    structurally clean ones to ``pending_review`` and quarantining the rest."""
+    """Build one story draft per confirmed entity, promoting the structurally clean ones to
+    ``pending_review`` and quarantining the rest. The synthesizer is heuristic (verbatim
+    selection) unless ``STORY_LLM_SYNTHESIS`` is on, in which case the LLM composer runs."""
     report = run_story_synthesis(
-        user_id, repository, story_repository, validation_log=validation_log, force=force
+        user_id,
+        repository,
+        story_repository,
+        synthesizer=create_story_synthesizer(),
+        validation_log=validation_log,
+        force=force,
     )
     return {
         "synthesized": report.synthesized,
         "quarantined": report.quarantined,
         "skipped": report.skipped,
+        "failed": report.failed,
     }
 
 

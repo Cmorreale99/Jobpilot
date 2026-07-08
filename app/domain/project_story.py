@@ -954,6 +954,55 @@ def story_synthesis_fingerprint(claims: Sequence[Claim], evidence: Sequence[Stor
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+# --- Synthesis engine contract (§3.8) -----------------------------------------------------
+
+
+class StorySynthesisError(RuntimeError):
+    """One entity's synthesis failed outright (e.g. the LLM call failed).
+
+    Raised instead of silently degrading to a different engine — the caller skips the
+    entity loudly (logged + recorded in ``validation_runs``), mirroring extraction's
+    :class:`~app.domain.claims.ClaimExtractionError`. There is deliberately no silent
+    heuristic fallback mid-run.
+    """
+
+
+@runtime_checkable
+class StorySynthesizer(Protocol):
+    """Turns one confirmed entity's claim inventory into a draft :class:`StoryContent`.
+
+    The heuristic default **selects and gates, never authors** (§3.8); the LLM drop-in
+    (``app/llm/story_synthesis.py``, flag-gated) composes the Problem statement and groups
+    Actions — its output still faces ``validate_story_structure`` and the readiness gate,
+    so composition never bypasses grounding. ``get_evidence`` resolves cited evidence for
+    the LLM's grounding walk; the heuristic ignores it.
+    """
+
+    def synthesize(
+        self,
+        experience_id: int,
+        claims: Sequence[Claim],
+        get_evidence: Callable[[int], StoredEvidence | None],
+        *,
+        experience_name: str = "",
+    ) -> StoryContent: ...
+
+
+class HeuristicStorySynthesizer:
+    """The deterministic, offline default: verbatim claim selection via
+    :func:`select_story_content`."""
+
+    def synthesize(
+        self,
+        experience_id: int,
+        claims: Sequence[Claim],
+        get_evidence: Callable[[int], StoredEvidence | None],
+        *,
+        experience_name: str = "",
+    ) -> StoryContent:
+        return select_story_content(experience_id, claims)
+
+
 # --- Persistence contract -----------------------------------------------------------------
 
 
@@ -1020,10 +1069,13 @@ __all__ = [
     "STORY_TRANSITIONS",
     "ComponentPresence",
     "ExclusionReasonRequiredError",
+    "HeuristicStorySynthesizer",
     "MetricConflict",
     "ProjectStory",
     "ProjectStoryRepository",
     "QuestionKind",
+    "StorySynthesizer",
+    "StorySynthesisError",
     "ResultCandidate",
     "StoryAction",
     "StoryContent",

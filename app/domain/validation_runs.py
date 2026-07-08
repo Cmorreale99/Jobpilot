@@ -27,6 +27,10 @@ KIND_ENTITY_OVERLAP = "entity_overlap"
 # One row per confirmed entity synthesized or quarantined in a story-synthesis run
 # (V3 Phase 3): pass = a clean draft promoted to review; fail = fatal structural findings.
 KIND_STORY_SYNTHESIS = "story_synthesis"
+# One scorecard row per story-synthesis run (V3 Phase 5b): resume_ready_rate, the
+# readiness breakdown, and the invariants that MUST be zero (invented metrics, orphan
+# components, duplicate stories). ``passed`` is the boundary_clean pass/fail.
+KIND_STORY_EVAL = "story_eval"
 
 
 @dataclass(frozen=True)
