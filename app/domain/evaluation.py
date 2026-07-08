@@ -33,8 +33,18 @@ from app.domain.claims import (
     claim_content_fingerprint,
 )
 from app.domain.par_validation import is_structural, validate_claim
+from app.domain.project_story import (
+    ComponentPresence,
+    QuestionKind,
+    StoryReadiness,
+    StoryReviewStatus,
+    StoryViolation,
+)
 
 EvidenceResolver = Callable[[int], StoredEvidence | None]
+
+# Structural violation codes that mean a component points nowhere valid (must be 0).
+_ORPHAN_CODES = frozenset({"orphan_component_ref", "cross_entity_ref", "component_without_refs"})
 
 
 @dataclass(frozen=True)
@@ -223,11 +233,141 @@ def golden_examples(
     return examples
 
 
+# --- Story evaluation (V3 Phase 5b, ARCHITECTURE_V3 §5) -----------------------------------
+
+
+@dataclass(frozen=True)
+class StoryEvalInput:
+    """One story's evaluable state: its review status, derived readiness, structural
+    violations, and normalized Result outcome spans (for cross-story duplicate detection)."""
+
+    status: StoryReviewStatus
+    readiness: StoryReadiness
+    violations: Sequence[StoryViolation]
+    result_spans: Sequence[str]
+
+
+@dataclass(frozen=True)
+class StoryEvalReport:
+    """A story-synthesis run's scorecard (recorded to ``validation_runs`` kind story_eval)."""
+
+    total: int
+    approved: int
+    pending_review: int
+    draft: int
+    excluded: int
+    resume_ready: int
+    missing_problem: int
+    missing_result_only: int
+    missing_both: int
+    questions_outstanding: int
+    invented_metric_count: int  # MUST be 0
+    orphan_component_count: int  # MUST be 0
+    duplicate_story_count: int  # MUST be 0
+    cross_source_conflict_count: int
+
+    @property
+    def resume_ready_rate(self) -> float:
+        return self.resume_ready / self.total if self.total else 0.0
+
+    @property
+    def boundary_clean(self) -> bool:
+        """The hard pass/fail: no invented metrics, no orphan components, no duplicate stories."""
+        return (
+            self.invented_metric_count == 0
+            and self.orphan_component_count == 0
+            and self.duplicate_story_count == 0
+        )
+
+    def detail_lines(self) -> tuple[str, ...]:
+        return (
+            f"total={self.total}",
+            f"approved={self.approved}",
+            f"pending_review={self.pending_review}",
+            f"draft={self.draft}",
+            f"excluded={self.excluded}",
+            f"resume_ready={self.resume_ready} ({self.resume_ready_rate:.0%})",
+            f"missing_problem={self.missing_problem}",
+            f"missing_result_only={self.missing_result_only}",
+            f"missing_both={self.missing_both}",
+            f"questions_outstanding={self.questions_outstanding}",
+            f"invented_metric_count={self.invented_metric_count}",
+            f"orphan_component_count={self.orphan_component_count}",
+            f"duplicate_story_count={self.duplicate_story_count}",
+            f"cross_source_conflict_count={self.cross_source_conflict_count}",
+        )
+
+
+def summarize_story_eval(inputs: Sequence[StoryEvalInput]) -> StoryEvalReport:
+    """Score a set of stories against the §5 metrics (pure; the caller supplies readiness).
+
+    ``duplicate_story_count`` counts outcome spans that back a Result under more than one
+    story — the final-CV dedup invariant restated as a metric (must be 0). ``invented_metric``
+    and ``orphan_component`` counts are stories carrying the corresponding fatal structural
+    violation (also must be 0). Questions are counted only for undecided stories.
+    """
+    status_counts: Counter[StoryReviewStatus] = Counter()
+    resume_ready = missing_problem = missing_result_only = missing_both = 0
+    questions_outstanding = invented = orphan = conflicts = 0
+    span_owners: dict[str, set[int]] = {}
+
+    for index, item in enumerate(inputs):
+        status_counts[item.status] += 1
+        readiness = item.readiness
+        if readiness.resume_ready:
+            resume_ready += 1
+        # Mutually exclusive gap buckets: both > problem-only > result-only.
+        problem_missing = readiness.problem is ComponentPresence.MISSING
+        result_missing = readiness.result is ComponentPresence.MISSING
+        if problem_missing and result_missing:
+            missing_both += 1
+        elif problem_missing:
+            missing_problem += 1
+        elif result_missing:
+            missing_result_only += 1
+
+        if item.status in (StoryReviewStatus.DRAFT, StoryReviewStatus.PENDING_REVIEW):
+            questions_outstanding += len(readiness.questions)
+        conflicts += sum(1 for q in readiness.questions if q.kind is QuestionKind.METRIC_CONFLICT)
+
+        codes = {v.code for v in item.violations}
+        if "unsupported_number" in codes:
+            invented += 1
+        if codes & _ORPHAN_CODES:
+            orphan += 1
+
+        for span in item.result_spans:
+            if span:
+                span_owners.setdefault(span, set()).add(index)
+
+    duplicate_story_count = sum(1 for owners in span_owners.values() if len(owners) > 1)
+
+    return StoryEvalReport(
+        total=len(inputs),
+        approved=status_counts[StoryReviewStatus.APPROVED],
+        pending_review=status_counts[StoryReviewStatus.PENDING_REVIEW],
+        draft=status_counts[StoryReviewStatus.DRAFT],
+        excluded=status_counts[StoryReviewStatus.EXCLUDED],
+        resume_ready=resume_ready,
+        missing_problem=missing_problem,
+        missing_result_only=missing_result_only,
+        missing_both=missing_both,
+        questions_outstanding=questions_outstanding,
+        invented_metric_count=invented,
+        orphan_component_count=orphan,
+        duplicate_story_count=duplicate_story_count,
+        cross_source_conflict_count=conflicts,
+    )
+
+
 __all__ = [
     "EvidenceResolver",
     "GoldenSetSummary",
     "SlopMetrics",
+    "StoryEvalInput",
+    "StoryEvalReport",
     "compute_slop_metrics",
     "golden_examples",
     "summarize_golden_set",
+    "summarize_story_eval",
 ]
