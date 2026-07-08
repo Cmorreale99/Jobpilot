@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.claims import ExperienceSection
+from app.domain.cv import MasterCv, ParClaim
+from app.domain.master_cv_snapshot import StoredSnapshot, master_cv_from_snapshot
 
 # A story-shaped Master CV version, distinguished from V2's ``approved_claims`` snapshots so
 # old claim-shaped versions stay readable (§6 — the store versions both kinds in one table).
@@ -178,6 +180,80 @@ def build_story_snapshot_content(renderables: Sequence[RenderableStory]) -> dict
     return {"snapshot_of": STORY_SNAPSHOT_KIND, "sections": sections}
 
 
+def story_master_cv_from_snapshot(snapshot: StoredSnapshot) -> MasterCv:
+    """Adapt an approved-**story** snapshot into the :class:`MasterCv` consumers expect (§6).
+
+    The V3 story snapshot is the only input to matching, tailoring, outreach, and interview
+    prep — this is the single bridge, mirroring ``master_cv_from_snapshot`` for claims. Each
+    story component becomes one :class:`ParClaim` addressed by its **stable component id**
+    (``source_ref = story:<story_id>:<component_id>``), so a downstream highlight reference
+    is component-precise and cannot dangle when an *unapproved* draft is re-synthesized.
+
+    Per story (always resume-ready, so ≥1 Action, a Result, and a Problem):
+
+    * each **Action** → an action-only ``ParClaim`` (a capability line);
+    * each **Result** → a ``ParClaim`` pairing the story's lead Action with the Result (an
+      impact line, rendered "action — result" by the tailorer).
+
+    ``evidence_text`` carries the component's **cited evidence** (not its possibly-composed
+    text): the tailoring/outreach number gate grounds against it, so generated prose can
+    never be grounded by other generated prose.
+    """
+    claims: list[ParClaim] = []
+    sections: dict[str, Any] = snapshot.content.get("sections", {})
+    for entries in sections.values():
+        for entry in entries:
+            story_id = entry.get("story_id")
+            problem = entry.get("problem") or {}
+            problem_text = problem.get("text") or None
+            actions = entry.get("actions", [])
+            results = entry.get("results", [])
+            if not actions:
+                continue  # a resume-ready story always has one; belt for a malformed row
+            lead = actions[0]
+
+            for action in actions:
+                claims.append(
+                    ParClaim(
+                        action=action["text"],
+                        problem=problem_text,
+                        result=None,
+                        source_type=SOURCE_APPROVED_STORY,
+                        source_ref=f"story:{story_id}:{action['component_id']}",
+                        evidence_text=action.get("evidence_text", ""),
+                    )
+                )
+            for result in results:
+                evidence = "\n".join(
+                    text
+                    for text in (lead.get("evidence_text", ""), result.get("evidence_text", ""))
+                    if text
+                )
+                claims.append(
+                    ParClaim(
+                        action=lead["text"],
+                        problem=problem_text,
+                        result=result["text"],
+                        source_type=SOURCE_APPROVED_STORY,
+                        source_ref=f"story:{story_id}:{result['component_id']}",
+                        evidence_text=evidence,
+                    )
+                )
+    return MasterCv(claims=claims, sources=[], version=snapshot.version)
+
+
+def master_cv_from_any_snapshot(snapshot: StoredSnapshot) -> MasterCv:
+    """Adapt a stored Master CV version regardless of its kind (§6 snapshot versioning).
+
+    Story-shaped versions (``approved_stories``) use the story adapter; older claim-shaped
+    versions (``approved_claims``) still read through the claim adapter, so a consumer that
+    reads ``get_latest`` — interview prep does — keeps working across the lineage restart.
+    """
+    if snapshot.content.get("snapshot_of") == STORY_SNAPSHOT_KIND:
+        return story_master_cv_from_snapshot(snapshot)
+    return master_cv_from_snapshot(snapshot)  # claim-shaped (or unlabelled legacy)
+
+
 __all__ = [
     "SOURCE_APPROVED_STORY",
     "STORY_SNAPSHOT_KIND",
@@ -185,4 +261,6 @@ __all__ = [
     "RenderableStory",
     "build_story_snapshot_content",
     "derive_bullets",
+    "master_cv_from_any_snapshot",
+    "story_master_cv_from_snapshot",
 ]

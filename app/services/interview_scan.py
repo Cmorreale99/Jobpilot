@@ -47,7 +47,8 @@ from app.domain.interviews import (
     normalize_company,
     verify_invite_provenance,
 )
-from app.domain.master_cv_snapshot import MasterCvSnapshotStore, master_cv_from_snapshot
+from app.domain.master_cv_snapshot import MasterCvSnapshotStore
+from app.domain.story_snapshot import master_cv_from_any_snapshot
 from app.domain.validation_runs import KIND_INTERVIEW_VERIFICATION, ValidationRunLog
 from app.integrations.base import InboxScanner
 from app.integrations.inbox_factory import create_inbox_scanner
@@ -139,7 +140,7 @@ def generate_prep_packet(
             f"prep packets are only generated for confirmed interviews (stage: {interview.stage})"
         )
     snapshot = snapshot_store.get_latest(user_id)
-    master_cv = master_cv_from_snapshot(snapshot) if snapshot else MasterCv()
+    master_cv = master_cv_from_any_snapshot(snapshot) if snapshot else MasterCv()
     applications = _application_index(application_repository.list_applications(user_id))
     application = applications.get(normalize_company(interview.company))
     packet = prep_generator.generate(interview, master_cv, application)

@@ -128,6 +128,32 @@ def test_supported_numbers_pass_and_highlights_carry_claim_ids() -> None:
     assert materials.highlight_claim_ids == (41,)  # traceable to the approved claim
 
 
+def test_tailorer_grounds_story_numbers_against_cited_evidence() -> None:
+    """§6: story component text may be composed, so numbers ground against evidence_text."""
+    story_cv = MasterCv(
+        claims=[
+            ParClaim(
+                action="Re-architected the settlement pipeline over Kafka",
+                result="Cut runtime dramatically",  # composed text carries NO number
+                source_type="approved_story",
+                source_ref="story:3:r-abc123",
+                evidence_text="Cut settlement batch runtime by 70% after the migration",
+            )
+        ],
+        version=4,
+    )
+    reply = json.dumps(
+        {
+            "summary": "Cut settlement runtime by 70%.",  # 70 is in the cited evidence
+            "highlight_ids": ["c0"],
+            "cover_letter": "Dear team, …",
+        }
+    )
+    materials = LlmMaterialsTailorer(FakeLlmClient([reply])).tailor(story_cv, _MATCH)
+    assert materials.summary == "Cut settlement runtime by 70%."
+    assert materials.highlight_refs == ("story:3:r-abc123",)  # component-addressed provenance
+
+
 def test_tailorer_falls_back_on_persistent_llm_failure() -> None:
     client = FakeLlmClient(default_text="not json at all")
     materials = LlmMaterialsTailorer(client).tailor(_cv(), _MATCH)
@@ -173,3 +199,32 @@ def test_drafter_falls_back_on_persistent_llm_failure() -> None:
     client = FakeLlmClient(default_text="{not json")
     message = LlmOutreachDrafter(client).draft(_MATERIALS, _JOB, None)
     assert message == HeuristicOutreachDrafter().draft(_MATERIALS, _JOB, None)
+
+
+def test_outreach_invented_numbers_fail_closed_to_the_heuristic() -> None:
+    """§6: the outreach body — the artifact that leaves the machine — now has a number gate.
+
+    A figure grounded in neither the tailored materials nor the posting fails closed to the
+    heuristic drafter, which quotes the real highlights verbatim.
+    """
+    reply = json.dumps(
+        {"subject": "Re: payments role", "body": "Hi Priya, I delivered 250% growth."}
+    )  # 250 is in no material and no posting
+    message = LlmOutreachDrafter(FakeLlmClient([reply])).draft(
+        _MATERIALS, _JOB, Contact(name="Priya Raman", source="fixture")
+    )
+    assert message == HeuristicOutreachDrafter().draft(
+        _MATERIALS, _JOB, Contact(name="Priya Raman", source="fixture")
+    )
+    assert "250" not in message.body
+
+
+def test_outreach_supported_numbers_pass() -> None:
+    materials = TailoredMaterials(
+        summary="Cut runtime by 70%.",
+        highlights=("Cut settlement runtime by 70%",),
+        cover_letter="(letter)",
+    )
+    reply = json.dumps({"subject": "s", "body": "I cut runtime by 70% on the last team."})
+    message = LlmOutreachDrafter(FakeLlmClient([reply])).draft(materials, _JOB, None)
+    assert message.body == "I cut runtime by 70% on the last team."
