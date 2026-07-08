@@ -129,6 +129,14 @@ def build_resume_context(
             }
         )
 
+    return _with_profile(profile, groups)
+
+
+def _with_profile(
+    profile: ResumeProfile,
+    groups: dict[ExperienceSection, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Assemble the renderer contract from the profile header + the two section groups."""
     return {
         "name": profile.name,
         "tagline": profile.tagline,
@@ -141,3 +149,33 @@ def build_resume_context(
         "experiences": groups[ExperienceSection.PROFESSIONAL_EXPERIENCE],
         "projects_and_hackathons": groups[ExperienceSection.PROJECTS_HACKATHONS],
     }
+
+
+def build_story_resume_context(
+    profile: ResumeProfile, snapshot_content: dict[str, Any]
+) -> dict[str, Any]:
+    """The renderer's exact JSON contract, built from a story-shaped snapshot (V3 Phase 4).
+
+    The story snapshot (``domain/story_snapshot.py``) already carries each experience's
+    render bullets (P/A/R derived verbatim, gate- and duplicate-checked). This reads that
+    frozen version — never live rows — and maps it into the same ``{name, subtitle, dates,
+    bullets}`` shape ``build_resume_context`` produces for approved claims, so the frozen
+    renderer is untouched. Section keys map ``professional_experience`` → ``experiences`` and
+    ``projects_hackathons`` → ``projects_and_hackathons``.
+    """
+    sections: dict[str, Any] = snapshot_content.get("sections", {})
+    groups: dict[ExperienceSection, list[dict[str, Any]]] = {
+        ExperienceSection.PROFESSIONAL_EXPERIENCE: [],
+        ExperienceSection.PROJECTS_HACKATHONS: [],
+    }
+    for section in ExperienceSection:
+        for entry in sections.get(section.value, []):
+            groups[section].append(
+                {
+                    "name": entry.get("name", ""),
+                    "subtitle": entry.get("subtitle") or "",
+                    "dates": entry.get("dates") or "",
+                    "bullets": [bullet["text"] for bullet in entry.get("bullets", [])],
+                }
+            )
+    return _with_profile(profile, groups)
