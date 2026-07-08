@@ -64,8 +64,11 @@ def _prepare_renderable(
     Mirrors ``compute_readiness``'s component signals so the render gate agrees with the
     review gate: a Problem is evidenced (composed text clearing the §3.1 bar with valid
     refs) or user-attested; a Result is evidenced (a cited non-missing claim) or
-    user-attested; Actions come from the story's claims. Every bullet's numbers must appear
-    in its cited evidence (or the attestation it cites) — a story that fails is dropped.
+    user-attested; Actions come from the story's claims. Every component carries its cited
+    **``evidence_text``** (the chunk texts its claims cite, or the attestation it is) — the
+    number gate here and the downstream Story→``MasterCv`` adapter both ground against it,
+    never against the (possibly composed) component text. Every bullet's numbers must appear
+    in that evidence — a story that fails is dropped.
     """
     content = story.content
     claims_by_id = {
@@ -73,6 +76,17 @@ def _prepare_renderable(
         for c in claim_repository.list_claims(story.user_id)
         if c.experience_id == story.experience_id
     }
+
+    def evidence_text(claim_ids: list[int], attested: str | None = None) -> str:
+        chunks = [
+            stored.chunk_text
+            for stored in resolve_component_evidence(
+                claim_ids, claims_by_id, claim_repository.get_evidence
+            )
+        ]
+        if attested is not None:
+            chunks.append(attested)
+        return "\n".join(chunks)
 
     # Problem: evidenced (composed, clears the bar, valid refs) or user-attested.
     attested_problem = _attestation(claim_repository, story, COMPONENT_PROBLEM)
@@ -83,13 +97,18 @@ def _prepare_renderable(
         and not assess_problem_text(content.problem_text or "")
         and valid_problem_refs
     ):
-        problem = {"text": content.problem_text, "claim_ids": list(valid_problem_refs)}
+        problem = {
+            "text": content.problem_text,
+            "claim_ids": list(valid_problem_refs),
+            "evidence_text": evidence_text(valid_problem_refs),
+        }
     elif attested_problem:
         problem = {
             "text": attested_problem,
             "claim_ids": [],
             "attested": True,
             "source_ref": f"story:{story.id}:{COMPONENT_PROBLEM}",
+            "evidence_text": attested_problem,
         }
 
     # Actions: every selected action citing at least one of this entity's claims.
@@ -102,6 +121,7 @@ def _prepare_renderable(
                     "component_id": action.component_id,
                     "text": action.summary,
                     "claim_ids": valid_refs,
+                    "evidence_text": evidence_text(valid_refs),
                 }
             )
 
@@ -110,12 +130,14 @@ def _prepare_renderable(
     for result in content.results:
         valid = [claims_by_id[i] for i in result.claim_ids if i in claims_by_id]
         if any(c.result_kind is not ResultKind.MISSING for c in valid):
+            valid_ids = [c.id for c in valid]
             results.append(
                 {
                     "component_id": result.component_id,
                     "text": result.text,
-                    "claim_ids": [c.id for c in valid],
+                    "claim_ids": valid_ids,
                     "outcome_quote": result.outcome_quote,
+                    "evidence_text": evidence_text(valid_ids),
                 }
             )
     if not results:
@@ -129,6 +151,7 @@ def _prepare_renderable(
                     "outcome_quote": None,
                     "attested": True,
                     "source_ref": f"story:{story.id}:{COMPONENT_RESULT}",
+                    "evidence_text": attested_result,
                 }
             )
 
@@ -137,15 +160,7 @@ def _prepare_renderable(
     # Number gate (T14): every digit/number-word in a bullet must appear in the evidence
     # its component cites (or the attestation it is), never in other generated text.
     for bullet, component in zip(bullets, (*actions, *results), strict=True):
-        allowed = [
-            stored.chunk_text
-            for stored in resolve_component_evidence(
-                component["claim_ids"], claims_by_id, claim_repository.get_evidence
-            )
-        ]
-        if component.get("attested"):
-            allowed.append(component["text"])
-        ungrounded = unsupported_number_tokens(bullet["text"], allowed)
+        ungrounded = unsupported_number_tokens(bullet["text"], [component["evidence_text"]])
         if ungrounded:
             logger.warning(
                 "dropping approved story %s (experience %s) from the Master CV: bullet "

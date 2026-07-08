@@ -11,19 +11,34 @@ import pytest
 from app.config import Settings
 from app.domain.chunking import chunk_normalized_text
 from app.domain.claims import (
+    SOURCE_DRIVE,
     SOURCE_GITHUB_COMMIT,
+    ClaimEvidenceRef,
+    ClaimField,
     ClaimRepository,
+    ClaimStatus,
+    CostDimension,
+    DraftClaim,
     EvidenceChunk,
     Experience,
+    ExperienceSection,
+    ExperienceSeed,
     ExperienceStatus,
+    Inefficiency,
+    ResultKind,
+    ResultStatus,
+    StorableClaim,
     span_ref,
 )
+from app.domain.project_story import StoryReviewStatus, select_story_content
 from app.domain.roster import HeuristicRosterProposer
 from app.integrations.base import DriveClient, GitHubClient
 from app.integrations.mock.drive import MockDriveClient
 from app.integrations.mock.github import MockGitHubClient
 from app.integrations.mock.jobs import MockJobSource
 from app.integrations.mock.research import MockResearchClient
+from app.services.claim_repository import InMemoryClaimRepository
+from app.services.project_story_repository import InMemoryProjectStoryRepository
 from app.services.roster import gather_source_documents
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "drive"
@@ -94,6 +109,76 @@ async def confirm_source_roster(
             )
             repository.assign_evidence(stored.id, target)
     return confirmed
+
+
+def seed_approved_story(
+    claim_repo: InMemoryClaimRepository,
+    story_repo: InMemoryProjectStoryRepository,
+    *,
+    user_id: str = "u1",
+    name: str = "Ledgerline",
+    topic: str = "settlement",
+    section: ExperienceSection = ExperienceSection.PROFESSIONAL_EXPERIENCE,
+    approve: bool = True,
+) -> Experience:
+    """Seed one confirmed entity with a resume-ready, (optionally) approved project story.
+
+    The V3 pipeline reads approved *stories*, not claims, so pipeline/scheduler tests need a
+    complete P-A-R story: a problem-space Problem, ≥1 Action, and an evidenced Result whose
+    number is grounded in its cited chunk. ``topic`` keeps distinct seeded stories from
+    sharing an outcome span (which would trip the duplicate-metric refusal).
+    """
+    experience = claim_repo.upsert_experience(user_id, ExperienceSeed(name=name, section=section))
+    problem = f"The {topic} team spent 9 hours a week reconciling ledgers by hand"
+    action_one = f"Re-architected the {topic} pipeline over Kafka in Python"
+    result_one = f"Cut {topic} batch runtime by 70%"
+    action_two = f"Built streaming {topic} reconciliation services with SQL and Python"
+
+    full_chunk = EvidenceChunk(
+        SOURCE_DRIVE, f"drv-{topic}-1", "\n".join((problem, action_one, result_one))
+    )
+    action_chunk = EvidenceChunk(SOURCE_DRIVE, f"drv-{topic}-2", action_two)
+    storables = [
+        StorableClaim(
+            draft=DraftClaim(
+                action_text=action_one,
+                action_tools=("Python", "Kafka"),
+                problem_text=problem,
+                problem_cost_dimension=CostDimension.TIME,
+                problem_inefficiency=Inefficiency.MANUAL,
+                result_text=result_one,
+                result_kind=ResultKind.QUANTIFIED,
+                result_metric_json={"resolves": "time", "metric_text": "70%"},
+                evidence=(
+                    ClaimEvidenceRef(chunk=full_chunk, field=ClaimField.PROBLEM),
+                    ClaimEvidenceRef(chunk=full_chunk, field=ClaimField.ACTION),
+                    ClaimEvidenceRef(
+                        chunk=full_chunk, field=ClaimField.RESULT, outcome_quote=result_one
+                    ),
+                ),
+            ),
+            status=ClaimStatus.PENDING_REVIEW,
+            result_status=ResultStatus.VERIFIED,
+        ),
+        StorableClaim(
+            draft=DraftClaim(
+                action_text=action_two,
+                action_tools=("SQL", "Python"),
+                evidence=(ClaimEvidenceRef(chunk=action_chunk, field=ClaimField.ACTION),),
+            ),
+            status=ClaimStatus.PENDING_REVIEW,
+            result_status=ResultStatus.UNVERIFIED,
+        ),
+    ]
+    claim_repo.replace_unreviewed_claims(user_id, experience.id, storables)
+
+    claims = [c for c in claim_repo.list_claims(user_id) if c.experience_id == experience.id]
+    content = select_story_content(experience.id, claims)
+    story = story_repo.upsert_draft(user_id, experience.id, content)
+    story_repo.transition_story(story.id, StoryReviewStatus.PENDING_REVIEW)
+    if approve:
+        story_repo.transition_story(story.id, StoryReviewStatus.APPROVED)
+    return experience
 
 
 @pytest.fixture

@@ -5,13 +5,15 @@ any APScheduler import so the same function ports to EventBridge→Lambda untouc
 It depends only on interfaces (clients, repositories), so it runs identically on mocks
 (offline, zero credentials) and real integrations.
 
-**V2 only.** The Master CV the pipeline matches and drafts from is a snapshot of
-human-approved claims — the retired V1 ingestion path (build-from-raw-evidence, no
-review) is never invoked, so nothing unreviewed can reach matching, tailoring, or
-outreach. With zero approved claims the pipeline stops before matching: no prose is
-ever generated from an empty or unreviewed ledger.
+**V3.** The Master CV the pipeline matches and drafts from is a snapshot of human-approved
+**project stories** (``services/story_snapshot.py`` → ``story_master_cv_from_snapshot``) —
+the only input to matching, tailoring, outreach, and prep (§6). The retired V1 ingestion
+path is gone and even the V2 claim snapshot is no longer the pipeline's source: nothing
+reaches matching that a human did not approve as a complete, resume-ready story. With zero
+approved stories the pipeline stops before matching, naming story review as the blocker —
+never an incidental empty no-op that idempotency makes look normal.
 
-**Idempotent end to end**, because each stage already is: unchanged approved claims add
+**Idempotent end to end**, because each stage already is: unchanged approved stories add
 no version, matches are replaced per ``(user, cv version)``, and drafting refreshes
 *drafted* rows only — re-running a night never duplicates rows, never re-queues a
 decided draft, and never sends anything.
@@ -28,19 +30,22 @@ from app.db.application_repository import SqlApplicationRepository
 from app.db.claim_repository import SqlClaimRepository
 from app.db.job_repository import SqlJobRepository
 from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
+from app.db.project_story_repository import SqlProjectStoryRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.domain.applications import ApplicationRepository, OutreachStatus
 from app.domain.claims import ClaimRepository
 from app.domain.jobs import JobRepository
-from app.domain.master_cv_snapshot import MasterCvSnapshotStore, master_cv_from_snapshot
+from app.domain.master_cv_snapshot import MasterCvSnapshotStore
+from app.domain.project_story import ProjectStoryRepository
+from app.domain.story_snapshot import story_master_cv_from_snapshot
 from app.integrations.base import JobSource, MailClient, ResearchClient
 from app.integrations.jobs_factory import create_job_source
 from app.integrations.mail_factory import create_mail_client
 from app.integrations.research_factory import create_research_client
-from app.services.master_cv_snapshot import create_master_cv_snapshot
 from app.services.matching import run_matching
 from app.services.outreach import run_drafting
 from app.services.outreach_send import send_approved_outreach
+from app.services.story_snapshot import create_story_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,7 @@ class PipelineDependencies:
     research_client: ResearchClient
     mail_client: MailClient
     claim_repository: ClaimRepository
+    story_repository: ProjectStoryRepository
     snapshot_store: MasterCvSnapshotStore
     job_repository: JobRepository
     application_repository: ApplicationRepository
@@ -100,6 +106,7 @@ def build_default_dependencies(settings: Settings | None = None) -> PipelineDepe
         research_client=create_research_client(settings),
         mail_client=create_mail_client(settings, store=store, user_id=settings.pipeline_user_id),
         claim_repository=SqlClaimRepository(session_factory),
+        story_repository=SqlProjectStoryRepository(session_factory),
         snapshot_store=SqlMasterCvSnapshotStore(session_factory),
         job_repository=SqlJobRepository(session_factory),
         application_repository=SqlApplicationRepository(session_factory),
@@ -115,10 +122,10 @@ async def run_application_pipeline(
 ) -> PipelineResult:
     """One nightly application-pipeline run for the configured user.
 
-    Snapshot the approved claims as the current Master CV version (idempotent), rank
+    Snapshot the approved **stories** as the current Master CV version (idempotent), rank
     the fresh jobs against it, and draft tailored outreach into the approval queue.
     ``since`` defaults to the configured fresh-jobs window (``JOBS_SINCE_HOURS`` back
-    from ``now``). With no approved claims the run stops after logging — matching and
+    from ``now``). With no approved stories the run stops after logging — matching and
     drafting never see unreviewed content.
     """
     settings = settings or get_settings()
@@ -127,11 +134,13 @@ async def run_application_pipeline(
     since = since or now - timedelta(hours=settings.jobs_since_hours)
 
     version_before = deps.snapshot_store.get_latest(user_id)
-    snapshot = create_master_cv_snapshot(user_id, deps.claim_repository, deps.snapshot_store)
+    snapshot = create_story_snapshot(
+        user_id, deps.story_repository, deps.claim_repository, deps.snapshot_store
+    )
     changed = version_before is None or snapshot.version != version_before.version
-    master_cv = master_cv_from_snapshot(snapshot)
+    master_cv = story_master_cv_from_snapshot(snapshot)
     logger.info(
-        "pipeline[%s]: master CV v%d (%s), %d approved claims",
+        "pipeline[%s]: master CV v%d (%s), %d story components",
         user_id,
         snapshot.version,
         "new version" if changed else "unchanged",
@@ -140,8 +149,9 @@ async def run_application_pipeline(
 
     if not master_cv.claims:
         logger.warning(
-            "pipeline[%s]: no approved claims — skipping matching and drafting "
-            "(review and approve claims first; nothing is generated from an unreviewed ledger)",
+            "pipeline[%s]: no approved stories — skipping matching and drafting. Review and "
+            "approve project stories first (the story review queue is the blocker); nothing "
+            "is generated from an unreviewed ledger.",
             user_id,
         )
         return PipelineResult(

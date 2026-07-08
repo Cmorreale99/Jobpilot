@@ -1,8 +1,9 @@
 """Nightly application pipeline on mocks: end-to-end flow and idempotent re-runs.
 
-V2: the pipeline's Master CV is a snapshot of APPROVED claims — the tests seed a claim
-repository, approve claims, and verify that matching/tailoring/outreach run from that
-ledger only (and refuse to run from an empty one).
+V3: the pipeline's Master CV is a snapshot of APPROVED project stories — the tests seed a
+claim ledger, synthesize + approve a resume-ready story, and verify that matching /
+tailoring / outreach run from that approved-story snapshot only (and refuse to run from an
+empty one, naming story review as the blocker).
 """
 
 from __future__ import annotations
@@ -12,19 +13,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from app.config import Settings
 from app.domain.applications import ApplicationStatus, OutreachStatus
-from app.domain.claims import (
-    SOURCE_DRIVE,
-    ClaimEvidenceRef,
-    ClaimField,
-    ClaimStatus,
-    DraftClaim,
-    EvidenceChunk,
-    ExperienceSection,
-    ExperienceSeed,
-    ResultKind,
-    ResultStatus,
-    StorableClaim,
-)
 from app.integrations.mock.jobs import MockJobSource
 from app.integrations.mock.mail import MockMailClient
 from app.integrations.mock.research import MockResearchClient
@@ -33,63 +21,40 @@ from app.services.claim_repository import InMemoryClaimRepository
 from app.services.job_repository import InMemoryJobRepository
 from app.services.master_cv_snapshot import InMemorySnapshotStore
 from app.services.pipeline import PipelineDependencies, run_application_pipeline
+from app.services.project_story_repository import InMemoryProjectStoryRepository
 
-from tests.conftest import JOBS_FIXTURES_DIR, RESEARCH_FIXTURES_DIR
+from tests.conftest import (
+    JOBS_FIXTURES_DIR,
+    RESEARCH_FIXTURES_DIR,
+    seed_approved_story,
+)
 
 # Fixture jobs are posted late June 2026; this window includes them all.
 _NOW = datetime(2026, 7, 1, 2, 0, tzinfo=UTC)
 
-_CHUNK = EvidenceChunk(SOURCE_DRIVE, "drv1", "Rebuilt the settlement pipeline in Python.")
 
-
-def _storable(action: str, result: str | None = None) -> StorableClaim:
-    return StorableClaim(
-        draft=DraftClaim(
-            action_text=action,
-            action_tools=("Python",),
-            result_text=result,
-            result_kind=ResultKind.QUALITATIVE_EVIDENCED if result else ResultKind.MISSING,
-            evidence=(ClaimEvidenceRef(chunk=_CHUNK, field=ClaimField.ACTION),),
-        ),
-        status=ClaimStatus.PENDING_REVIEW,
-        result_status=ResultStatus.UNVERIFIED,
-    )
-
-
-def _experience_seed(name: str) -> ExperienceSeed:
-    return ExperienceSeed(name=name, section=ExperienceSection.PROFESSIONAL_EXPERIENCE)
-
-
-def _seed_approved_claims(repo: InMemoryClaimRepository) -> None:
-    experience = repo.upsert_experience("u1", _experience_seed("Ledgerline"))
-    inserted = repo.replace_unreviewed_claims(
-        "u1",
-        experience.id,
-        [
-            _storable(
-                "Re-architected the settlement pipeline over Kafka in Python",
-                result="Cut batch runtime by 70%",
-            ),
-            _storable("Built streaming payment reconciliation services with SQL and Python"),
-        ],
-    )
-    for claim in inserted:
-        repo.transition_claim(claim.id, ClaimStatus.APPROVED)
-
-
-@pytest.fixture
-def deps() -> PipelineDependencies:
-    claim_repository = InMemoryClaimRepository()
-    _seed_approved_claims(claim_repository)
+def _deps(
+    claim_repository: InMemoryClaimRepository,
+    story_repository: InMemoryProjectStoryRepository,
+) -> PipelineDependencies:
     return PipelineDependencies(
         job_source=MockJobSource(JOBS_FIXTURES_DIR),
         research_client=MockResearchClient(RESEARCH_FIXTURES_DIR),
         mail_client=MockMailClient(),
         claim_repository=claim_repository,
+        story_repository=story_repository,
         snapshot_store=InMemorySnapshotStore(),
         job_repository=InMemoryJobRepository(),
         application_repository=InMemoryApplicationRepository(),
     )
+
+
+@pytest.fixture
+def deps() -> PipelineDependencies:
+    claim_repository = InMemoryClaimRepository()
+    story_repository = InMemoryProjectStoryRepository()
+    seed_approved_story(claim_repository, story_repository)
+    return _deps(claim_repository, story_repository)
 
 
 @pytest.fixture
@@ -117,38 +82,29 @@ async def test_pipeline_runs_end_to_end(
     applications = deps.application_repository.list_applications("u1")
     assert all(a.status is ApplicationStatus.DRAFTED for a in applications)
     assert all(a.materials.highlights for a in applications)
-    # Every highlight is a verbatim rendering of an APPROVED claim — nothing invented,
-    # nothing from the retired V1 path — and carries that claim's ledger id (the
-    # Phase 3 exit test: prose that leaves the machine is claim-traceable).
-    approved = deps.claim_repository.list_claims("u1", status=ClaimStatus.APPROVED)
-    approved_actions = {c.action_text for c in approved}
-    approved_ids = {c.id for c in approved}
+    # Every highlight is a verbatim rendering of an APPROVED story component — nothing
+    # invented — and carries that component's stable ref (story:<id>:<component_id>), so
+    # prose that leaves the machine traces to a human-approved story, not a raw claim.
+    component_actions = (
+        "Re-architected the settlement pipeline over Kafka in Python",
+        "Built streaming settlement reconciliation services with SQL and Python",
+    )
     for application in applications:
         materials = application.materials
-        assert len(materials.highlight_claim_ids) == len(materials.highlights)
-        assert set(materials.highlight_claim_ids) <= approved_ids
+        assert len(materials.highlight_refs) == len(materials.highlights)
+        assert all(ref.startswith("story:") for ref in materials.highlight_refs)
         for highlight in materials.highlights:
-            assert any(highlight.startswith(action) for action in approved_actions)
+            assert any(highlight.startswith(action) for action in component_actions)
 
 
-async def test_no_approved_claims_means_no_matching_and_no_drafts(
+async def test_no_approved_stories_means_no_matching_and_no_drafts(
     pipeline_settings: Settings,
 ) -> None:
-    # An unreviewed ledger (claims exist but none approved) generates NOTHING.
+    # A pending (un-approved) story generates NOTHING — the pipeline reads approved stories.
     claim_repository = InMemoryClaimRepository()
-    experience = claim_repository.upsert_experience("u1", _experience_seed("Ledgerline"))
-    claim_repository.replace_unreviewed_claims(
-        "u1", experience.id, [_storable("Pending, unreviewed claim text")]
-    )
-    deps = PipelineDependencies(
-        job_source=MockJobSource(JOBS_FIXTURES_DIR),
-        research_client=MockResearchClient(RESEARCH_FIXTURES_DIR),
-        mail_client=MockMailClient(),
-        claim_repository=claim_repository,
-        snapshot_store=InMemorySnapshotStore(),
-        job_repository=InMemoryJobRepository(),
-        application_repository=InMemoryApplicationRepository(),
-    )
+    story_repository = InMemoryProjectStoryRepository()
+    seed_approved_story(claim_repository, story_repository, approve=False)
+    deps = _deps(claim_repository, story_repository)
 
     result = await run_application_pipeline(deps, pipeline_settings, now=_NOW)
 
@@ -165,7 +121,7 @@ async def test_rerun_is_fully_idempotent(
     first = await run_application_pipeline(deps, pipeline_settings, now=_NOW)
     second = await run_application_pipeline(deps, pipeline_settings, now=_NOW)
 
-    # Unchanged approved claims -> same CV version, no new rows anywhere.
+    # Unchanged approved stories -> same CV version, no new rows anywhere.
     assert second.master_cv_version == first.master_cv_version
     assert second.master_cv_changed is False
     assert deps.snapshot_store.list_versions("u1") == [1]
@@ -174,16 +130,18 @@ async def test_rerun_is_fully_idempotent(
     assert len(first_queue) == first.drafts_queued  # replaced in place, not duplicated
 
 
-async def test_newly_approved_claim_cuts_a_new_version(
+async def test_newly_approved_story_cuts_a_new_version(
     deps: PipelineDependencies, pipeline_settings: Settings
 ) -> None:
     first = await run_application_pipeline(deps, pipeline_settings, now=_NOW)
 
-    experience = deps.claim_repository.list_experiences("u1")[0]
-    (inserted,) = deps.claim_repository.replace_unreviewed_claims(
-        "u1", experience.id, [_storable("Migrated the ledger exports to Snowflake")]
+    # Approving a second project story adds it to the snapshot — a new Master CV version.
+    seed_approved_story(
+        deps.claim_repository,  # type: ignore[arg-type]
+        deps.story_repository,  # type: ignore[arg-type]
+        name="Streamforge",
+        topic="billing",
     )
-    deps.claim_repository.transition_claim(inserted.id, ClaimStatus.APPROVED)
     second = await run_application_pipeline(deps, pipeline_settings, now=_NOW)
 
     assert second.master_cv_version == first.master_cv_version + 1

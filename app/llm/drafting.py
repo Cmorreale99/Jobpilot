@@ -28,8 +28,8 @@ from app.domain.tailoring import (
     MAX_HIGHLIGHTS,
     HeuristicMaterialsTailorer,
     TailoredMaterials,
+    claim_number_source,
     claim_ref_id,
-    claim_text,
     render_claim,
     unsupported_numbers,
 )
@@ -122,11 +122,12 @@ class LlmMaterialsTailorer:
             )
             return self._fallback.tailor(master_cv, match)
 
-        # Number-factuality gate (audit §9): every number in the generated prose must
-        # come from a selected claim or the posting itself. An invented metric fails
-        # closed to the deterministic tailorer — it never leaves the machine.
+        # Number-factuality gate (audit §9; §6): every number in the generated prose must
+        # come from a selected claim's CITED EVIDENCE or the posting itself — never from the
+        # (possibly composed) component text. An invented metric fails closed to the
+        # deterministic tailorer — it never leaves the machine.
         allowed = [
-            *(claim_text(claim) for claim in selected),
+            *(claim_number_source(claim) for claim in selected),
             f"{match.job.title} {match.job.description}",
         ]
         invented = unsupported_numbers(f"{summary}\n{cover_letter}", allowed)
@@ -143,6 +144,7 @@ class LlmMaterialsTailorer:
             highlights=tuple(render_claim(claim) for claim in selected),
             cover_letter=cover_letter,
             highlight_claim_ids=tuple(claim_ref_id(claim) or 0 for claim in selected),
+            highlight_refs=tuple(claim.source_ref for claim in selected),
         )
 
 
@@ -178,6 +180,25 @@ class LlmOutreachDrafter:
                 "LLM outreach drafting failed for job %s; falling back to heuristic: %s",
                 job.external_id,
                 exc,
+            )
+            return self._fallback.draft(materials, job, contact)
+
+        # Outreach body number gate (§6): the one artifact that actually leaves the machine
+        # had no number gate at all. Every figure in the subject or body must come from the
+        # already-grounded tailored materials or the posting — an invented metric fails
+        # closed to the heuristic drafter, which quotes the real highlights verbatim.
+        allowed = [
+            materials.summary,
+            materials.cover_letter,
+            *materials.highlights,
+            f"{job.title} {job.description}",
+        ]
+        invented = unsupported_numbers(f"{subject}\n{body}", allowed)
+        if invented:
+            logger.warning(
+                "LLM outreach for job %s invented unsupported numbers %s; using heuristic.",
+                job.external_id,
+                invented,
             )
             return self._fallback.draft(materials, job, contact)
         return OutreachMessage(subject=subject, body=body)

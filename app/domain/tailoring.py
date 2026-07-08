@@ -49,6 +49,17 @@ def claim_text(claim: ParClaim) -> str:
     return " ".join(part for part in (claim.problem, claim.action, claim.result) if part)
 
 
+def claim_number_source(claim: ParClaim) -> str:
+    """The text the number gate grounds a claim's figures against.
+
+    For story-adapted claims (V3) this is the **cited evidence** (``evidence_text``) — the
+    component text may be LLM-composed, so grounding generated prose against it would let
+    generated text ground further generation (§6). For legacy claim-shaped claims the
+    approved, human-reviewed claim text is itself the ground truth.
+    """
+    return claim.evidence_text or claim_text(claim)
+
+
 def unsupported_numbers(text: str, allowed_sources: Iterable[str]) -> list[str]:
     """Number tokens in ``text`` that appear in NO allowed source text.
 
@@ -66,15 +77,19 @@ def unsupported_numbers(text: str, allowed_sources: Iterable[str]) -> list[str]:
 class TailoredMaterials:
     """Materials tailored to one job: a fit summary, evidence highlights, a cover letter.
 
-    ``highlights`` are rendered PAR claims (real evidence, never invented) and
-    ``highlight_claim_ids`` carries the approved claim id behind each one (0 for
-    legacy rows or claims without a ledger id), aligned by index.
+    ``highlights`` are rendered PAR claims (real evidence, never invented).
+    ``highlight_refs`` carries each highlight's provenance ``source_ref`` — ``claim:<id>``
+    for the legacy claim ledger, ``story:<id>:<component_id>`` for V3 stories — the stable
+    component addressing that keeps a highlight reference from dangling after re-synthesis
+    (§6). ``highlight_claim_ids`` is the legacy int view (the ``claim:<id>`` id, 0 for a
+    story component or an id-less row), kept for back-compat; all three align by index.
     """
 
     summary: str
     highlights: tuple[str, ...]
     cover_letter: str
     highlight_claim_ids: tuple[int, ...] = ()
+    highlight_refs: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         """Serialize to the structure stored in ``applications.materials_json``."""
@@ -83,6 +98,7 @@ class TailoredMaterials:
             "highlights": list(self.highlights),
             "cover_letter": self.cover_letter,
             "highlight_claim_ids": list(self.highlight_claim_ids),
+            "highlight_refs": list(self.highlight_refs),
         }
 
     @classmethod
@@ -93,6 +109,9 @@ class TailoredMaterials:
             cover_letter=str(data.get("cover_letter", "")),
             highlight_claim_ids=tuple(
                 int(i) for i in data.get("highlight_claim_ids", []) if isinstance(i, int)
+            ),
+            highlight_refs=tuple(
+                str(r) for r in data.get("highlight_refs", []) if isinstance(r, str)
             ),
         )
 
@@ -161,4 +180,5 @@ class HeuristicMaterialsTailorer:
             highlights=highlights,
             cover_letter="\n".join(body_lines),
             highlight_claim_ids=tuple(claim_ref_id(c) or 0 for c in claims),
+            highlight_refs=tuple(c.source_ref for c in claims),
         )
