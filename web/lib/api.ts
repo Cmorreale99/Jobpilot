@@ -136,43 +136,6 @@ export interface InterviewDetail extends Interview {
   prep_packet: string | null;
 }
 
-export interface ClaimEvidence {
-  evidence_id: number;
-  field: string;
-  outcome_quote: string | null;
-  source_type: string | null;
-  source_ref: string | null;
-  source_url: string | null;
-  chunk_text: string | null;
-}
-
-export interface ClaimCard {
-  id: number;
-  experience_id: number;
-  status: string;
-  problem_text: string | null;
-  problem_cost_dimension: string | null;
-  problem_inefficiency: string | null;
-  action_text: string;
-  action_tools: string[];
-  result_text: string | null;
-  result_kind: string;
-  result_status: string;
-  result_metric_json: Record<string, unknown> | null;
-  validation_flags: string[];
-  review_note: string | null;
-  evidence: ClaimEvidence[];
-}
-
-export interface Experience {
-  id: number;
-  name: string;
-  subtitle: string | null;
-  dates: string | null;
-  section: string;
-  sort_order: number;
-}
-
 export interface RosterEntity {
   id: number;
   name: string;
@@ -295,22 +258,6 @@ export const api = {
     }),
   confirmInterview: (id: number) =>
     request<Interview>(`/interviews/${id}/confirm`, { method: "POST" }),
-  claimsQueue: (missingResults = false) =>
-    request<ClaimCard[]>(
-      `/claims/queue?user_id=${USER_ID}&missing_results=${missingResults}`,
-    ),
-  approveClaim: (id: number) => request<ClaimCard>(`/claims/${id}/approve`, { method: "POST" }),
-  rejectClaim: (id: number, reason: string) =>
-    request<ClaimCard>(`/claims/${id}/reject`, {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    }),
-  resolveMissingResult: (id: number, resultText: string, resultKind: string) =>
-    request<ClaimCard>(`/claims/${id}/edit-approve`, {
-      method: "POST",
-      body: JSON.stringify({ result_text: resultText, result_kind: resultKind }),
-    }),
-  experiences: () => request<Experience[]>(`/experiences?user_id=${USER_ID}`),
   renderMasterCv: () =>
     request<MasterCvArtifact>(`/master-cv/render?user_id=${USER_ID}`, { method: "POST" }),
   roster: () => request<RosterEntity[]>(`/roster?user_id=${USER_ID}`),

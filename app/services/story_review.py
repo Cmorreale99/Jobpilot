@@ -1,7 +1,7 @@
 """The project-story review layer: the queue, the readiness view, and the actions.
 
-Phase 3's human-in-the-loop core (docs/ARCHITECTURE_V3.md §7), mirroring
-``claim_review.py`` one level up. Four actions on a card:
+Phase 3's human-in-the-loop core (docs/ARCHITECTURE_V3.md §7), and the review unit
+that superseded the retired V2 claim review queue. Four actions on a card:
 
 * **approve** — the story becomes canonical. Refused (HTTP 409) unless the resume-ready
   gate passes: a Problem (evidenced or attested), ≥1 Action, and a Result. This is the

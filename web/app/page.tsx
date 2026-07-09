@@ -8,8 +8,6 @@ import {
   masterCvDownloadUrl,
   oauthStartUrl,
   type Application,
-  type ClaimCard,
-  type Experience,
   type Interview,
   type MasterCvSummary,
   type MatchesResponse,
@@ -17,18 +15,14 @@ import {
   type RosterEntity,
   type StoryCard,
 } from "@/lib/api";
-import { ClaimsReviewSection } from "@/components/claims";
 import { EmptyRow, SectionHead, statusInk } from "@/components/ledger";
 import { RosterSection } from "@/components/roster";
 import { StoryReviewSection } from "@/components/stories";
 
 export default function Dashboard() {
   const [queue, setQueue] = useState<OutreachDraft[] | null>(null);
-  const [claims, setClaims] = useState<ClaimCard[] | null>(null);
   const [stories, setStories] = useState<StoryCard[] | null>(null);
-  const [experiences, setExperiences] = useState<Experience[] | null>(null);
   const [roster, setRoster] = useState<RosterEntity[] | null>(null);
-  const [missingOnly, setMissingOnly] = useState(false);
   const [matches, setMatches] = useState<MatchesResponse | null>(null);
   const [applications, setApplications] = useState<Application[] | null>(null);
   const [interviews, setInterviews] = useState<Interview[] | null>(null);
@@ -37,11 +31,9 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const [q, c, s, x, r, m, a, i, cv] = await Promise.all([
+      const [q, s, r, m, a, i, cv] = await Promise.all([
         api.queue(),
-        api.claimsQueue(missingOnly),
         api.stories().catch(() => []),
-        api.experiences(),
         api.roster(),
         api.matches(),
         api.applications(),
@@ -49,9 +41,7 @@ export default function Dashboard() {
         api.masterCv(),
       ]);
       setQueue(q);
-      setClaims(c);
       setStories(s);
-      setExperiences(x);
       setRoster(r);
       setMatches(m);
       setApplications(a);
@@ -61,7 +51,7 @@ export default function Dashboard() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "The API is not reachable.");
     }
-  }, [missingOnly]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -80,13 +70,6 @@ export default function Dashboard() {
 
       <RosterSection roster={roster} onChanged={load} />
       <StoryReviewSection stories={stories} onChanged={load} />
-      <ClaimsReviewSection
-        claims={claims}
-        experiences={experiences}
-        missingOnly={missingOnly}
-        onToggleMissing={setMissingOnly}
-        onChanged={load}
-      />
       <MasterCvDocxSection onChanged={load} />
       <QueueSection queue={queue} onChanged={load} />
       <InterviewsSection interviews={interviews} onChanged={load} />
@@ -234,7 +217,7 @@ function Masthead({ masterCv }: { masterCv: MasterCvSummary | null }) {
             Master CV v{masterCv.version} · {masterCv.claim_count} approved claims →
           </Link>
         ) : (
-          "No Master CV yet — approve claims, then a version is snapshotted from them."
+          "No Master CV yet — approve project stories, then a version is snapshotted from them."
         )}
       </p>
     </header>
