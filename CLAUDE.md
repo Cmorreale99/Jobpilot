@@ -300,7 +300,7 @@ A failure in one job never blocks the other (`run_job_safely` — observed live)
 
 ### Remaining cleanup (before V4)
 
-- [ ] Retire the legacy V2 **claims review queue** + dashboard `POST /master-cv/snapshots` — the story layer supersedes both (deferred so old approved-claims snapshots stay readable).
+- [x] Retire the legacy V2 **claims review queue** + dashboard `POST /master-cv/snapshots` — removed the review routes (`GET /claims/queue`, `POST /claims/{id}/approve|reject|edit-approve`), `services/claim_review.py`, and the web claims card; story review supersedes them. Snapshot **reading** (`GET /master-cv/snapshots/latest`, `master_cv_from_snapshot`), the section picker, render/download, and claim extraction/persistence all stay — old approved-claims snapshots remain readable.
 - [ ] Merge `v3/phase-5` after review sign-off.
 
 ### V4 — Second Brain + on-demand tailoring (next; see `docs/SECOND_BRAIN_AUDIT.md`)

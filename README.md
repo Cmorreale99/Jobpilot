@@ -211,7 +211,7 @@ See `CLAUDE.md` and `.env.example` for the full set.
 
 ### Remaining cleanup (before V4)
 
-- [ ] Retire the legacy V2 **claims review queue** and the dashboard `POST /master-cv/snapshots` surface — the story layer supersedes both. (Deletion deferred intentionally so old approved-claims snapshots stay readable.)
+- [x] Retire the legacy V2 **claims review queue** and the dashboard `POST /master-cv/snapshots` surface — the story layer supersedes both. Removed the claim review routes/service and the web claims card; kept snapshot *reading*, the section picker, render/download, and claim extraction, so old approved-claims snapshots stay readable.
 - [ ] Merge `v3/phase-5` after review sign-off.
 
 ### V4 — Second Brain + on-demand tailoring (next)
