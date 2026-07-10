@@ -1,14 +1,17 @@
 """Project-story repository contract tests, run against both implementations.
 
-The load-bearing semantics (docs/ARCHITECTURE_V3.md §2.1): one story per entity;
-machine drafts replace only machine drafts; a human decision (approved/excluded) is
-NEVER replaced by re-synthesis; exclusion requires a retained reason; approval is a
-timestamped act; and invalidation — the roster-merge/discard cascade and the explicit
-un-approve — is the only way back to ``draft``, with the prior decision recorded.
+The load-bearing semantics (docs/ARCHITECTURE_V3.md §2.1, v3.1 Increment 3): one
+story per (entity, problem space); machine drafts replace only machine drafts of the
+same space; a human decision (approved/excluded) is NEVER replaced by re-synthesis
+(or deleted by stale-space cleanup); exclusion requires a retained reason; approval
+is a timestamped act; and invalidation — the roster-merge/discard cascade and the
+explicit un-approve — is the only way back to ``draft``, with the prior decision
+recorded, across every one of the entity's stories.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,7 @@ from app.db.session import create_session_factory
 from app.domain.applications import InvalidTransitionError
 from app.domain.claims import SOURCE_GITHUB_COMMIT, ClaimRepository, EvidenceChunk
 from app.domain.project_story import (
+    LEFTOVER_PROBLEM_SPACE_ID,
     ExclusionReasonRequiredError,
     ProjectStoryRepository,
     StoryAction,
@@ -28,10 +32,14 @@ from app.domain.project_story import (
     StoryResult,
     StoryReviewStatus,
     component_id,
+    derive_problem_space_id,
 )
 from app.domain.text_normalization import NORMALIZATION_VERSION
 from app.services.claim_repository import InMemoryClaimRepository
-from app.services.project_story_repository import InMemoryProjectStoryRepository
+from app.services.project_story_repository import (
+    InMemoryProjectStoryRepository,
+    stamped_content,
+)
 
 
 def _sql_repo(tmp_path: Path) -> SqlProjectStoryRepository:
@@ -77,27 +85,51 @@ def test_upsert_creates_a_draft_and_round_trips_content(repo: ProjectStoryReposi
 
     loaded = repo.get_story(story.id)
     assert loaded is not None
-    assert loaded.content == _CONTENT
+    # Persisted content is the stamped form: the space key and bundle status are
+    # always materialized, however the caller filled the optional fields.
+    assert loaded.content == stamped_content(_CONTENT)
+    assert loaded.problem_space_id == derive_problem_space_id(_CONTENT)
+    assert loaded.content.bundle_status == "requires_user_selection"
     assert repo.get_story_for_experience("u1", 7) == loaded
     assert repo.get_story_for_experience("u1", 8) is None
+    assert repo.get_story_for_space("u1", 7, loaded.problem_space_id) == loaded
+    assert repo.get_story_for_space("u1", 7, "ps-elsewhere") is None
 
 
-def test_one_story_per_experience(repo: ProjectStoryRepository) -> None:
+def test_one_story_per_experience_and_problem_space(repo: ProjectStoryRepository) -> None:
     first = repo.upsert_draft("u1", 7, _CONTENT)
-    replaced = repo.upsert_draft("u1", 7, StoryContent(synthesis_hash="def456"))
+    replaced = repo.upsert_draft("u1", 7, replace(_CONTENT, synthesis_hash="def456"))
     other = repo.upsert_draft("u1", 8, _CONTENT)
 
-    assert replaced.id == first.id
+    assert replaced.id == first.id  # same space → same row
     assert replaced.content.synthesis_hash == "def456"
     assert other.id != first.id
     assert len(repo.list_stories("u1")) == 2
+
+
+def test_stories_of_different_spaces_coexist_on_one_entity(
+    repo: ProjectStoryRepository,
+) -> None:
+    """v3.1: one entity holds one story per problem space, keyed independently."""
+    space_story = repo.upsert_draft("u1", 7, _CONTENT)
+    leftover = repo.upsert_draft("u1", 7, StoryContent(synthesis_hash="leftover"))
+
+    assert leftover.id != space_story.id
+    assert leftover.problem_space_id == LEFTOVER_PROBLEM_SPACE_ID
+    assert leftover.content.bundle_status == "missing_result"
+    stories = repo.list_stories_for_experience("u1", 7)
+    assert [s.id for s in stories] == [space_story.id, leftover.id]
+    # The single-story convenience accessor returns the first by id.
+    first = repo.get_story_for_experience("u1", 7)
+    assert first is not None and first.id == space_story.id
 
 
 def test_replacing_a_pending_draft_resets_it_to_draft(repo: ProjectStoryRepository) -> None:
     story = repo.upsert_draft("u1", 7, _CONTENT)
     repo.transition_story(story.id, StoryReviewStatus.PENDING_REVIEW)
 
-    replaced = repo.upsert_draft("u1", 7, StoryContent())
+    replaced = repo.upsert_draft("u1", 7, replace(_CONTENT, synthesis_hash="fresh"))
+    assert replaced.id == story.id
     assert replaced.review_status is StoryReviewStatus.DRAFT  # a new draft needs a new review
 
 
@@ -130,34 +162,53 @@ def test_resynthesis_never_replaces_a_human_decision(
     repo.transition_story(story.id, decision, decision_note="a retained reason")
 
     with pytest.raises(StoryReplaceError):
-        repo.upsert_draft("u1", 7, StoryContent())
+        repo.upsert_draft("u1", 7, replace(_CONTENT, synthesis_hash="fresh"))
     unchanged = repo.get_story(story.id)
     assert unchanged is not None and unchanged.review_status is decision
-    assert unchanged.content == _CONTENT
+    assert unchanged.content == stamped_content(_CONTENT)
 
 
 def test_invalidation_is_the_explicit_way_back_to_draft(repo: ProjectStoryRepository) -> None:
     """The roster cascade (merge/discard) and the explicit un-approve: back to draft,
-    prior approval retained in the decision log, then re-synthesis may proceed."""
+    prior approval retained in the decision log, then re-synthesis may proceed. It
+    sweeps every one of the entity's stories (one per problem space)."""
     story = repo.upsert_draft("u1", 7, _CONTENT)
     repo.transition_story(story.id, StoryReviewStatus.PENDING_REVIEW)
     repo.transition_story(story.id, StoryReviewStatus.APPROVED)
+    sibling = repo.upsert_draft("u1", 7, StoryContent(synthesis_hash="leftover"))
 
     invalidated = repo.invalidate_story(7, reason="entity merged into 'MassDEP'")
-    assert invalidated is not None
-    assert invalidated.review_status is StoryReviewStatus.DRAFT
-    assert invalidated.reviewed_at is None
-    assert invalidated.decision_note is not None
-    assert "previously approved" in invalidated.decision_note
-    assert "entity merged" in invalidated.decision_note
+    assert [s.id for s in invalidated] == [story.id, sibling.id]
+    primary = invalidated[0]
+    assert primary.review_status is StoryReviewStatus.DRAFT
+    assert primary.reviewed_at is None
+    assert primary.decision_note is not None
+    assert "previously approved" in primary.decision_note
+    assert "entity merged" in primary.decision_note
+    assert invalidated[1].review_status is StoryReviewStatus.DRAFT
 
-    refreshed = repo.upsert_draft("u1", 7, StoryContent(synthesis_hash="post-merge"))
+    refreshed = repo.upsert_draft("u1", 7, replace(_CONTENT, synthesis_hash="post-merge"))
     assert refreshed.id == story.id
     assert refreshed.content.synthesis_hash == "post-merge"
 
 
-def test_invalidating_a_missing_story_returns_none(repo: ProjectStoryRepository) -> None:
-    assert repo.invalidate_story(404, reason="entity discarded") is None
+def test_invalidating_a_missing_story_returns_nothing(repo: ProjectStoryRepository) -> None:
+    assert repo.invalidate_story(404, reason="entity discarded") == []
+
+
+def test_delete_draft_removes_machine_drafts_only(repo: ProjectStoryRepository) -> None:
+    """Stale-space cleanup deletes drafts; a human decision is never deleted."""
+    draft = repo.upsert_draft("u1", 7, _CONTENT)
+    repo.delete_draft(draft.id)
+    assert repo.get_story(draft.id) is None
+    repo.delete_draft(draft.id)  # deleting a missing story is a no-op
+
+    decided = repo.upsert_draft("u1", 8, _CONTENT)
+    repo.transition_story(decided.id, StoryReviewStatus.PENDING_REVIEW)
+    repo.transition_story(decided.id, StoryReviewStatus.APPROVED)
+    with pytest.raises(StoryReplaceError):
+        repo.delete_draft(decided.id)
+    assert repo.get_story(decided.id) is not None
 
 
 def test_terminal_statuses_reject_ordinary_transitions(repo: ProjectStoryRepository) -> None:

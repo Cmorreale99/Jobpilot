@@ -159,6 +159,14 @@ def _serialize_story(view: StoryView, repository: ClaimRepository) -> dict[str, 
         "experience_id": story.experience_id,
         "experience_name": view.experience.name if view.experience else None,
         "section": view.experience.section.value if view.experience else None,
+        "problem_space": {
+            "id": story.problem_space_id,
+            "label": content.problem_space_label,
+            "scope": content.problem_space_scope,
+        },
+        "bundle_status": content.bundle_status,
+        "selected_action_id": content.selected_action_id,
+        "selected_result_id": content.selected_result_id,
         "review_status": story.review_status.value,
         "reviewed_at": story.reviewed_at.isoformat() if story.reviewed_at else None,
         "decision_note": story.decision_note,
@@ -217,9 +225,10 @@ def synthesize(
     validation_log: ValidationLogDep,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Build one story draft per confirmed entity, promoting the structurally clean ones to
-    ``pending_review`` and quarantining the rest. The synthesizer is heuristic (verbatim
-    selection) unless ``STORY_LLM_SYNTHESIS`` is on, in which case the LLM composer runs."""
+    """Build one story draft per (confirmed entity, problem space), promoting the
+    structurally clean ones to ``pending_review`` and quarantining the rest. The synthesizer
+    is heuristic (verbatim selection) unless ``STORY_LLM_SYNTHESIS`` is on, in which case
+    the LLM composer runs."""
     report = run_story_synthesis(
         user_id,
         repository,
@@ -233,6 +242,7 @@ def synthesize(
         "quarantined": report.quarantined,
         "skipped": report.skipped,
         "failed": report.failed,
+        "stale_deleted": report.stale_deleted,
     }
 
 

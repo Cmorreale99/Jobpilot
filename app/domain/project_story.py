@@ -117,6 +117,13 @@ COMPONENT_RESULT = "result"
 
 MAX_STORY_ACTIONS = 5  # 3–5 strategic actions, never 20 tiny ones (§3.2)
 
+# The problem-space key of a story holding an entity's claims that no detected space
+# covers (no bar-clearing problem, no unambiguous co-citation) — and of the sole story
+# of an entity with no detected spaces at all. One leftover story per entity keeps
+# problem-less claims and claim-less entities in the review flow (v3.1 Increment 3):
+# per-space stories must never silently lose what v3's single story surfaced.
+LEFTOVER_PROBLEM_SPACE_ID = "ps-leftover"
+
 
 def component_id(prefix: str, text: str) -> str:
     """A stable component id derived from content, not from claim/story row ids.
@@ -156,6 +163,15 @@ class StoryContent:
     and approval substrate, so nothing at the story layer can cite provenance that
     bypassed PAR validation. ``synthesis_hash`` fingerprints the inputs (same skip
     economics as ``experiences.extraction_hash``).
+
+    v3.1 (Increment 3): a story is one **problem space** of its entity, not the whole
+    entity. ``problem_space_id`` is the space's stable content-hash id (or
+    :data:`LEFTOVER_PROBLEM_SPACE_ID`); ``problem_space_label``/``problem_space_scope``
+    mirror the detected space verbatim. ``actions``/``results`` are that space's
+    *candidate* lists; ``selected_action_id``/``selected_result_id`` are the user's
+    picks (Increment 4's selection flow — always ``None`` at synthesis, reset with the
+    content when a machine draft is replaced). ``bundle_status`` is the selection
+    lifecycle (``BundleStatus`` values, stored as its string).
     """
 
     problem_text: str | None = None
@@ -163,14 +179,49 @@ class StoryContent:
     actions: tuple[StoryAction, ...] = ()
     results: tuple[StoryResult, ...] = ()
     synthesis_hash: str | None = None
+    problem_space_id: str | None = None
+    problem_space_label: str | None = None
+    problem_space_scope: str | None = None
+    selected_action_id: str | None = None
+    selected_result_id: str | None = None
+    bundle_status: str | None = None
 
     def is_empty(self) -> bool:
         return not (self.problem_text or self.problem_refs or self.actions or self.results)
 
 
+def derive_problem_space_id(content: StoryContent) -> str:
+    """The problem-space key a story persists under.
+
+    An explicit ``problem_space_id`` wins. Without one (legacy callers, the 0014
+    backfill), a story with a problem derives the SAME id detection gives a
+    single-problem space — ``component_id("ps", problem_text)`` — so re-synthesis
+    upserts over the backfilled row instead of duplicating it; a problem-less story
+    is the entity's leftover space.
+    """
+    if content.problem_space_id:
+        return content.problem_space_id
+    if (content.problem_text or "").strip():
+        return component_id("ps", content.problem_text or "")
+    return LEFTOVER_PROBLEM_SPACE_ID
+
+
+def derive_bundle_status(content: StoryContent) -> str:
+    """The stored selection status: explicit, else derived from result presence.
+
+    Detection-time semantics (``BundleStatus`` in ``domain/problem_space.py``):
+    a space with no result candidates is ``missing_result``; otherwise selection is
+    still pending. ``ready`` is only ever stamped by the validator-gated selection
+    flow, never derived here.
+    """
+    if content.bundle_status:
+        return content.bundle_status
+    return "requires_user_selection" if content.results else "missing_result"
+
+
 @dataclass(frozen=True)
 class ProjectStory:
-    """One persisted project story — at most one per confirmed roster entity."""
+    """One persisted project story — one per (confirmed entity, problem space)."""
 
     id: int
     user_id: str
@@ -180,6 +231,10 @@ class ProjectStory:
     reviewed_at: datetime | None = None
     decision_note: str | None = None
     created_at: datetime | None = None
+
+    @property
+    def problem_space_id(self) -> str:
+        return derive_problem_space_id(self.content)
 
 
 # --- Answer / problem-space bar (§3.1, §3.6; T16) ---------------------------------------
@@ -928,11 +983,16 @@ def detect_metric_conflicts(candidates: Sequence[ResultCandidate]) -> list[Metri
 # --- Synthesis fingerprint (same skip economics as extraction_hash) ----------------------
 
 
-def story_synthesis_fingerprint(claims: Sequence[Claim], evidence: Sequence[StoredEvidence]) -> str:
-    """Stable hash of one entity's synthesis inputs (its claims + assigned evidence).
+def story_synthesis_fingerprint(
+    claims: Sequence[Claim], evidence: Sequence[StoredEvidence], *, scope: str = ""
+) -> str:
+    """Stable hash of one synthesis unit's inputs (its claims + assigned evidence).
 
     Unchanged inputs skip re-synthesis (``project_stories.synthesis_hash``), exactly
-    like ``experiences.extraction_hash`` bounds extraction cost.
+    like ``experiences.extraction_hash`` bounds extraction cost. v3.1 keys the
+    fingerprint per (experience, problem space): ``scope`` is the space id and
+    ``claims`` the space's member claims, so one space's edit never forces its
+    siblings to re-synthesize.
     """
     claim_material = sorted(
         "\x1f".join(
@@ -950,7 +1010,7 @@ def story_synthesis_fingerprint(claims: Sequence[Claim], evidence: Sequence[Stor
     evidence_material = sorted(
         f"{stored.source_type}\x1f{stored.source_ref}\x1f{stored.chunk_text}" for stored in evidence
     )
-    material = "\x1e".join((*claim_material, "--", *evidence_material))
+    material = "\x1e".join((scope, *claim_material, "--", *evidence_material))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -1010,23 +1070,28 @@ class HeuristicStorySynthesizer:
 class ProjectStoryRepository(Protocol):
     """Persistence for project stories. Semantics shared by every implementation:
 
-    * At most one story per experience (``experience_id`` unique).
-    * ``upsert_draft`` creates or replaces a machine draft: an existing
-      ``draft``/``pending_review`` row is replaced (status reset to ``draft`` — a new
-      machine draft needs a new review) but a row a human decided on (``approved`` or
-      ``excluded``) is NEVER replaced — that raises :class:`StoryReplaceError`.
-      Refreshing a decided story requires the explicit ``invalidate_story`` first.
-      (A story carrying typed answers is likewise never replaced — the caller checks
-      for ``story:{id}:*`` attestations before upserting; the evidence table lives
-      on the claim repository.)
+    * One story per (experience, problem space) — the key is
+      ``(experience_id, derive_problem_space_id(content))`` (v3.1 Increment 3; v3's
+      one-per-entity rows live on under their backfilled space id).
+    * ``upsert_draft`` creates or replaces a machine draft *of the same space*: an
+      existing ``draft``/``pending_review`` row is replaced (status reset to
+      ``draft`` — a new machine draft needs a new review) but a row a human decided
+      on (``approved`` or ``excluded``) is NEVER replaced — that raises
+      :class:`StoryReplaceError`. Refreshing a decided story requires the explicit
+      ``invalidate_story`` first. (A story carrying typed answers is likewise never
+      replaced — the caller checks for ``story:{id}:*`` attestations before
+      upserting; the evidence table lives on the claim repository.)
     * ``transition_story`` validates :data:`STORY_TRANSITIONS`; excluding requires a
       ``decision_note``; approving stamps ``reviewed_at`` (a human act with a
       timestamp — the readiness gate itself is enforced by the API layer, which has
       the claims to compute readiness from).
-    * ``invalidate_story`` is the roster cascade AND the explicit un-approve: the
-      story returns to ``draft`` with the prior decision recorded in
-      ``decision_note`` (merging or discarding an entity invalidates its story;
-      re-synthesis never silently overwrites what a human approved).
+    * ``invalidate_story`` is the roster cascade AND the explicit un-approve: every
+      one of the entity's stories returns to ``draft`` with its prior decision
+      recorded in ``decision_note`` (merging or discarding an entity invalidates its
+      stories; re-synthesis never silently overwrites what a human approved).
+    * ``delete_draft`` removes a machine draft outright — the stale-space cleanup
+      when re-detection dissolves a space. A decided story raises
+      :class:`StoryReplaceError`; deletion is never how a human decision ends.
     """
 
     def upsert_draft(
@@ -1036,6 +1101,14 @@ class ProjectStoryRepository(Protocol):
     def get_story(self, story_id: int) -> ProjectStory | None: ...
 
     def get_story_for_experience(self, user_id: str, experience_id: int) -> ProjectStory | None: ...
+
+    def get_story_for_space(
+        self, user_id: str, experience_id: int, problem_space_id: str
+    ) -> ProjectStory | None: ...
+
+    def list_stories_for_experience(
+        self, user_id: str, experience_id: int
+    ) -> list[ProjectStory]: ...
 
     def list_stories(
         self, user_id: str, status: StoryReviewStatus | None = None
@@ -1050,7 +1123,9 @@ class ProjectStoryRepository(Protocol):
         reviewed_at: datetime | None = None,
     ) -> ProjectStory: ...
 
-    def invalidate_story(self, experience_id: int, *, reason: str) -> ProjectStory | None: ...
+    def invalidate_story(self, experience_id: int, *, reason: str) -> list[ProjectStory]: ...
+
+    def delete_draft(self, story_id: int) -> None: ...
 
 
 __all__ = [
@@ -1061,6 +1136,7 @@ __all__ = [
     "COMPONENT_RESULT",
     "COUPLING_QUESTION",
     "FATAL_STORY_CODES",
+    "LEFTOVER_PROBLEM_SPACE_ID",
     "MAX_STORY_ACTIONS",
     "METRIC_CONFLICT_QUESTION",
     "MISSING_ACTION_QUESTION",
@@ -1091,6 +1167,8 @@ __all__ = [
     "assess_problem_text",
     "component_id",
     "compute_readiness",
+    "derive_bundle_status",
+    "derive_problem_space_id",
     "detect_metric_conflicts",
     "leverage_score",
     "problem_support_strength",

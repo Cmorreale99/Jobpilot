@@ -141,17 +141,25 @@ def _story_entry(story: RenderableStory) -> dict[str, Any]:
 def _duplicate_spans(
     stories: Sequence[RenderableStory],
 ) -> list[tuple[str, tuple[int, ...]]]:
-    """Outcome spans that back a Result under more than one story (§3.7)."""
+    """Outcome spans that back a Result under more than one story (§3.7).
+
+    Keyed by **story**, not entity (v3.1: one entity renders one story per problem
+    space, so two of its own stories sharing a span is the same double-counting the
+    cross-entity case always was). Reported spans still name the experience ids the
+    human recognizes.
+    """
     by_span: dict[str, set[int]] = {}
+    owners: dict[str, set[int]] = {}
     for story in stories:
         for result in story.results:
             span = _normalize(result.get("outcome_quote") or result.get("text"))
             if span:
-                by_span.setdefault(span, set()).add(story.experience_id)
+                by_span.setdefault(span, set()).add(story.story_id)
+                owners.setdefault(span, set()).add(story.experience_id)
     return sorted(
-        (span, tuple(sorted(experiences)))
-        for span, experiences in by_span.items()
-        if len(experiences) > 1
+        (span, tuple(sorted(owners[span])))
+        for span, story_ids in by_span.items()
+        if len(story_ids) > 1
     )
 
 

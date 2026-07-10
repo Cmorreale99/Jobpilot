@@ -297,20 +297,35 @@ class ClaimEvidenceRow(Base):
 
 
 class ProjectStoryRow(Base):
-    """One project story per confirmed roster entity (V3 story layer, §2.2).
+    """One project story per (confirmed roster entity, problem space) — V3 story layer
+    (§2.2), generalized by v3.1 Increment 3.
 
     ``review_status`` is the only lifecycle state (draft|pending_review|approved|
     excluded); readiness is derived at read time and deliberately has no column.
     Components cite claim ids only — ``problem_refs``/``actions_json``/``results_json``
-    hold presentation plus those ids, never bare evidence refs.
+    hold presentation plus those ids, never bare evidence refs. ``problem_space_id``
+    is the detected space's stable content-hash id (or the entity's leftover space);
+    ``selected_action_id``/``selected_result_id``/``bundle_status`` are the v3.1
+    selection state (Increment 4's flow stamps the selection; synthesis only ever
+    derives ``requires_user_selection``/``missing_result``).
     """
 
     __tablename__ = "project_stories"
-    __table_args__ = (UniqueConstraint("experience_id", name="uq_project_stories_experience"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "experience_id", "problem_space_id", name="uq_project_stories_experience_space"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[str] = mapped_column(String(255), index=True)
     experience_id: Mapped[int] = mapped_column(Integer)
+    problem_space_id: Mapped[str] = mapped_column(String(64))
+    problem_space_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    problem_space_scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+    selected_action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    selected_result_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bundle_status: Mapped[str] = mapped_column(String(32))
     review_status: Mapped[str] = mapped_column(String(16))
     problem_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     problem_refs: Mapped[list[int]] = mapped_column(JSON, default=list)

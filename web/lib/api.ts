@@ -217,11 +217,21 @@ export interface StoryQuestion {
   quotes: string[];
 }
 
+export interface StoryProblemSpace {
+  id: string;
+  label: string | null;
+  scope: string | null;
+}
+
 export interface StoryCard {
   id: number;
   experience_id: number;
   experience_name: string | null;
   section: string | null;
+  problem_space: StoryProblemSpace;
+  bundle_status: string | null;
+  selected_action_id: string | null;
+  selected_result_id: string | null;
   review_status: string;
   reviewed_at: string | null;
   decision_note: string | null;
