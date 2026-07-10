@@ -16,10 +16,14 @@ from __future__ import annotations
 
 from app.domain.claims import (
     SOURCE_DRIVE,
+    Claim,
+    ClaimEvidenceLink,
+    ClaimStatus,
     EvidenceChunk,
     EvidenceGroup,
     ExperienceSection,
     ExperienceSeed,
+    HeuristicTwoPassExtractor,
 )
 
 # --- Problem space A: FedEx shipping data integrity (quantified + coverage results) ---
@@ -84,3 +88,50 @@ def cooper_group() -> EvidenceGroup:
         experience=ExperienceSeed(name="Cooper.ai", section=ExperienceSection.PROJECTS_HACKATHONS),
         chunks=(FEDEX_CHUNK, PACIFICA_CHUNK, DATASET_CHUNK),
     )
+
+
+def claims_from_group(
+    group: EvidenceGroup, *, experience_id: int, user_id: str = "u1"
+) -> list[Claim]:
+    """Extract a group heuristically and shape the drafts as persisted claims.
+
+    Evidence ids are assigned per ``source_ref`` (mirroring ``upsert_evidence``'s
+    dedupe key) so co-citation is representable; claim ids follow extraction order.
+    All claims land ``pending_review`` — problem-space detection only excludes
+    ``rejected``.
+    """
+    drafts = HeuristicTwoPassExtractor().extract(group)
+    evidence_ids: dict[str, int] = {}
+    claims: list[Claim] = []
+    for claim_id, draft in enumerate(drafts, start=1):
+        links = tuple(
+            ClaimEvidenceLink(
+                evidence_id=evidence_ids.setdefault(ref.chunk.source_ref, 100 + len(evidence_ids)),
+                field=ref.field,
+                outcome_quote=ref.outcome_quote,
+            )
+            for ref in draft.evidence
+        )
+        claims.append(
+            Claim(
+                id=claim_id,
+                user_id=user_id,
+                experience_id=experience_id,
+                status=ClaimStatus.PENDING_REVIEW,
+                action_text=draft.action_text,
+                action_tools=draft.action_tools,
+                problem_text=draft.problem_text,
+                problem_cost_dimension=draft.problem_cost_dimension,
+                problem_inefficiency=draft.problem_inefficiency,
+                result_text=draft.result_text,
+                result_kind=draft.result_kind,
+                result_metric_json=draft.result_metric_json,
+                evidence=links,
+            )
+        )
+    return claims
+
+
+def cooper_claims(experience_id: int = 1, user_id: str = "u1") -> list[Claim]:
+    """The Cooper.ai group as persisted-shaped claims (see :func:`claims_from_group`)."""
+    return claims_from_group(cooper_group(), experience_id=experience_id, user_id=user_id)
