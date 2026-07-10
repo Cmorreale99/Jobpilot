@@ -1092,6 +1092,11 @@ class ProjectStoryRepository(Protocol):
     * ``delete_draft`` removes a machine draft outright — the stale-space cleanup
       when re-detection dissolves a space. A decided story raises
       :class:`StoryReplaceError`; deletion is never how a human decision ends.
+    * ``record_selection`` persists the user's validated bundle picks
+      (``selected_action_id``/``selected_result_id``) and stamps
+      ``bundle_status="ready"`` — the ONLY writer of ``ready`` (detection never
+      derives it). Validation happens in the service layer before this is called;
+      a decided story raises :class:`StoryReplaceError`.
     """
 
     def upsert_draft(
@@ -1126,6 +1131,10 @@ class ProjectStoryRepository(Protocol):
     def invalidate_story(self, experience_id: int, *, reason: str) -> list[ProjectStory]: ...
 
     def delete_draft(self, story_id: int) -> None: ...
+
+    def record_selection(
+        self, story_id: int, selected_action_id: str, selected_result_id: str
+    ) -> ProjectStory: ...
 
 
 __all__ = [

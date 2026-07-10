@@ -21,10 +21,14 @@ from app.domain.claims import (
     ClaimStatus,
     EvidenceChunk,
     EvidenceGroup,
+    Experience,
     ExperienceSection,
     ExperienceSeed,
     HeuristicTwoPassExtractor,
+    ResultStatus,
+    StorableClaim,
 )
+from app.services.claim_repository import InMemoryClaimRepository
 
 # --- Problem space A: FedEx shipping data integrity (quantified + coverage results) ---
 FEDEX_TEXT = (
@@ -135,3 +139,36 @@ def claims_from_group(
 def cooper_claims(experience_id: int = 1, user_id: str = "u1") -> list[Claim]:
     """The Cooper.ai group as persisted-shaped claims (see :func:`claims_from_group`)."""
     return claims_from_group(cooper_group(), experience_id=experience_id, user_id=user_id)
+
+
+def seed_group_repository(
+    repo: InMemoryClaimRepository, group: EvidenceGroup, user_id: str = "u1"
+) -> tuple[Experience, list[Claim]]:
+    """Ingest an evidence group through the ordinary repository writes, exactly like
+    production extraction: confirmed entity, assigned chunks, pending claims."""
+    experience = repo.upsert_experience(user_id, group.experience)
+    drafts = HeuristicTwoPassExtractor().extract(group)
+    for draft in drafts:
+        for ref in draft.evidence:
+            stored = repo.upsert_evidence(user_id, ref.chunk)
+            repo.assign_evidence(stored.id, experience.id)
+    claims = repo.replace_unreviewed_claims(
+        user_id,
+        experience.id,
+        [
+            StorableClaim(
+                draft=draft,
+                status=ClaimStatus.PENDING_REVIEW,
+                result_status=ResultStatus.UNVERIFIED,
+            )
+            for draft in drafts
+        ],
+    )
+    return experience, claims
+
+
+def seed_cooper_repository(
+    repo: InMemoryClaimRepository, user_id: str = "u1"
+) -> tuple[Experience, list[Claim]]:
+    """The full Cooper.ai group (FedEx / Pacifica / dataset delivery) in a repository."""
+    return seed_group_repository(repo, cooper_group(), user_id)

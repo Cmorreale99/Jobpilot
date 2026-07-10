@@ -46,7 +46,12 @@ from app.domain.claims import (
     pain_point_tags,
 )
 from app.domain.matching import tokenize
-from app.domain.project_story import assess_problem_text, component_id, rank_claims
+from app.domain.project_story import (
+    ProjectStory,
+    assess_problem_text,
+    component_id,
+    rank_claims,
+)
 
 # --- Shapes -----------------------------------------------------------------------------
 
@@ -418,6 +423,119 @@ def _build_space(
     )
 
 
+def bundle_from_story(
+    story: ProjectStory,
+    claims_by_id: Mapping[int, Claim],
+    *,
+    attested_problem: str | None = None,
+    attested_result: str | None = None,
+) -> PARBundle:
+    """The selection bundle of one persisted story — built from its candidate lists.
+
+    Selection (Increment 4) validates against what the human actually reviewed on the
+    card, NOT against re-detection: a single-space entity's story pools claims wider
+    than detection-time bundle candidates (Increment 3's pooling decision), and the
+    story is the reviewed artifact either way. Candidate ids are the persisted
+    component ids, so the card, the POST body, and the validators all speak the same
+    addresses.
+
+    Mirrors the render path's component resolution (``_prepare_renderable``): the
+    Problem is the story's evidenced text or the ``story:{id}:problem`` attestation;
+    Results are candidates whose cited claims still resolve with a non-missing kind,
+    falling back to the ``story:{id}:result`` attestation when none do. Evidence
+    stamps come from the cited claims, so ``validate_evidence_boundary`` catches a
+    cross-entity citation from the bundle alone.
+    """
+    space_id = story.problem_space_id
+    experience_id = story.experience_id
+    content = story.content
+
+    def cited_experience_ids(claim_ids: Sequence[int]) -> tuple[int, ...]:
+        cited = {claims_by_id[i].experience_id for i in claim_ids if i in claims_by_id}
+        return tuple(sorted(cited))
+
+    problem_text = (content.problem_text or "").strip() or (attested_problem or "").strip()
+    problem_refs = content.problem_refs if (content.problem_text or "").strip() else ()
+    bundle_id = component_id("b", problem_text or space_id)
+    problem = BundleProblem(
+        problem_space_id=space_id,
+        bundle_id=bundle_id,
+        experience_id=experience_id,
+        text=problem_text,
+        claim_ids=problem_refs,
+        evidence_problem_space_ids=(space_id,),
+        evidence_experience_ids=cited_experience_ids(problem_refs),
+    )
+
+    actions = tuple(
+        ActionCandidate(
+            candidate_id=action.component_id,
+            problem_space_id=space_id,
+            bundle_id=bundle_id,
+            experience_id=experience_id,
+            text=action.summary,
+            claim_ids=action.claim_ids,
+            tools=action.tools,
+            evidence_problem_space_ids=(space_id,),
+            evidence_experience_ids=cited_experience_ids(action.claim_ids),
+        )
+        for action in content.actions
+        if action.summary.strip() and any(i in claims_by_id for i in action.claim_ids)
+    )
+
+    results: list[ResultCandidate] = []
+    for result in content.results:
+        cited = [claims_by_id[i] for i in result.claim_ids if i in claims_by_id]
+        live = [c for c in cited if c.result_kind is not ResultKind.MISSING]
+        if not live:
+            continue
+        results.append(
+            ResultCandidate(
+                candidate_id=result.component_id,
+                problem_space_id=space_id,
+                bundle_id=bundle_id,
+                experience_id=experience_id,
+                text=result.text,
+                claim_ids=result.claim_ids,
+                result_kind=live[0].result_kind,
+                result_type=_claim_result_type(live[0]),
+                outcome_quote=result.outcome_quote,
+                evidence_problem_space_ids=(space_id,),
+                evidence_experience_ids=cited_experience_ids(result.claim_ids),
+            )
+        )
+    if not results and (attested_result or "").strip():
+        text = (attested_result or "").strip()
+        results.append(
+            ResultCandidate(
+                candidate_id=component_id("r", text),
+                problem_space_id=space_id,
+                bundle_id=bundle_id,
+                experience_id=experience_id,
+                text=text,
+                claim_ids=(),
+                outcome_quote=text,
+                evidence_problem_space_ids=(space_id,),
+                evidence_experience_ids=(),
+            )
+        )
+
+    status = BundleStatus.MISSING_RESULT if not results else BundleStatus.REQUIRES_USER_SELECTION
+    if content.bundle_status == BundleStatus.READY.value and results:
+        status = BundleStatus.READY
+    return PARBundle(
+        bundle_id=bundle_id,
+        problem_space_id=space_id,
+        experience_id=experience_id,
+        problem=problem,
+        action_candidates=actions,
+        result_candidates=tuple(results),
+        selected_action_id=content.selected_action_id,
+        selected_result_id=content.selected_result_id,
+        status=status,
+    )
+
+
 def space_claim_ids(space: ProblemSpace) -> frozenset[int]:
     """Ids of every claim a space's bundles cite (its member claims).
 
@@ -468,6 +586,7 @@ __all__ = [
     "PARBundle",
     "ProblemSpace",
     "ResultCandidate",
+    "bundle_from_story",
     "detect_problem_spaces",
     "space_claim_ids",
     "uncovered_claim_ids",
