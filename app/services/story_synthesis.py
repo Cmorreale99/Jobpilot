@@ -31,16 +31,10 @@ from dataclasses import dataclass, field, replace
 
 from app.domain.claims import (
     SOURCE_USER_ATTESTATION,
-    Claim,
     ClaimRepository,
     ExperienceStatus,
 )
-from app.domain.problem_space import (
-    ProblemSpace,
-    detect_problem_spaces,
-    space_claim_ids,
-    uncovered_claim_ids,
-)
+from app.domain.problem_space import ProblemSpace, synthesis_units
 from app.domain.project_story import (
     COMPONENT_PROBLEM,
     COMPONENT_RESULT,
@@ -138,35 +132,6 @@ def _space_content(
     return replace(stamped, bundle_status=derive_bundle_status(stamped))
 
 
-def _synthesis_units(
-    experience_id: int, claims: list[Claim]
-) -> list[tuple[ProblemSpace | None, list[Claim]]]:
-    """One unit per detected space, plus the leftover unit when anything is uncovered.
-
-    With exactly ONE detected space, the entity's uncovered claims pool into it — v3's
-    single-story semantics, safe because there is no second space to contaminate (and
-    most real entities state one problem while their result claims cite different
-    chunks, so strict co-citation would exile the results to a problem-less story).
-    With several spaces, attachment stays strict: uncovered claims go to the entity's
-    leftover story (missing-problem question) rather than being guessed into a space —
-    the Cooper.ai dataset-delivery case. A claim-less entity (or one with no detectable
-    spaces) still yields exactly one leftover unit — its story carries the classify /
-    missing-problem questions, so per-space synthesis never loses an entity v3 surfaced.
-    """
-    spaces = detect_problem_spaces(experience_id, claims)
-    uncovered = set(uncovered_claim_ids(experience_id, claims, spaces))
-    if len(spaces) == 1:
-        member_ids = space_claim_ids(spaces[0]) | uncovered
-        return [(spaces[0], [c for c in claims if c.id in member_ids])]
-    units: list[tuple[ProblemSpace | None, list[Claim]]] = []
-    for space in spaces:
-        member_ids = space_claim_ids(space)
-        units.append((space, [c for c in claims if c.id in member_ids]))
-    if uncovered or not spaces:
-        units.append((None, [c for c in claims if c.id in uncovered]))
-    return units
-
-
 def run_story_synthesis(
     user_id: str,
     claim_repository: ClaimRepository,
@@ -206,7 +171,7 @@ def run_story_synthesis(
         claims = [c for c in all_claims if c.experience_id == experience.id]
         claims_by_id = {c.id: c for c in claims}
         evidence = claim_repository.list_assigned_evidence(user_id, experience.id)
-        units = _synthesis_units(experience.id, claims)
+        units = synthesis_units(experience.id, claims)
         unit_space_ids = {
             space.problem_space_id if space is not None else LEFTOVER_PROBLEM_SPACE_ID
             for space, _ in units

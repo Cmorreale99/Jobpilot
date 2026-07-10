@@ -47,6 +47,7 @@ from app.domain.claims import (
 )
 from app.domain.matching import tokenize
 from app.domain.project_story import (
+    LEFTOVER_PROBLEM_SPACE_ID,
     ProjectStory,
     assess_problem_text,
     component_id,
@@ -536,6 +537,83 @@ def bundle_from_story(
     )
 
 
+def synthesis_units(
+    experience_id: int, claims: Sequence[Claim]
+) -> list[tuple[ProblemSpace | None, list[Claim]]]:
+    """One synthesis unit per detected space, plus the leftover unit when needed.
+
+    The Increment 3 partition ``run_story_synthesis`` builds stories from — promoted
+    to the domain so the eval invariant (Increment 6) judges stories against the SAME
+    claim-to-space partition synthesis used. With exactly ONE detected space, the
+    entity's uncovered claims pool into it — v3's single-story semantics, safe because
+    there is no second space to contaminate (and most real entities state one problem
+    while their result claims cite different chunks, so strict co-citation would exile
+    the results to a problem-less story). With several spaces, attachment stays
+    strict: uncovered claims go to the entity's leftover unit (missing-problem
+    question) rather than being guessed into a space — the Cooper.ai dataset-delivery
+    case. A claim-less entity (or one with no detectable spaces) still yields exactly
+    one leftover unit, so per-space synthesis never loses an entity v3 surfaced.
+    """
+    spaces = detect_problem_spaces(experience_id, claims)
+    uncovered = set(uncovered_claim_ids(experience_id, claims, spaces))
+    if len(spaces) == 1:
+        member_ids = space_claim_ids(spaces[0]) | uncovered
+        return [(spaces[0], [c for c in claims if c.id in member_ids])]
+    units: list[tuple[ProblemSpace | None, list[Claim]]] = []
+    for space in spaces:
+        member_ids = space_claim_ids(space)
+        units.append((space, [c for c in claims if c.id in member_ids]))
+    if uncovered or not spaces:
+        units.append((None, [c for c in claims if c.id in uncovered]))
+    return units
+
+
+def claim_space_ids(experience_id: int, claims: Sequence[Claim]) -> dict[int, str]:
+    """Each live claim's synthesis-unit space id (the leftover unit included)."""
+    mapping: dict[int, str] = {}
+    for space, members in synthesis_units(experience_id, claims):
+        space_id = space.problem_space_id if space is not None else LEFTOVER_PROBLEM_SPACE_ID
+        for claim in members:
+            mapping[claim.id] = space_id
+    return mapping
+
+
+def story_cross_space_claim_ids(story: ProjectStory, claims: Sequence[Claim]) -> tuple[int, ...]:
+    """Claim ids a persisted story cites across problem-space boundaries (Increment 6).
+
+    A story's components must all live in ONE space — the core v3.1 invariant, judged
+    here against the current claim-to-space partition (:func:`claim_space_ids`).
+    Contamination means the cited claims resolve to two or more spaces; the offenders
+    are the ids outside the story's home space (its own ``problem_space_id`` when
+    cited, else the plurality space, deterministically tie-broken) — so a stale but
+    internally-consistent story (all claims in one renamed space) stays clean, while a
+    FedEx story citing a Pacifica claim is a hard scorecard regression even though the
+    structural validator (same entity, valid refs) cannot see it.
+    """
+    mapping = claim_space_ids(story.experience_id, claims)
+    content = story.content
+    cited: list[int] = list(content.problem_refs)
+    for action in content.actions:
+        cited.extend(action.claim_ids)
+    for result in content.results:
+        cited.extend(result.claim_ids)
+
+    by_space: dict[str, set[int]] = {}
+    for claim_id in cited:
+        space_id = mapping.get(claim_id)
+        if space_id is not None:  # cross-entity/orphan refs are the structural gate's job
+            by_space.setdefault(space_id, set()).add(claim_id)
+    if len(by_space) <= 1:
+        return ()
+    own = story.problem_space_id
+    home = own if own in by_space else max(by_space, key=lambda s: (len(by_space[s]), s))
+    return tuple(
+        sorted(
+            claim_id for space_id, ids in by_space.items() if space_id != home for claim_id in ids
+        )
+    )
+
+
 def space_claim_ids(space: ProblemSpace) -> frozenset[int]:
     """Ids of every claim a space's bundles cite (its member claims).
 
@@ -587,7 +665,10 @@ __all__ = [
     "ProblemSpace",
     "ResultCandidate",
     "bundle_from_story",
+    "claim_space_ids",
     "detect_problem_spaces",
     "space_claim_ids",
+    "story_cross_space_claim_ids",
+    "synthesis_units",
     "uncovered_claim_ids",
 ]

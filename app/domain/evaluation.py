@@ -245,6 +245,9 @@ class StoryEvalInput:
     readiness: StoryReadiness
     violations: Sequence[StoryViolation]
     result_spans: Sequence[str]
+    # Claims the story cites outside its own problem space (v3.1 Increment 6 — computed
+    # by ``story_cross_space_claim_ids`` against the same partition synthesis used).
+    cross_space_claim_ids: Sequence[int] = ()
 
 
 @dataclass(frozen=True)
@@ -264,6 +267,7 @@ class StoryEvalReport:
     invented_metric_count: int  # MUST be 0
     orphan_component_count: int  # MUST be 0
     duplicate_story_count: int  # MUST be 0
+    cross_problem_space_contamination_count: int  # MUST be 0 (v3.1 Increment 6)
     cross_source_conflict_count: int
 
     @property
@@ -272,11 +276,14 @@ class StoryEvalReport:
 
     @property
     def boundary_clean(self) -> bool:
-        """The hard pass/fail: no invented metrics, no orphan components, no duplicate stories."""
+        """The hard pass/fail: no invented metrics, no orphan components, no duplicate
+        stories, no cross-problem-space contamination — a mixed-space story (and so a
+        mixed-space bullet) is a hard regression on the scorecard (v3.1)."""
         return (
             self.invented_metric_count == 0
             and self.orphan_component_count == 0
             and self.duplicate_story_count == 0
+            and self.cross_problem_space_contamination_count == 0
         )
 
     def detail_lines(self) -> tuple[str, ...]:
@@ -294,6 +301,8 @@ class StoryEvalReport:
             f"invented_metric_count={self.invented_metric_count}",
             f"orphan_component_count={self.orphan_component_count}",
             f"duplicate_story_count={self.duplicate_story_count}",
+            f"cross_problem_space_contamination_count="
+            f"{self.cross_problem_space_contamination_count}",
             f"cross_source_conflict_count={self.cross_source_conflict_count}",
         )
 
@@ -304,11 +313,14 @@ def summarize_story_eval(inputs: Sequence[StoryEvalInput]) -> StoryEvalReport:
     ``duplicate_story_count`` counts outcome spans that back a Result under more than one
     story — the final-CV dedup invariant restated as a metric (must be 0). ``invented_metric``
     and ``orphan_component`` counts are stories carrying the corresponding fatal structural
-    violation (also must be 0). Questions are counted only for undecided stories.
+    violation (also must be 0). ``cross_problem_space_contamination_count`` counts stories
+    citing claims across problem-space boundaries (v3.1 — the caller supplies each story's
+    offending ids via ``story_cross_space_claim_ids``; also must be 0). Questions are
+    counted only for undecided stories.
     """
     status_counts: Counter[StoryReviewStatus] = Counter()
     resume_ready = missing_problem = missing_result_only = missing_both = 0
-    questions_outstanding = invented = orphan = conflicts = 0
+    questions_outstanding = invented = orphan = conflicts = contaminated = 0
     span_owners: dict[str, set[int]] = {}
 
     for index, item in enumerate(inputs):
@@ -335,6 +347,8 @@ def summarize_story_eval(inputs: Sequence[StoryEvalInput]) -> StoryEvalReport:
             invented += 1
         if codes & _ORPHAN_CODES:
             orphan += 1
+        if item.cross_space_claim_ids:
+            contaminated += 1
 
         for span in item.result_spans:
             if span:
@@ -356,6 +370,7 @@ def summarize_story_eval(inputs: Sequence[StoryEvalInput]) -> StoryEvalReport:
         invented_metric_count=invented,
         orphan_component_count=orphan,
         duplicate_story_count=duplicate_story_count,
+        cross_problem_space_contamination_count=contaminated,
         cross_source_conflict_count=conflicts,
     )
 
