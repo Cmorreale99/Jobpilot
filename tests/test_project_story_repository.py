@@ -196,6 +196,34 @@ def test_invalidating_a_missing_story_returns_nothing(repo: ProjectStoryReposito
     assert repo.invalidate_story(404, reason="entity discarded") == []
 
 
+def test_record_selection_stamps_ready_and_respects_decisions(
+    repo: ProjectStoryRepository,
+) -> None:
+    """Selection persists the picks and stamps ready; a decided story refuses; a
+    machine re-draft resets the selection with the content."""
+    story = repo.upsert_draft("u1", 7, _CONTENT)
+    action_id = _CONTENT.actions[0].component_id
+    result_id = _CONTENT.results[0].component_id
+
+    selected = repo.record_selection(story.id, action_id, result_id)
+    assert selected.content.selected_action_id == action_id
+    assert selected.content.selected_result_id == result_id
+    assert selected.content.bundle_status == "ready"
+    assert selected.review_status is StoryReviewStatus.DRAFT  # not a review decision
+
+    # A new machine draft supersedes the selection (new candidates, new picks).
+    refreshed = repo.upsert_draft("u1", 7, replace(_CONTENT, synthesis_hash="fresh"))
+    assert refreshed.content.selected_action_id is None
+    assert refreshed.content.bundle_status == "requires_user_selection"
+
+    repo.transition_story(story.id, StoryReviewStatus.PENDING_REVIEW)
+    repo.transition_story(story.id, StoryReviewStatus.APPROVED)
+    with pytest.raises(StoryReplaceError):
+        repo.record_selection(story.id, action_id, result_id)
+    with pytest.raises(LookupError):
+        repo.record_selection(404, action_id, result_id)
+
+
 def test_delete_draft_removes_machine_drafts_only(repo: ProjectStoryRepository) -> None:
     """Stale-space cleanup deletes drafts; a human decision is never deleted."""
     draft = repo.upsert_draft("u1", 7, _CONTENT)

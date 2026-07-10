@@ -23,7 +23,6 @@ from app.domain.claims import (
     ExperienceSection,
     ExperienceSeed,
     ExperienceStatus,
-    HeuristicTwoPassExtractor,
     ResultKind,
     ResultStatus,
     StorableClaim,
@@ -35,7 +34,7 @@ from app.services.project_story_repository import InMemoryProjectStoryRepository
 from app.services.story_synthesis import run_story_synthesis
 from app.services.validation_run_log import InMemoryValidationRunLog
 
-from tests.fixtures.problem_spaces.cooper_ai import cooper_group
+from tests.fixtures.problem_spaces.cooper_ai import seed_cooper_repository
 from tests.live_corpus import build_live_corpus
 
 
@@ -197,26 +196,7 @@ def _seed_cooper(
 ) -> tuple[Experience, list[Claim]]:
     """Ingest the real-shaped Cooper.ai group (FedEx / Pacifica / dataset delivery)
     through the ordinary repository writes, exactly like production extraction."""
-    group = cooper_group()
-    experience = repo.upsert_experience(user_id, group.experience)
-    drafts = HeuristicTwoPassExtractor().extract(group)
-    for draft in drafts:
-        for ref in draft.evidence:
-            stored = repo.upsert_evidence(user_id, ref.chunk)
-            repo.assign_evidence(stored.id, experience.id)
-    claims = repo.replace_unreviewed_claims(
-        user_id,
-        experience.id,
-        [
-            StorableClaim(
-                draft=draft,
-                status=ClaimStatus.PENDING_REVIEW,
-                result_status=ResultStatus.UNVERIFIED,
-            )
-            for draft in drafts
-        ],
-    )
-    return experience, claims
+    return seed_cooper_repository(repo, user_id)
 
 
 def _component_texts(story) -> list[str]:  # type: ignore[no-untyped-def]

@@ -172,3 +172,26 @@ class InMemoryProjectStoryRepository:
                 "deleted by stale-space cleanup; invalidate it explicitly first"
             )
         del self._stories[story_id]
+
+    def record_selection(
+        self, story_id: int, selected_action_id: str, selected_result_id: str
+    ) -> ProjectStory:
+        story = self._stories.get(story_id)
+        if story is None:
+            raise LookupError(f"no story with id {story_id}")
+        if story.review_status in _DECIDED:
+            raise StoryReplaceError(
+                f"story {story_id} is {story.review_status} — selection is review-time "
+                "work; invalidate the story before changing it"
+            )
+        updated = replace(
+            story,
+            content=replace(
+                story.content,
+                selected_action_id=selected_action_id,
+                selected_result_id=selected_result_id,
+                bundle_status="ready",
+            ),
+        )
+        self._stories[story_id] = updated
+        return updated

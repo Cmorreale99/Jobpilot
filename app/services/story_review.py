@@ -13,6 +13,15 @@ that superseded the retired V2 claim review queue. Four actions on a card:
 * **exclude** — with a required, retained reason (portfolio/low-value/etc.).
 * (**synthesize** builds the drafts — ``services/story_synthesis.py``.)
 
+v3.1 Increment 4 adds the **selection flow**: ``select_bundle_component`` runs the
+user's action/result picks through the four bundle validators against the story's
+own persisted candidates (the card IS the bundle — Increment 3's pooling makes the
+story's lists the reviewed truth, wider than raw re-detection for single-space
+entities) and persists them (``bundle_status=ready``); ``generate_story_bullet``
+hard-gates the same way and returns the one composed bullet — or the 7-option
+missing-result follow-up when the bundle has no result to select (asked for, never
+invented).
+
 ``build_story_view`` is the one place readiness is computed for a card, so the approve
 gate and the rendered card can never disagree.
 """
@@ -21,7 +30,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
+from app.domain.bullet import GeneratedBullet, generate_bullet
+from app.domain.bundle_validation import (
+    ASK_TARGETED_FOLLOWUP,
+    BundleViolation,
+    validate_bundle_selection,
+    validate_evidence_boundary,
+    validate_problem_space_alignment,
+    validate_result_presence,
+)
 from app.domain.claims import (
     SOURCE_USER_ATTESTATION,
     Claim,
@@ -30,12 +49,16 @@ from app.domain.claims import (
     EvidenceChunk,
     Experience,
     ResultKind,
+    ResultType,
 )
+from app.domain.problem_space import PARBundle, bundle_from_story
 from app.domain.project_story import (
     COMPONENT_PROBLEM,
     COMPONENT_RESULT,
+    MISSING_RESULT_QUESTION,
     ProjectStory,
     ProjectStoryRepository,
+    QuestionKind,
     ResultCandidate,
     StoryReadiness,
     StoryReviewStatus,
@@ -43,9 +66,23 @@ from app.domain.project_story import (
     assess_problem_text,
     compute_readiness,
     detect_metric_conflicts,
+    resolve_component_evidence,
 )
 
 _DECIDED = (StoryReviewStatus.APPROVED, StoryReviewStatus.EXCLUDED)
+
+# The targeted missing-result follow-up's options (§ Increment 4): the 7 result
+# categories beyond a bare number — the reason v3.1 widened result recognition. A
+# quantified figure is of course also welcome; the question text already says so.
+RESULT_TYPE_OPTIONS: tuple[str, ...] = tuple(
+    t.value for t in ResultType if t is not ResultType.QUANTITATIVE
+)
+
+# Selection-flow violation code outside the four validators: the bundle has no
+# problem yet (a leftover story) — a bundle is defined by its problem, so selection
+# waits for the missing-problem answer.
+MISSING_PROBLEM = "missing_problem"
+SELECTION_MISSING = "selection_missing"
 
 
 class StoryAnswerError(ValueError):
@@ -211,3 +248,164 @@ def attest_story_component(
         EvidenceChunk(SOURCE_USER_ATTESTATION, f"story:{story.id}:{component}", answer),
     )
     return story
+
+
+# --- v3.1 selection flow + single-bullet generation (Increment 4) -------------------------
+
+
+class BundleSelectionError(ValueError):
+    """A selection or generation request failed a bundle gate (HTTP 409)."""
+
+    def __init__(self, violations: list[BundleViolation]) -> None:
+        super().__init__("; ".join(str(v) for v in violations))
+        self.violations = tuple(violations)
+
+
+@dataclass(frozen=True)
+class BulletOutcome:
+    """What ``generate_story_bullet`` produced: the one bullet, or the follow-up."""
+
+    bullet: GeneratedBullet | None = None
+    follow_up: dict[str, Any] | None = None
+
+
+def missing_result_follow_up() -> dict[str, Any]:
+    """The targeted missing-result question with the 7 result-type options.
+
+    Answering goes through the existing attestation mechanism (``POST /answer`` with
+    component ``result``) — the same ``story:{id}:result`` evidence row review uses,
+    so the readiness card, the render path, and the bullet path all see the answer.
+    """
+    return {
+        "kind": QuestionKind.MISSING_RESULT.value,
+        "component": COMPONENT_RESULT,
+        "text": MISSING_RESULT_QUESTION,
+        "options": list(RESULT_TYPE_OPTIONS),
+        "next_action": ASK_TARGETED_FOLLOWUP,
+    }
+
+
+def _story_bundle(story: ProjectStory, claim_repository: ClaimRepository) -> PARBundle:
+    """The story's selection bundle, with attestations resolved (render-path parity)."""
+    claims_by_id = {c.id: c for c in claim_repository.list_claims(story.user_id)}
+    return bundle_from_story(
+        story,
+        claims_by_id,
+        attested_problem=_attestation(claim_repository, story, COMPONENT_PROBLEM),
+        attested_result=_attestation(claim_repository, story, COMPONENT_RESULT),
+    )
+
+
+def _require_problem(bundle: PARBundle) -> None:
+    if not bundle.problem.text.strip():
+        raise BundleSelectionError(
+            [
+                BundleViolation(
+                    MISSING_PROBLEM,
+                    "the story has no Problem (evidenced or attested) — a bundle is "
+                    "defined by its problem space; answer the missing-problem "
+                    "question first",
+                )
+            ]
+        )
+
+
+def select_bundle_component(
+    story_repository: ProjectStoryRepository,
+    claim_repository: ClaimRepository,
+    story_id: int,
+    selected_action_id: str,
+    selected_result_id: str,
+) -> ProjectStory:
+    """Persist the user's action/result picks — but only through the bundle gates.
+
+    Runs membership (both ids candidates of THIS story's bundle), problem-space
+    alignment, and the evidence boundary on every selected component; a bundle with
+    no result candidates routes to the follow-up instead of accepting a selection.
+    On pass the repository records the selection and stamps ``bundle_status=ready``.
+    """
+    story = story_repository.get_story(story_id)
+    if story is None:
+        raise LookupError(f"no story with id {story_id}")
+    if story.review_status in _DECIDED:
+        raise StoryDecidedError(
+            f"story {story_id} is {story.review_status.value}; invalidate it before editing"
+        )
+
+    bundle = _story_bundle(story, claim_repository)
+    _require_problem(bundle)
+    presence = validate_result_presence(bundle)
+    if presence:
+        raise BundleSelectionError(presence)
+    membership = validate_bundle_selection(bundle, selected_action_id, selected_result_id)
+    if membership:
+        raise BundleSelectionError(membership)
+
+    action = next(c for c in bundle.action_candidates if c.candidate_id == selected_action_id)
+    result = next(c for c in bundle.result_candidates if c.candidate_id == selected_result_id)
+    violations = list(validate_problem_space_alignment(bundle.problem, action, result))
+    for candidate in (bundle.problem, action, result):
+        violations.extend(validate_evidence_boundary(candidate))
+    if violations:
+        raise BundleSelectionError(violations)
+
+    return story_repository.record_selection(story_id, selected_action_id, selected_result_id)
+
+
+def generate_story_bullet(
+    story_repository: ProjectStoryRepository,
+    claim_repository: ClaimRepository,
+    story_id: int,
+) -> BulletOutcome:
+    """The one bullet the story's recorded selection defines — or the follow-up.
+
+    A bundle with no result candidates returns the 7-option missing-result follow-up
+    (not an error — it is the flow's answer). A story without a recorded selection is
+    a 409: selection is the human step this path exists for. The composed bullet is
+    number-grounded against the selected candidates' cited chunks and attestations —
+    generation refuses rather than emit an ungrounded figure.
+    """
+    story = story_repository.get_story(story_id)
+    if story is None:
+        raise LookupError(f"no story with id {story_id}")
+
+    bundle = _story_bundle(story, claim_repository)
+    _require_problem(bundle)
+    if validate_result_presence(bundle):
+        return BulletOutcome(follow_up=missing_result_follow_up())
+
+    selected_action_id = story.content.selected_action_id
+    selected_result_id = story.content.selected_result_id
+    if not selected_action_id or not selected_result_id:
+        raise BundleSelectionError(
+            [
+                BundleViolation(
+                    SELECTION_MISSING,
+                    "the story has no recorded action/result selection — "
+                    "POST /stories/{id}/select first",
+                )
+            ]
+        )
+
+    claims_by_id = {c.id: c for c in claim_repository.list_claims(story.user_id)}
+    selected_claim_ids: list[int] = []
+    for action in bundle.action_candidates:
+        if action.candidate_id == selected_action_id:
+            selected_claim_ids.extend(action.claim_ids)
+    for result in bundle.result_candidates:
+        if result.candidate_id == selected_result_id:
+            selected_claim_ids.extend(result.claim_ids)
+    evidence_texts = [
+        stored.chunk_text
+        for stored in resolve_component_evidence(
+            selected_claim_ids, claims_by_id, claim_repository.get_evidence
+        )
+    ]
+    attested_result = _attestation(claim_repository, story, COMPONENT_RESULT)
+    if attested_result:
+        evidence_texts.append(attested_result)
+
+    bullet = generate_bullet(
+        bundle, selected_action_id, selected_result_id, evidence_texts=evidence_texts
+    )
+    return BulletOutcome(bullet=bullet)

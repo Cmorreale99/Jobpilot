@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_claim_repository, get_story_repository, get_validation_log
 from app.domain.applications import InvalidTransitionError
+from app.domain.bullet import BulletGenerationError
 from app.domain.claims import SOURCE_USER_ATTESTATION, ClaimRepository, evidence_source_url
 from app.domain.project_story import (
     COMPONENT_PROBLEM,
@@ -33,6 +34,7 @@ from app.domain.project_story import (
 )
 from app.domain.validation_runs import ValidationRunLog
 from app.services.story_review import (
+    BundleSelectionError,
     StoryAnswerError,
     StoryDecidedError,
     StoryView,
@@ -40,6 +42,8 @@ from app.services.story_review import (
     attest_story_component,
     build_story_view,
     exclude_story,
+    generate_story_bullet,
+    select_bundle_component,
     story_queue,
 )
 from app.services.story_synthesis import run_story_synthesis
@@ -63,6 +67,19 @@ class ExcludeRequest(BaseModel):
     """Exclude body; the reason is required and retained (labeled review data)."""
 
     reason: str = Field(min_length=1)
+
+
+class SelectRequest(BaseModel):
+    """Bundle selection: exactly one action and one result, by candidate id."""
+
+    selected_action_id: str = Field(min_length=1)
+    selected_result_id: str = Field(min_length=1)
+
+
+def _violations_payload(violations: tuple[Any, ...]) -> list[dict[str, Any]]:
+    return [
+        {"code": v.code, "message": v.message, "next_action": v.next_action} for v in violations
+    ]
 
 
 def _evidence_payload(
@@ -290,6 +307,74 @@ def answer(
     except StoryAnswerError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _serialize_story(build_story_view(story, repository), repository)
+
+
+@router.post("/{story_id}/select")
+def select(
+    story_id: int,
+    body: SelectRequest,
+    story_repository: StoryRepositoryDep,
+    repository: RepositoryDep,
+) -> dict[str, Any]:
+    """Record the user's bundle selection (one action + one result) — validator-gated.
+
+    A pick outside the story's own candidates, a cross-space/cross-project
+    contamination, a result-less bundle, or a problem-less story is a 409 whose
+    detail lists the machine-readable violations; nothing is persisted on refusal.
+    """
+    try:
+        story = select_bundle_component(
+            story_repository,
+            repository,
+            story_id,
+            body.selected_action_id,
+            body.selected_result_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except StoryDecidedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except BundleSelectionError as exc:
+        raise HTTPException(
+            status_code=409, detail={"violations": _violations_payload(exc.violations)}
+        ) from exc
+    return _serialize_story(build_story_view(story, repository), repository)
+
+
+@router.post("/{story_id}/bullet")
+def bullet(
+    story_id: int, story_repository: StoryRepositoryDep, repository: RepositoryDep
+) -> dict[str, Any]:
+    """Generate the single bullet the recorded selection defines.
+
+    Returns ``{"bullet": {...}}`` on success, or ``{"bullet": null, "follow_up":
+    {...}}`` when the bundle has no result to select — the 7-option targeted
+    result-type question (answer it via ``POST /answer`` with component ``result``).
+    A missing selection or any validator/number-gate failure is a 409.
+    """
+    try:
+        outcome = generate_story_bullet(story_repository, repository, story_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (BundleSelectionError, BulletGenerationError) as exc:
+        raise HTTPException(
+            status_code=409, detail={"violations": _violations_payload(exc.violations)}
+        ) from exc
+    if outcome.follow_up is not None:
+        return {"bullet": None, "follow_up": outcome.follow_up}
+    generated = outcome.bullet
+    assert generated is not None  # BulletOutcome invariant: bullet or follow_up
+    return {
+        "bullet": {
+            "text": generated.text,
+            "problem_space_id": generated.problem_space_id,
+            "bundle_id": generated.bundle_id,
+            "action_candidate_id": generated.action_candidate_id,
+            "result_candidate_id": generated.result_candidate_id,
+            "claim_ids": list(generated.claim_ids),
+        },
+        "follow_up": None,
+    }
 
 
 @router.post("/{story_id}/exclude")

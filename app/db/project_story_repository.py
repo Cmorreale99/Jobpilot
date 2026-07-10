@@ -253,3 +253,22 @@ class SqlProjectStoryRepository:
                 )
             session.delete(row)
             session.commit()
+
+    def record_selection(
+        self, story_id: int, selected_action_id: str, selected_result_id: str
+    ) -> ProjectStory:
+        with self._session_factory() as session:
+            row = session.get(ProjectStoryRow, story_id)
+            if row is None:
+                raise LookupError(f"no story with id {story_id}")
+            if row.review_status in _DECIDED:
+                raise StoryReplaceError(
+                    f"story {story_id} is {row.review_status} — selection is review-time "
+                    "work; invalidate the story before changing it"
+                )
+            row.selected_action_id = selected_action_id
+            row.selected_result_id = selected_result_id
+            row.bundle_status = "ready"
+            session.commit()
+            session.refresh(row)
+            return _to_story(row)
