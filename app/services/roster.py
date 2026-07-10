@@ -17,6 +17,7 @@ reassigns the same chunks (evidence upserts on its span ref).
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app.config import Settings, get_settings
@@ -34,6 +35,11 @@ from app.domain.claims import (
     span_ref,
     split_span_ref,
 )
+from app.domain.project_reconciliation import (
+    STATUS_DETECTED,
+    ReconciliationResult,
+    reconcile_expected_projects,
+)
 from app.domain.roster import (
     ChunkAssigner,
     RosterProposer,
@@ -41,7 +47,11 @@ from app.domain.roster import (
     detect_entity_overlaps,
 )
 from app.domain.text_normalization import normalize_source_text
-from app.domain.validation_runs import KIND_ENTITY_OVERLAP, ValidationRunLog
+from app.domain.validation_runs import (
+    KIND_ENTITY_OVERLAP,
+    KIND_PROJECT_RECONCILIATION,
+    ValidationRunLog,
+)
 from app.integrations.base import (
     DriveClient,
     DriveResponseError,
@@ -92,6 +102,17 @@ class RosterOverlapReport:
     """What the cross-entity overlap pass found (per user)."""
 
     prompts: list[MergePrompt] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ProjectReconciliationReport:
+    """Where each expected project stands (per user, one result per expected entry)."""
+
+    results: list[ReconciliationResult] = field(default_factory=list)
+
+    @property
+    def undetected(self) -> list[ReconciliationResult]:
+        return [r for r in self.results if r.status != STATUS_DETECTED]
 
 
 async def gather_source_documents(
@@ -253,6 +274,53 @@ def run_overlap_detection(
         len(prompts),
     )
     return RosterOverlapReport(prompts=prompts)
+
+
+async def run_project_reconciliation(
+    drive_client: DriveClient,
+    github_client: GitHubClient,
+    user_id: str,
+    repository: ClaimRepository,
+    expected_projects: Sequence[str],
+    settings: Settings | None = None,
+    *,
+    validation_log: ValidationRunLog | None = None,
+) -> ProjectReconciliationReport:
+    """Reconcile the user's expected-project inventory against roster + sources.
+
+    Thin wrapper over the pure :func:`reconcile_expected_projects`: the confirmed
+    roster answers "detected", the gathered raw source texts answer "present but not
+    parsed", and everything else is honestly ``missing_from_resume_or_source_not_loaded``
+    — a fact about the sources, never a parsing failure by default. Each pass is
+    recorded in ``validation_runs`` (kind ``project_reconciliation``): pass = every
+    expected project detected; the detail lines carry each undetected project's
+    status + next action.
+    """
+    settings = settings or get_settings()
+    roster = _confirmed_roster(repository, user_id)
+    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+    results = reconcile_expected_projects(expected_projects, roster, [d.text for d in documents])
+    report = ProjectReconciliationReport(results=results)
+
+    if validation_log is not None:
+        validation_log.record(
+            user_id,
+            KIND_PROJECT_RECONCILIATION,
+            subject_ref="expected_projects",
+            passed=not report.undetected,
+            detail=tuple(
+                f"{r.expected_project}: {r.status} (next: {r.next_action})"
+                for r in report.undetected
+            ),
+        )
+    logger.info(
+        "project reconciliation for %s: %d expected, %d detected, %d needing attention",
+        user_id,
+        len(results),
+        sum(1 for r in results if r.status == STATUS_DETECTED),
+        len(report.undetected),
+    )
+    return report
 
 
 def _repo_entity(roster: list[Experience], repo_ref: str) -> Experience | None:
