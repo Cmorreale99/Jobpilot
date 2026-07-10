@@ -40,6 +40,7 @@ from app.domain.claims import (
     EvidenceGroup,
     Inefficiency,
     ResultKind,
+    ResultType,
 )
 from app.domain.par_validation import verbatim_in
 from app.llm.client import LlmClient
@@ -109,26 +110,40 @@ _PASS2_SYSTEM = (
     "This is PASS 2 of 2: hunt the same evidence chunks specifically for OUTCOME "
     "STATEMENTS and attach them to the claims from pass 1 as Results.\n"
     "\n"
-    "An OUTCOME statement expresses realized business impact ('cut failure rate from "
-    "12% to 0.5%', 'ops no longer reconciles manually'). A WORK statement ('fixed "
+    "An OUTCOME statement expresses realized business impact. A WORK statement ('fixed "
     "dedup key mismatch') is NOT an outcome and must never be used as a Result. "
     "Any source may hold an outcome - commits and comments included; judge the "
     "content, not the source.\n"
     "\n"
+    "A result does NOT have to be a percentage. These are ALL valid result types:\n"
+    "- quantitative: a number/metric ('removed 195K+ duplicate records', 'corrected "
+    "reporting from $4.01M to $2.16M')\n"
+    "- coverage: restored/recovered completeness ('restored 100% date coverage')\n"
+    "- reliability: prevented a recurring failure ('prevented recurring data corruption')\n"
+    "- automation: eliminated recurring manual effort ('eliminated manual ETL effort')\n"
+    "- operational: enabled an ongoing capability ('enabled daily warehouse refreshes')\n"
+    "- delivery: shipped a concrete artifact ('delivered five production datasets')\n"
+    "- analytics: unlocked downstream analysis ('enabled analytics and AI applications')\n"
+    "- decision_enabling: enabled validated decisions ('enabled auditable model adjustments')\n"
+    "\n"
     "Hard rules:\n"
     "1. 'outcome_quote' MUST be an exact, contiguous, verbatim substring of the cited "
     "chunk. 'metric_text' (quantified only) must also appear verbatim in that chunk.\n"
-    "2. result_kind is 'quantified' (a number/metric) or 'qualitative_evidenced' "
-    "(evidenced state change without a number).\n"
-    "3. 'resolves' names the declared cost_dimension or inefficiency of the claim's "
+    "2. result_kind is 'quantified' (has a number/metric) or 'qualitative_evidenced' "
+    "(an evidenced state change without a number - coverage/reliability/automation/"
+    "operational/delivery/analytics/decision_enabling results are usually this).\n"
+    "3. 'result_type' names one of the eight categories above.\n"
+    "4. One result per candidate - never combine two distinct outcomes into one.\n"
+    "5. 'resolves' names the declared cost_dimension or inefficiency of the claim's "
     "Problem that the outcome addresses. Use null when nothing genuinely matches - "
     "never force a coupling.\n"
-    "4. If a claim has no outcome statement anywhere in the evidence, OMIT it: a "
+    "6. If a claim has no outcome statement anywhere in the evidence, OMIT it: a "
     "missing Result is recorded as missing, never invented.\n"
     "\n"
     'Reply with ONLY JSON: {"results": [{"claim_index": int, "chunk_index": int, '
     '"outcome_quote": string, "result_text": string, "result_kind": string, '
-    '"metric_text": string|null, "resolves": string|null}]}. No markdown.'
+    '"result_type": string|null, "metric_text": string|null, "resolves": string|null}]}. '
+    "No markdown."
 )
 
 
@@ -154,6 +169,7 @@ class _Pass2Result:
     result_kind: ResultKind
     metric_text: str | None
     resolves: str | None
+    result_type: ResultType | None
 
 
 class LlmTwoPassExtractor:
@@ -287,6 +303,8 @@ class LlmTwoPassExtractor:
                 result_text = attached.result_text
                 result_kind = attached.result_kind
                 result_metric_json = {"resolves": attached.resolves}
+                if attached.result_type is not None:
+                    result_metric_json["result_type"] = attached.result_type.value
                 if attached.result_kind is ResultKind.QUANTIFIED:
                     result_metric_json["metric_text"] = attached.metric_text
                 evidence.append(
@@ -454,6 +472,7 @@ def _parse_pass2(payload: Any) -> list[_Pass2Result]:
                 result_kind=kind,
                 metric_text=metric if isinstance(metric, str) and metric.strip() else None,
                 resolves=resolves if isinstance(resolves, str) and resolves.strip() else None,
+                result_type=_coerce_enum(ResultType, entry.get("result_type")),
             )
         )
     return results
