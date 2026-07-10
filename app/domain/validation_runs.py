@@ -31,6 +31,9 @@ KIND_STORY_SYNTHESIS = "story_synthesis"
 # readiness breakdown, and the invariants that MUST be zero (invented metrics, orphan
 # components, duplicate stories). ``passed`` is the boundary_clean pass/fail.
 KIND_STORY_EVAL = "story_eval"
+# One row per expected-project reconciliation pass (v3.1 Increment 5): pass = every
+# expected project detected; fail detail names each parsing gap / missing project.
+KIND_PROJECT_RECONCILIATION = "project_reconciliation"
 
 
 @dataclass(frozen=True)
