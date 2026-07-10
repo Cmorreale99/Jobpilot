@@ -183,6 +183,11 @@ export function StoryReviewSection({
                     {story.section.replace(/_/g, " ")}
                   </span>
                 )}
+                {story.problem_space?.label && (
+                  <span className="ml-2 font-mono text-xs text-annotation">
+                    · {story.problem_space.label}
+                  </span>
+                )}
               </p>
               {story.readiness.resume_ready ? (
                 <span className="stamped text-viridian">resume-ready</span>

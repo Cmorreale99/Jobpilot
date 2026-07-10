@@ -182,8 +182,18 @@ def test_upgrade_creates_project_stories_and_normalizer_versioning(tmp_path: Pat
         "reviewed_at",
         "decision_note",
     } <= columns
+    # v3.1 Increment 3 (0014): per-problem-space stories.
+    assert {
+        "problem_space_id",
+        "problem_space_label",
+        "problem_space_scope",
+        "selected_action_id",
+        "selected_result_id",
+        "bundle_status",
+    } <= columns
     uniques = {u["name"] for u in inspector.get_unique_constraints("project_stories")}
-    assert "uq_project_stories_experience" in uniques
+    assert "uq_project_stories_experience_space" in uniques
+    assert "uq_project_stories_experience" not in uniques
     evidence_columns = {c["name"] for c in inspector.get_columns("evidence")}
     assert "normalization_version" in evidence_columns
 
@@ -191,6 +201,59 @@ def test_upgrade_creates_project_stories_and_normalizer_versioning(tmp_path: Pat
     inspector = sa.inspect(sa.create_engine(url))
     assert "project_stories" not in inspector.get_table_names()
     assert "normalization_version" not in {c["name"] for c in inspector.get_columns("evidence")}
+
+
+def test_0014_backfills_problem_space_ids_for_v3_rows(tmp_path: Path) -> None:
+    """Every v3 row gets the SAME space id detection derives for its problem (so
+    re-synthesis upserts over it), or the leftover space when it has no problem."""
+    from app.domain.project_story import (
+        LEFTOVER_PROBLEM_SPACE_ID,
+        StoryContent,
+        component_id,
+        derive_problem_space_id,
+    )
+
+    url = _sqlite_url(tmp_path, "backfill.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "0013")
+
+    problem = "The permit team spent 6 hours a week reconciling exports by hand"
+    engine = sa.create_engine(url)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO project_stories (user_id, experience_id, review_status, "
+                "problem_text, problem_refs, actions_json, results_json) VALUES "
+                "(:u, 7, 'approved', :p, '[11]', '[]', "
+                '\'[{"component_id": "r-1", "text": "Cut time", "claim_ids": [11]}]\')'
+            ),
+            {"u": "u1", "p": problem},
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO project_stories (user_id, experience_id, review_status, "
+                "problem_refs, actions_json, results_json) VALUES "
+                "(:u, 8, 'draft', '[]', '[]', '[]')"
+            ),
+            {"u": "u1"},
+        )
+
+    command.upgrade(cfg, "head")
+
+    with sa.create_engine(url).connect() as connection:
+        rows = connection.execute(
+            sa.text(
+                "SELECT experience_id, problem_space_id, problem_space_label, bundle_status "
+                "FROM project_stories ORDER BY experience_id"
+            )
+        ).fetchall()
+    assert rows[0][1] == component_id("ps", problem)
+    assert rows[0][1] == derive_problem_space_id(StoryContent(problem_text=problem))
+    assert rows[0][2] == problem
+    assert rows[0][3] == "requires_user_selection"
+    assert rows[1][1] == LEFTOVER_PROBLEM_SPACE_ID
+    assert rows[1][2] is None
+    assert rows[1][3] == "missing_result"
 
 
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:

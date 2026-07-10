@@ -418,6 +418,23 @@ def _build_space(
     )
 
 
+def space_claim_ids(space: ProblemSpace) -> frozenset[int]:
+    """Ids of every claim a space's bundles cite (its member claims).
+
+    This is the synthesis unit for Increment 3's per-space stories: a story for this
+    space is synthesized from exactly these claims, so its components can never cite
+    across the space boundary by construction.
+    """
+    ids: set[int] = set()
+    for bundle in space.bundles:
+        ids.update(bundle.problem.claim_ids)
+        for action in bundle.action_candidates:
+            ids.update(action.claim_ids)
+        for result in bundle.result_candidates:
+            ids.update(result.claim_ids)
+    return frozenset(ids)
+
+
 def uncovered_claim_ids(
     experience_id: int, claims: Sequence[Claim], spaces: Sequence[ProblemSpace]
 ) -> tuple[int, ...]:
@@ -452,5 +469,6 @@ __all__ = [
     "ProblemSpace",
     "ResultCandidate",
     "detect_problem_spaces",
+    "space_claim_ids",
     "uncovered_claim_ids",
 ]
