@@ -19,10 +19,15 @@ coupling heuristics. Claims without a bar-clearing problem join a space only thr
 co-cited evidence and only when exactly one space matches; anything else stays
 honestly uncovered (:func:`uncovered_claim_ids`) rather than guessed into a bundle.
 
-The LLM detector lands later behind a ``create_problem_space_detector`` factory
-(flag ``PROBLEM_SPACE_LLM_DETECTION``), following ``create_story_synthesizer``
-exactly; this heuristic is the default either way, and the bundle validators
-(``domain/bundle_validation.py``) gate both paths identically.
+The LLM detector (v3.1 Increment 7, ``app/llm/space_detection.py``, flag
+``PROBLEM_SPACE_LLM_DETECTION`` via ``create_problem_space_detector``) replaces ONE
+step and only one: the **grouping** of the distinct bar-clearing problem statements
+(:class:`ProblemSpaceDetector` — the semantic judgment lexical relatedness can't
+make, e.g. six facets of one carbon-market narrative). Seeding, attachment,
+candidates, ids, and statuses stay this module's deterministic code either way, a
+detector's output is sanitized against the input problems (unknown texts dropped,
+missing ones restored as singletons — grouping is selection, never authorship), and
+the bundle validators (``domain/bundle_validation.py``) gate both paths identically.
 
 Naming note: :class:`ResultCandidate` here is the bundle-selection shape (carries
 ``result_type`` + ``outcome_quote`` + provenance stamps); the unrelated
@@ -36,6 +41,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from typing import Protocol, runtime_checkable
 
 from app.domain.claims import (
     Claim,
@@ -173,7 +179,31 @@ class ProblemSpace:
     project_id: str | None = None
 
 
-# --- Deterministic detection ------------------------------------------------------------
+# --- Detection: the grouping step is pluggable, everything else is deterministic ---------
+
+
+class ProblemSpaceDetectionError(RuntimeError):
+    """One entity's problem-space grouping failed outright (e.g. the LLM call failed).
+
+    Raised instead of silently degrading to the heuristic — the caller skips the
+    entity loudly (logged + recorded in ``validation_runs``), mirroring extraction's
+    ``ClaimExtractionError`` and synthesis's ``StorySynthesisError``.
+    """
+
+
+@runtime_checkable
+class ProblemSpaceDetector(Protocol):
+    """Partitions one entity's distinct bar-clearing problem statements into spaces.
+
+    The ONLY pluggable step of detection: given the problem texts (leverage order,
+    deduped), return groups of those texts — statements describing the same
+    underlying challenge together, separate workstreams apart. The caller sanitizes
+    the output (unknown texts dropped, missing ones restored as singletons, first
+    membership wins), so a detector can group but never author, omit, or duplicate.
+    """
+
+    def group_problems(self, problems: Sequence[str]) -> list[list[str]]: ...
+
 
 # Two bar-clearing problems share a space when their pain-point tags overlap AND they
 # share at least this many content tokens (or one normalized text contains the other).
@@ -194,6 +224,53 @@ def _related_problems(a: str, b: str) -> bool:
     if not (pain_point_tags(a) & pain_point_tags(b)):
         return False
     return len(set(tokenize(a)) & set(tokenize(b))) >= _MIN_SHARED_TOKENS
+
+
+class HeuristicProblemSpaceDetector:
+    """The deterministic, offline default: transitive union of lexically related
+    problems (:func:`_related_problems`), preserving first-seen (leverage) order."""
+
+    def group_problems(self, problems: Sequence[str]) -> list[list[str]]:
+        groups: list[list[str]] = [[problem] for problem in problems]
+        merged = True
+        while merged:
+            merged = False
+            for i, left in enumerate(groups):
+                for j in range(i + 1, len(groups)):
+                    if any(_related_problems(a, b) for a in left for b in groups[j]):
+                        left.extend(groups.pop(j))
+                        merged = True
+                        break
+                if merged:
+                    break
+        return groups
+
+
+def _sanitized_groups(
+    raw_groups: Sequence[Sequence[str]], problem_texts: Mapping[str, str]
+) -> list[list[str]]:
+    """A detector's output as normalized-key groups — grounded, complete, disjoint.
+
+    Grouping is selection, never authorship: a returned text matching no input
+    problem is dropped; a problem placed in several groups keeps its first
+    membership; a problem the detector omitted is restored as its own singleton
+    space (in leverage order) — detection may merge, it may never lose a problem.
+    """
+    seen: set[str] = set()
+    groups: list[list[str]] = []
+    for raw_group in raw_groups:
+        keys: list[str] = []
+        for text in raw_group:
+            key = _normalized(text)
+            if key in problem_texts and key not in seen:
+                seen.add(key)
+                keys.append(key)
+        if keys:
+            groups.append(keys)
+    for key in problem_texts:
+        if key not in seen:
+            groups.append([key])
+    return groups
 
 
 def _outcome_quote(claim: Claim) -> str | None:
@@ -238,12 +315,16 @@ def detect_problem_spaces(
     claims: Sequence[Claim],
     *,
     project_id: str | None = None,
+    detector: ProblemSpaceDetector | None = None,
 ) -> list[ProblemSpace]:
-    """Deterministically cluster one entity's claims into problem spaces.
+    """Cluster one entity's claims into problem spaces (grouping step pluggable).
 
     * One bundle per distinct (normalized) problem that clears the §3.1 bar
-      (``assess_problem_text``); problems related by :func:`_related_problems`
-      merge into one space (transitively).
+      (``assess_problem_text``); the ``detector`` decides which problems share a
+      space (default :class:`HeuristicProblemSpaceDetector` — transitive
+      :func:`_related_problems`), and its output is sanitized so grouping can merge
+      but never author, omit, or duplicate a problem. A detector is only consulted
+      when there are ≥2 distinct problems (0/1 group trivially — no LLM spend).
     * A space's candidates are its member claims' distinct actions and distinct
       outcome spans (``ResultKind.MISSING`` never yields a candidate — a missing
       result is a follow-up, not a slot to fill).
@@ -274,23 +355,13 @@ def detect_problem_spaces(
         problem_texts.setdefault(key, candidate)
         problem_claims.setdefault(key, []).append(claim)
 
-    # Transitive union of related problems, preserving first-seen (leverage) order.
-    groups: list[list[str]] = [[key] for key in problem_texts]
-    merged = True
-    while merged:
-        merged = False
-        for i, left in enumerate(groups):
-            for j in range(i + 1, len(groups)):
-                if any(
-                    _related_problems(problem_texts[a], problem_texts[b])
-                    for a in left
-                    for b in groups[j]
-                ):
-                    left.extend(groups.pop(j))
-                    merged = True
-                    break
-            if merged:
-                break
+    # The pluggable grouping step, over the distinct problem texts in leverage order.
+    ordered_texts = list(problem_texts.values())
+    if len(ordered_texts) >= 2:
+        detector = detector or HeuristicProblemSpaceDetector()
+        groups = _sanitized_groups(detector.group_problems(ordered_texts), problem_texts)
+    else:
+        groups = [[key] for key in problem_texts]
 
     # Attach problem-less claims by co-cited evidence — exactly one matching space,
     # judged against the seed claims only (order-independent, never a guess).
@@ -538,7 +609,10 @@ def bundle_from_story(
 
 
 def synthesis_units(
-    experience_id: int, claims: Sequence[Claim]
+    experience_id: int,
+    claims: Sequence[Claim],
+    *,
+    detector: ProblemSpaceDetector | None = None,
 ) -> list[tuple[ProblemSpace | None, list[Claim]]]:
     """One synthesis unit per detected space, plus the leftover unit when needed.
 
@@ -554,7 +628,7 @@ def synthesis_units(
     case. A claim-less entity (or one with no detectable spaces) still yields exactly
     one leftover unit, so per-space synthesis never loses an entity v3 surfaced.
     """
-    spaces = detect_problem_spaces(experience_id, claims)
+    spaces = detect_problem_spaces(experience_id, claims, detector=detector)
     uncovered = set(uncovered_claim_ids(experience_id, claims, spaces))
     if len(spaces) == 1:
         member_ids = space_claim_ids(spaces[0]) | uncovered
@@ -568,29 +642,44 @@ def synthesis_units(
     return units
 
 
-def claim_space_ids(experience_id: int, claims: Sequence[Claim]) -> dict[int, str]:
+def claim_space_ids(
+    experience_id: int,
+    claims: Sequence[Claim],
+    *,
+    detector: ProblemSpaceDetector | None = None,
+) -> dict[int, str]:
     """Each live claim's synthesis-unit space id (the leftover unit included)."""
     mapping: dict[int, str] = {}
-    for space, members in synthesis_units(experience_id, claims):
+    for space, members in synthesis_units(experience_id, claims, detector=detector):
         space_id = space.problem_space_id if space is not None else LEFTOVER_PROBLEM_SPACE_ID
         for claim in members:
             mapping[claim.id] = space_id
     return mapping
 
 
-def story_cross_space_claim_ids(story: ProjectStory, claims: Sequence[Claim]) -> tuple[int, ...]:
+def story_cross_space_claim_ids(
+    story: ProjectStory,
+    claims: Sequence[Claim],
+    *,
+    mapping: Mapping[int, str] | None = None,
+) -> tuple[int, ...]:
     """Claim ids a persisted story cites across problem-space boundaries (Increment 6).
 
     A story's components must all live in ONE space — the core v3.1 invariant, judged
-    here against the current claim-to-space partition (:func:`claim_space_ids`).
-    Contamination means the cited claims resolve to two or more spaces; the offenders
-    are the ids outside the story's home space (its own ``problem_space_id`` when
-    cited, else the plurality space, deterministically tie-broken) — so a stale but
-    internally-consistent story (all claims in one renamed space) stays clean, while a
-    FedEx story citing a Pacifica claim is a hard scorecard regression even though the
-    structural validator (same entity, valid refs) cannot see it.
+    here against the current claim-to-space partition (:func:`claim_space_ids`; pass
+    ``mapping`` to reuse one partition across an entity's stories AND to keep the
+    judgment on the same detector synthesis used — with ``PROBLEM_SPACE_LLM_DETECTION``
+    on, judging LLM-partitioned stories against the heuristic partition would flag
+    legitimate merges). Contamination means the cited claims resolve to two or more
+    spaces; the offenders are the ids outside the story's home space (its own
+    ``problem_space_id`` when cited, else the plurality space, deterministically
+    tie-broken) — so a stale but internally-consistent story (all claims in one
+    renamed space) stays clean, while a FedEx story citing a Pacifica claim is a hard
+    scorecard regression even though the structural validator (same entity, valid
+    refs) cannot see it.
     """
-    mapping = claim_space_ids(story.experience_id, claims)
+    if mapping is None:
+        mapping = claim_space_ids(story.experience_id, claims)
     content = story.content
     cited: list[int] = list(content.problem_refs)
     for action in content.actions:
@@ -661,8 +750,11 @@ __all__ = [
     "ActionCandidate",
     "BundleProblem",
     "BundleStatus",
+    "HeuristicProblemSpaceDetector",
     "PARBundle",
     "ProblemSpace",
+    "ProblemSpaceDetectionError",
+    "ProblemSpaceDetector",
     "ResultCandidate",
     "bundle_from_story",
     "claim_space_ids",

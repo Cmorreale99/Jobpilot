@@ -34,6 +34,7 @@ from app.domain.project_story import (
     resolve_component_evidence,
 )
 from app.domain.validation_runs import ValidationRunLog
+from app.services.problem_space_detector_factory import create_problem_space_detector
 from app.services.story_review import (
     BundleSelectionError,
     StoryAnswerError,
@@ -254,6 +255,7 @@ def synthesize(
         repository,
         story_repository,
         synthesizer=create_story_synthesizer(),
+        detector=create_problem_space_detector(),
         validation_log=validation_log,
         force=force,
     )
