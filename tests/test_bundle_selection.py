@@ -365,3 +365,25 @@ def test_bullet_route_returns_the_followup_for_a_resultless_story() -> None:
     assert payload["bullet"] is None
     assert payload["follow_up"]["kind"] == "missing_result"
     assert len(payload["follow_up"]["options"]) == 7
+
+    # Close the loop over HTTP alone (Increment 4b — what the dashboard drives): the
+    # typed answer's card component id IS the selectable candidate id, so the UI can
+    # radio-select exactly what the card shows.
+    answer = "The nightly export reconciliation now runs without manual intervention"
+    answered = client.post(
+        f"/stories/{story.id}/answer", json={"component": "result", "text": answer}
+    )
+    assert answered.status_code == 200
+    [result_card] = answered.json()["results"]
+    assert result_card["component_id"] == component_id("r", answer)
+
+    action_id = _action_id(story, "reconciliation service")
+    selected = client.post(
+        f"/stories/{story.id}/select",
+        json={"selected_action_id": action_id, "selected_result_id": result_card["component_id"]},
+    )
+    assert selected.status_code == 200
+    assert selected.json()["bundle_status"] == "ready"
+    generated = client.post(f"/stories/{story.id}/bullet")
+    assert generated.status_code == 200
+    assert generated.json()["bullet"]["text"].endswith(f"{answer}.")

@@ -1,17 +1,30 @@
 "use client";
 
-/** The V3 project-story review queue — one card per confirmed project, not 148 claims.
+/** The V3 project-story review queue — one card per (confirmed project, problem space).
  *
  * Each card shows the Problem / Actions / Result the heuristic selected (claim text
  * verbatim) with the cited evidence quotes under every component, a derived readiness
  * badge, and the targeted questions for whatever is missing. The reviewer answers a
  * gap (a story-scoped attestation), approves (only through the resume-ready gate — an
  * incomplete story's Approve is replaced by its blockers), or excludes with a reason.
+ *
+ * v3.1 (Increment 4b): the card is also the bundle-selection surface — pick exactly
+ * one action and one result by radio, save the selection (validator-gated server-side;
+ * a refusal's violations render as the error), then generate the single verbatim
+ * "action — result" bullet. A result-less bundle answers with the 7-option
+ * missing-result follow-up instead; typing the answer (the same attestation flow)
+ * turns it into a selectable result candidate.
  */
 
 import { useState } from "react";
 
-import { api, type StoryCard, type StoryEvidence, type StoryQuestion } from "@/lib/api";
+import {
+  api,
+  type BulletResponse,
+  type StoryCard,
+  type StoryEvidence,
+  type StoryQuestion,
+} from "@/lib/api";
 import { EmptyRow, SectionHead } from "@/components/ledger";
 
 function EvidenceQuote({ evidence }: { evidence: StoryEvidence }) {
@@ -106,6 +119,11 @@ export function StoryReviewSection({
   const [reason, setReason] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const [synthesizing, setSynthesizing] = useState(false);
+  // Unsaved radio picks per story (persisted picks live on the card itself).
+  const [selection, setSelection] = useState<
+    Record<number, { action?: string; result?: string }>
+  >({});
+  const [bullets, setBullets] = useState<Record<number, BulletResponse>>({});
 
   const run = async (id: number, action: () => Promise<unknown>) => {
     setBusyId(id);
@@ -134,6 +152,30 @@ export function StoryReviewSection({
       setSynthesizing(false);
     }
   };
+
+  const generateBullet = async (id: number) => {
+    setBusyId(id);
+    setActionError(null);
+    try {
+      const response = await api.storyBullet(id);
+      setBullets((prev) => ({ ...prev, [id]: response }));
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Bullet generation failed.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const saveSelection = (story: StoryCard, actionId: string, resultId: string) =>
+    run(story.id, async () => {
+      await api.selectStory(story.id, actionId, resultId);
+      // A new selection invalidates any bullet generated from the old one.
+      setBullets((prev) => {
+        const next = { ...prev };
+        delete next[story.id];
+        return next;
+      });
+    });
 
   const question = (story: StoryCard, q: StoryQuestion, index: number) => (
     <div key={`${q.kind}:${index}`} className="mt-3 border-l-2 border-carmine/30 pl-2">
@@ -173,7 +215,17 @@ export function StoryReviewSection({
         </EmptyRow>
       )}
       <ul className="divide-y divide-rule">
-        {(stories ?? []).map((story) => (
+        {(stories ?? []).map((story) => {
+          const decided = story.review_status === "approved" || story.review_status === "excluded";
+          const selectable = !decided && story.actions.length > 0 && story.results.length > 0;
+          const chosenAction = selection[story.id]?.action ?? story.selected_action_id ?? null;
+          const chosenResult = selection[story.id]?.result ?? story.selected_result_id ?? null;
+          const selectionSaved =
+            story.bundle_status === "ready" &&
+            chosenAction === story.selected_action_id &&
+            chosenResult === story.selected_result_id;
+          const generated = bullets[story.id];
+          return (
           <li key={story.id} className="py-4">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <p className="min-w-0 flex-1 text-sm font-medium">
@@ -189,6 +241,9 @@ export function StoryReviewSection({
                   </span>
                 )}
               </p>
+              {story.bundle_status === "ready" && (
+                <span className="stamped text-viridian">selection ready</span>
+              )}
               {story.readiness.resume_ready ? (
                 <span className="stamped text-viridian">resume-ready</span>
               ) : (
@@ -212,15 +267,31 @@ export function StoryReviewSection({
                 {story.actions.length === 0 && <p className="mt-1 text-sm text-annotation">—</p>}
                 {story.actions.map((action) => (
                   <div key={action.component_id} className="mt-1">
-                    <p className="text-sm">
-                      {action.summary}
-                      {action.tools.length > 0 && (
-                        <span className="font-mono text-xs text-annotation">
-                          {" "}
-                          · {action.tools.join(", ")}
-                        </span>
+                    <label className="flex items-start gap-2">
+                      {selectable && (
+                        <input
+                          type="radio"
+                          name={`story-${story.id}-action`}
+                          className="mt-1 shrink-0 accent-viridian"
+                          checked={chosenAction === action.component_id}
+                          onChange={() =>
+                            setSelection((prev) => ({
+                              ...prev,
+                              [story.id]: { ...prev[story.id], action: action.component_id },
+                            }))
+                          }
+                        />
                       )}
-                    </p>
+                      <p className="text-sm">
+                        {action.summary}
+                        {action.tools.length > 0 && (
+                          <span className="font-mono text-xs text-annotation">
+                            {" "}
+                            · {action.tools.join(", ")}
+                          </span>
+                        )}
+                      </p>
+                    </label>
                     {action.evidence.map((e, i) => (
                       <EvidenceQuote key={i} evidence={e} />
                     ))}
@@ -232,7 +303,23 @@ export function StoryReviewSection({
                 {story.results.length === 0 && <p className="mt-1 text-sm text-annotation">—</p>}
                 {story.results.map((result) => (
                   <div key={result.component_id} className="mt-1">
-                    <p className="text-sm">{result.text}</p>
+                    <label className="flex items-start gap-2">
+                      {selectable && (
+                        <input
+                          type="radio"
+                          name={`story-${story.id}-result`}
+                          className="mt-1 shrink-0 accent-viridian"
+                          checked={chosenResult === result.component_id}
+                          onChange={() =>
+                            setSelection((prev) => ({
+                              ...prev,
+                              [story.id]: { ...prev[story.id], result: result.component_id },
+                            }))
+                          }
+                        />
+                      )}
+                      <p className="text-sm">{result.text}</p>
+                    </label>
                     {result.evidence.map((e, i) => (
                       <EvidenceQuote key={i} evidence={e} />
                     ))}
@@ -243,7 +330,47 @@ export function StoryReviewSection({
 
             {story.questions.map((q, index) => question(story, q, index))}
 
+            {generated?.bullet && (
+              <div className="mt-3 border-l-2 border-viridian/40 pl-2">
+                <p className="font-mono text-[0.65rem] uppercase tracking-[0.14em] text-annotation">
+                  Generated bullet
+                </p>
+                <p className="mt-1 text-sm">{generated.bullet.text}</p>
+              </div>
+            )}
+            {generated?.follow_up && (
+              <div className="mt-3 border-l-2 border-carmine/30 pl-2">
+                <p className="text-sm text-carmine/90">{generated.follow_up.text}</p>
+                <p className="mt-0.5 font-mono text-xs text-annotation">
+                  Any of these result kinds counts: {generated.follow_up.options.join(" · ")} —
+                  answer the missing-result question above.
+                </p>
+              </div>
+            )}
+
             <div className="mt-3 flex flex-wrap items-center gap-2">
+              {selectable && (
+                <button
+                  className="stamp text-ink"
+                  disabled={busyId === story.id || !chosenAction || !chosenResult || selectionSaved}
+                  onClick={() =>
+                    chosenAction &&
+                    chosenResult &&
+                    saveSelection(story, chosenAction, chosenResult)
+                  }
+                >
+                  {selectionSaved ? "Selection saved" : "Save selection"}
+                </button>
+              )}
+              {!decided && (
+                <button
+                  className="stamp text-ink"
+                  disabled={busyId === story.id}
+                  onClick={() => generateBullet(story.id)}
+                >
+                  Generate bullet
+                </button>
+              )}
               {story.readiness.resume_ready ? (
                 <button
                   className="stamp text-viridian"
@@ -294,7 +421,8 @@ export function StoryReviewSection({
               )}
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
     </section>
   );

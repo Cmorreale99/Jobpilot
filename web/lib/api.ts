@@ -105,6 +105,24 @@ export interface MasterCvSummary {
   sections: Record<string, SnapshotExperience[]>;
 }
 
+/** A 409 refusal's machine-readable findings (bundle selection / bullet generation). */
+export interface ApiViolation {
+  code: string;
+  message: string;
+  next_action: string | null;
+}
+
+function detailMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && "violations" in detail) {
+    const violations = (detail as { violations: ApiViolation[] }).violations;
+    if (Array.isArray(violations) && violations.length > 0) {
+      return violations.map((v) => v.message ?? v.code).join("; ");
+    }
+  }
+  return fallback;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -115,7 +133,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       (body) => body?.detail ?? response.statusText,
       () => response.statusText,
     );
-    throw new Error(typeof detail === "string" ? detail : response.statusText);
+    throw new Error(detailMessage(detail, response.statusText));
   }
   return response.json() as Promise<T>;
 }
@@ -223,6 +241,28 @@ export interface StoryProblemSpace {
   scope: string | null;
 }
 
+export interface StoryBullet {
+  text: string;
+  problem_space_id: string;
+  bundle_id: string;
+  action_candidate_id: string;
+  result_candidate_id: string;
+  claim_ids: number[];
+}
+
+export interface BulletFollowUp {
+  kind: string;
+  component: string;
+  text: string;
+  options: string[];
+  next_action: string;
+}
+
+export interface BulletResponse {
+  bullet: StoryBullet | null;
+  follow_up: BulletFollowUp | null;
+}
+
 export interface StoryCard {
   id: number;
   experience_id: number;
@@ -320,6 +360,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
+  selectStory: (id: number, selectedActionId: string, selectedResultId: string) =>
+    request<StoryCard>(`/stories/${id}/select`, {
+      method: "POST",
+      body: JSON.stringify({
+        selected_action_id: selectedActionId,
+        selected_result_id: selectedResultId,
+      }),
+    }),
+  storyBullet: (id: number) => request<BulletResponse>(`/stories/${id}/bullet`, { method: "POST" }),
 };
 
 export const masterCvDownloadUrl = `${API_URL}/master-cv/download?user_id=${USER_ID}`;

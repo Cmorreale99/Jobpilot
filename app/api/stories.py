@@ -29,6 +29,7 @@ from app.domain.project_story import (
     StoryNotReadyError,
     StoryReviewStatus,
     approval_blockers,
+    component_id,
     problem_support_strength,
     resolve_component_evidence,
 )
@@ -163,7 +164,9 @@ def _serialize_story(view: StoryView, repository: ClaimRepository) -> dict[str, 
         if text is not None:
             results = [
                 {
-                    "component_id": f"r-attested-{story.id}",
+                    # The same content-hash id ``bundle_from_story`` gives the attested
+                    # candidate, so selecting it on the card round-trips to /select.
+                    "component_id": component_id("r", text),
                     "text": text,
                     "outcome_quote": text,
                     "claim_ids": [],
