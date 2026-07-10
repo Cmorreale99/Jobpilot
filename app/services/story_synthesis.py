@@ -34,7 +34,12 @@ from app.domain.claims import (
     ClaimRepository,
     ExperienceStatus,
 )
-from app.domain.problem_space import ProblemSpace, synthesis_units
+from app.domain.problem_space import (
+    ProblemSpace,
+    ProblemSpaceDetectionError,
+    ProblemSpaceDetector,
+    synthesis_units,
+)
 from app.domain.project_story import (
     COMPONENT_PROBLEM,
     COMPONENT_RESULT,
@@ -138,13 +143,16 @@ def run_story_synthesis(
     story_repository: ProjectStoryRepository,
     *,
     synthesizer: StorySynthesizer | None = None,
+    detector: ProblemSpaceDetector | None = None,
     validation_log: ValidationRunLog | None = None,
     experience_ids: Collection[int] | None = None,
     force: bool = False,
 ) -> StorySynthesisReport:
     """Synthesize one Project Story draft per (confirmed entity, problem space).
 
-    For each confirmed entity: detect its problem spaces, then per space fingerprint
+    For each confirmed entity: detect its problem spaces (``detector`` — heuristic
+    grouping by default, the flag-gated LLM grouper as a drop-in; a detection failure
+    skips the whole entity loudly, drafts untouched), then per space fingerprint
     the space's member claims + the entity's assigned evidence; skip when a human
     already decided (approved/excluded), when typed answers exist, or when the inputs
     are unchanged (unless ``force``). Otherwise run the ``synthesizer`` over the
@@ -171,7 +179,21 @@ def run_story_synthesis(
         claims = [c for c in all_claims if c.experience_id == experience.id]
         claims_by_id = {c.id: c for c in claims}
         evidence = claim_repository.list_assigned_evidence(user_id, experience.id)
-        units = synthesis_units(experience.id, claims)
+        try:
+            units = synthesis_units(experience.id, claims, detector=detector)
+        except ProblemSpaceDetectionError as exc:
+            # The whole entity is skipped loudly — no unit synthesis, no stale
+            # cleanup (a failed detection must never delete existing drafts).
+            report.failed.append(experience.id)
+            _record(
+                validation_log,
+                user_id,
+                f"experience:{experience.id}",
+                passed=False,
+                detail=[f"space_detection_failed: {exc}"],
+            )
+            logger.error("problem-space detection failed for experience %s: %s", experience.id, exc)
+            continue
         unit_space_ids = {
             space.problem_space_id if space is not None else LEFTOVER_PROBLEM_SPACE_ID
             for space, _ in units
