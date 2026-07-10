@@ -76,6 +76,26 @@ class ResultKind(StrEnum):
     MISSING = "missing"
 
 
+class ResultType(StrEnum):
+    """The *category* of a Result — orthogonal to how it is evidenced (``ResultKind``).
+
+    A data-engineering outcome is defensible even when it isn't a percentage: restoring
+    coverage, preventing corruption, eliminating manual toil, enabling a daily refresh,
+    delivering a dataset, or unlocking analytics are all real results. This enum lets the
+    extractor recognize those forms (v3.1); it is stored under
+    ``result_metric_json["result_type"]`` (no DB column).
+    """
+
+    QUANTITATIVE = "quantitative"
+    COVERAGE = "coverage"
+    RELIABILITY = "reliability"
+    AUTOMATION = "automation"
+    OPERATIONAL = "operational"
+    DELIVERY = "delivery"
+    ANALYTICS = "analytics"
+    DECISION_ENABLING = "decision_enabling"
+
+
 class ResultStatus(StrEnum):
     """Verification level of a Result (``claims.result_status``)."""
 
@@ -353,12 +373,54 @@ _LABEL_RE = re.compile(r"^(problem|action|result)\s*:\s*(.+)$", re.IGNORECASE)
 _BULLET_RE = re.compile(r"^[-*•]\s+")
 
 # Metric patterns: "from A to B" (A/B up to a few words each, e.g. "from 10 hours
-# to 1 hour"), percentages, dollar amounts, "by <number>".
+# to 1 hour"), percentages, dollar amounts, "by <number>", bare magnitudes with a
+# k/m/b suffix ("195K+", "5M", "4.01M"), and spelled counts ("five datasets").
 _METRIC_RE = re.compile(
     r"(\bfrom\s+\S+(?:\s+\S+){0,4}?\s+to\s+\S+)"
     r"|(\d+(?:\.\d+)?\s*%)"
     r"|(\$[\d,.]+\s*[kKmMbB]?)"
     r"|(\bby\s+~?\d)"
+    r"|(\b\d[\d,.]*[kKmMbB]\+?)"
+    r"|(\b(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen)\b)"
+)
+
+# Result-type lexicon (v3.1): recognize the non-percentage result *categories*. A match
+# makes a statement an OUTCOME even without a canonical outcome verb — this is how real
+# data-engineering results ("restored 100% date coverage", "corrected reporting from
+# $4.01M to $2.16M", "delivered five production datasets") stop being dropped or misread
+# as work. Patterns are deliberately conservative so they never reclassify a genuine
+# Action as a Result: AUTOMATION requires "manual" (so "Automated the upload flow" stays
+# work), DELIVERY/OPERATIONAL/ANALYTICS/DECISION require an object noun, and the verbs
+# used here are absent from ``_WORK_VERBS``. Checked in order; first match wins.
+_RESULT_TYPE_PATTERNS: tuple[tuple[ResultType, re.Pattern[str]], ...] = (
+    (ResultType.COVERAGE, re.compile(r"\b(?:restor\w*|recover\w*|regain\w*)\b")),
+    (ResultType.RELIABILITY, re.compile(r"\b(?:prevented|stabiliz\w+|hardened)\b")),
+    (ResultType.AUTOMATION, re.compile(r"\b(?:automat\w+|eliminat\w+)\b.*\bmanual")),
+    (
+        ResultType.OPERATIONAL,
+        re.compile(r"\benabl\w+\b.*\b(?:daily|hourly|nightly|scheduled|refresh\w*)\b"),
+    ),
+    (
+        ResultType.DELIVERY,
+        re.compile(
+            r"\b(?:delivered|shipped|launched|released)\b"
+            r".*\b(?:dataset\w*|production|pipeline\w*|report\w*|model\w*)\b"
+        ),
+    ),
+    (
+        ResultType.ANALYTICS,
+        re.compile(r"\benabl\w+\b.*\b(?:analytics|ai|ml|dashboard\w*|insight\w*|reporting)\b"),
+    ),
+    (
+        ResultType.DECISION_ENABLING,
+        re.compile(r"\benabl\w+\b.*\b(?:validated|auditable|decision\w*|adjustment\w*)\b"),
+    ),
+    (
+        ResultType.QUANTITATIVE,
+        re.compile(
+            r"\b(?:removed|corrected|reduced|cut|increased|decreased|lowered|saved|raised)\b"
+        ),
+    ),
 )
 
 _OUTCOME_VERBS = frozenset(
@@ -513,17 +575,39 @@ def _first_word(statement: str) -> str:
     return match.group(0).lower() if match else ""
 
 
-def _is_outcome(statement: str) -> tuple[bool, ResultKind]:
-    """Classify an outcome statement: (is_outcome, quantified|qualitative_evidenced)."""
+def _result_type(lowered: str) -> ResultType | None:
+    """The result *category* a statement matches, or ``None`` (first pattern wins)."""
+    for result_type, pattern in _RESULT_TYPE_PATTERNS:
+        if pattern.search(lowered):
+            return result_type
+    return None
+
+
+def _is_outcome(statement: str) -> tuple[bool, ResultKind, ResultType | None]:
+    """Classify an outcome statement: ``(is_outcome, kind, result_type)``.
+
+    A statement is an outcome when it matches a result-type lexicon, OR carries both a
+    metric and a canonical outcome verb (the original quantified rule), OR is a
+    number-free qualitative state-change. Recognition is decoupled from the canonical
+    verb set so non-percentage results are caught (v3.1). Kind then follows the
+    evidence: a metric present → ``QUANTIFIED``, otherwise ``QUALITATIVE_EVIDENCED``.
+    """
     lowered = statement.lower()
     has_metric = _METRIC_RE.search(statement) is not None
     words = frozenset(re.findall(r"[a-z-]+", lowered))
     has_outcome_verb = bool(words & _OUTCOME_VERBS)
-    if has_metric and has_outcome_verb:
-        return True, ResultKind.QUANTIFIED
-    if any(marker in lowered for marker in _QUALITATIVE_MARKERS) and not has_metric:
-        return True, ResultKind.QUALITATIVE_EVIDENCED
-    return False, ResultKind.MISSING
+    result_type = _result_type(lowered)
+    has_qualitative_marker = any(marker in lowered for marker in _QUALITATIVE_MARKERS)
+
+    is_outcome = (
+        result_type is not None
+        or (has_metric and has_outcome_verb)
+        or (has_qualitative_marker and not has_metric)
+    )
+    if not is_outcome:
+        return False, ResultKind.MISSING, None
+    kind = ResultKind.QUANTIFIED if has_metric else ResultKind.QUALITATIVE_EVIDENCED
+    return True, kind, result_type
 
 
 def _is_work_statement(statement: str) -> bool:
@@ -652,6 +736,7 @@ class _ClaimAccumulator:
     problem: _Statement | None = None
     outcome: _Statement | None = None
     outcome_kind: ResultKind = ResultKind.MISSING
+    outcome_type: ResultType | None = None
 
     def to_draft(self) -> DraftClaim:
         cost, inefficiency = (
@@ -670,6 +755,8 @@ class _ClaimAccumulator:
             declared = [d for d in (cost, inefficiency) if d is not None]
             resolves = derive_resolves(self.outcome.text, declared)
             result_metric_json = {"resolves": resolves}
+            if self.outcome_type is not None:
+                result_metric_json["result_type"] = self.outcome_type.value
             if self.outcome_kind is ResultKind.QUANTIFIED:
                 result_metric_json["metric_text"] = self.outcome.text
             evidence.append(
@@ -707,7 +794,7 @@ class HeuristicTwoPassExtractor:
     def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
         del violations  # deterministic: re-extraction cannot produce a different answer
         claims: list[_ClaimAccumulator] = []
-        orphan_outcomes: list[tuple[_Statement, ResultKind]] = []
+        orphan_outcomes: list[tuple[_Statement, ResultKind, ResultType | None]] = []
 
         # Pass 1 — work statements become Actions (with problem context per chunk).
         for chunk in group.chunks:
@@ -735,20 +822,22 @@ class HeuristicTwoPassExtractor:
             for statement in _split_statements(chunk):
                 if self._classify(statement) != "outcome":
                     continue
-                _, kind = _is_outcome(statement.text)
+                _, kind, result_type = _is_outcome(statement.text)
                 target = next((c for c in chunk_claim_queue if c.outcome is None), None)
                 if target is not None:
                     target.outcome = statement
                     target.outcome_kind = kind
+                    target.outcome_type = result_type
                 else:
-                    orphan_outcomes.append((statement, kind))
+                    orphan_outcomes.append((statement, kind, result_type))
 
-        for statement, kind in orphan_outcomes:
+        for statement, kind, result_type in orphan_outcomes:
             target = next((c for c in claims if c.outcome is None), None)
             if target is None:
                 break
             target.outcome = statement
             target.outcome_kind = kind
+            target.outcome_type = result_type
 
         return [claim.to_draft() for claim in claims]
 
@@ -760,9 +849,9 @@ class HeuristicTwoPassExtractor:
         if statement.label == "action":
             return "work"
         if statement.label == "result":
-            is_outcome, _ = _is_outcome(statement.text)
+            is_outcome, _, _ = _is_outcome(statement.text)
             return "outcome" if is_outcome else "ignored"
-        is_outcome, _ = _is_outcome(statement.text)
+        is_outcome, _, _ = _is_outcome(statement.text)
         if is_outcome:
             return "outcome"
         if _is_work_statement(statement.text):
