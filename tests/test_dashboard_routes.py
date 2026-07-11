@@ -19,6 +19,7 @@ from app.domain.claims import (
 from app.domain.jobs import Job, JobMatch
 from app.domain.master_cv_snapshot import StoredSnapshot
 from app.domain.outreach import Contact, OutreachMessage
+from app.domain.story_snapshot import STORY_SNAPSHOT_KIND
 from app.domain.tailoring import TailoredMaterials
 from app.main import create_app
 from app.services.application_repository import InMemoryApplicationRepository
@@ -107,6 +108,60 @@ def test_latest_master_cv_serializes_approved_claims(
     assert body["claims"][0]["result"] == "Cut runtime by 70%"
     assert body["claims"][0]["source_type"] == "approved_claim"
     assert [e["name"] for e in body["sections"]["professional_experience"]] == ["Ledgerline"]
+
+
+def test_latest_master_cv_serializes_story_shaped_snapshot(
+    client: TestClient,
+    repos: tuple[InMemoryApplicationRepository, InMemoryJobRepository, InMemorySnapshotStore],
+) -> None:
+    """A story-shaped snapshot serializes its components — not an empty claim list.
+
+    Regression for hardening P0/F13: the route used the claim-shaped adapter, which
+    iterates ``experience["claims"]`` — a key story snapshots don't have — so every
+    story-shaped version rendered as ``claim_count == 0``.
+    """
+    _, _, snapshots = repos
+    snapshots.save(
+        "u1",
+        {
+            "snapshot_of": STORY_SNAPSHOT_KIND,
+            "sections": {
+                "professional_experience": [
+                    {
+                        "experience_id": 1,
+                        "story_id": 7,
+                        "name": "Cooper.ai",
+                        "subtitle": None,
+                        "dates": None,
+                        "sort_order": 0,
+                        "problem": {"text": "Duplicate carrier rows overstated charges."},
+                        "actions": [
+                            {
+                                "component_id": "a-1",
+                                "text": "Deduplicated the FedEx carrier feed",
+                                "claim_ids": [11],
+                                "evidence_text": "Removed 195K+ duplicate FedEx records.",
+                            }
+                        ],
+                        "results": [
+                            {
+                                "component_id": "r-1",
+                                "text": "Removed 195K+ duplicate records",
+                                "claim_ids": [11],
+                                "evidence_text": "Removed 195K+ duplicate FedEx records.",
+                            }
+                        ],
+                        "bullets": [],
+                    }
+                ]
+            },
+        },
+    )
+    body = client.get("/master-cv/latest", params={"user_id": "u1"}).json()
+    assert body["claim_count"] == 2  # the action line + the action—result line
+    assert {c["source_type"] for c in body["claims"]} == {"approved_story"}
+    assert body["claims"][0]["source_ref"] == "story:7:a-1"
+    assert body["claims"][1]["result"] == "Removed 195K+ duplicate records"
 
 
 def test_matches_empty_before_master_cv_exists(client: TestClient) -> None:
