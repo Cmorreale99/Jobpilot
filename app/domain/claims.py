@@ -170,7 +170,7 @@ ASSIGNMENT_LLM = "llm"  # LLM chunk assigner
 ASSIGNMENT_README_REF = "readme_ref"  # README chunks force-assigned to their repo entity
 ASSIGNMENT_REPO_REF = "repo_ref"  # commit evidence assigned by repo-ref alias match
 ASSIGNMENT_HUMAN = "human"  # manual assignment — a retained decision, never overwritten
-ASSIGNMENT_SECTION = "section"  # reserved for H5 section-scoped ownership
+ASSIGNMENT_SECTION = "section"  # inherited from the section's ownership decision (H5)
 
 
 # --- State machine ------------------------------------------------------------------
@@ -310,7 +310,10 @@ class StoredEvidence:
     ``element_id``/``sequence_index``/``section_path`` are the structure linkage (H5):
     which persisted source element the chunk was cut from, its document order (a
     column, not a parse of the ref), and the heading trail that governs it — ``None``
-    on legacy rows and structureless sources.
+    on legacy rows and structureless sources. ``is_active``/``superseded_by_id`` are
+    the lifecycle (H6): a re-ingest that no longer produces this chunk marks it
+    inactive — pointing at its overlapping successor when determinable — never
+    deleted, so ``claim_evidence`` links stay intact and staleness stays visible.
     """
 
     id: int
@@ -326,6 +329,8 @@ class StoredEvidence:
     element_id: int | None = None
     sequence_index: int | None = None
     section_path: str | None = None
+    is_active: bool = True
+    superseded_by_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -978,20 +983,42 @@ class ClaimRepository(Protocol):
         ...
 
     def list_assigned_evidence(self, user_id: str, experience_id: int) -> list[StoredEvidence]:
-        """Every chunk assigned to one experience (the extraction group's evidence).
+        """Every ACTIVE chunk assigned to one experience (the extraction group).
 
-        Document order first (H5): rows carrying structure linkage sort by
+        Superseded rows never feed extraction, overlap detection, or review counts
+        (H6). Document order first (H5): rows carrying structure linkage sort by
         ``(element_id, sequence_index)`` — element ids are minted in document order
         per version — then legacy/structureless rows by insertion id.
         """
         ...
 
     def list_evidence_for_elements(self, element_ids: Sequence[int]) -> list[StoredEvidence]:
-        """Every chunk cut from one of the given source elements (H5 section pin).
+        """Every ACTIVE chunk cut from one of the given source elements (H5 pin).
 
         Element ids are globally unique (one document version's tree owns each), so
         no user scoping is needed; used by the section-assign endpoint to stamp a
         whole subtree's chunks with a human decision.
+        """
+        ...
+
+    def list_evidence_for_base_ref(
+        self, user_id: str, source_type: str, base_ref: str
+    ) -> list[StoredEvidence]:
+        """Every chunk of one source document — ACTIVE AND SUPERSEDED (H6).
+
+        Matches the bare base ref and every ``base_ref#chars=...`` span of it. The
+        reconciliation pass reads this to compare the fresh chunk set against
+        everything previously persisted for the document.
+        """
+        ...
+
+    def supersede_evidence(self, evidence_id: int, superseded_by_id: int | None) -> StoredEvidence:
+        """Mark one chunk inactive, pointing at its successor when determinable (H6).
+
+        Never a delete: the row, its assignment, and its ``claim_evidence`` links all
+        survive — visibly stale instead of silently orphaned. Reactivation happens
+        through ``upsert_evidence`` (a ref that reappears in the fresh chunk set is
+        active again by definition).
         """
         ...
 

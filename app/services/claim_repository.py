@@ -32,6 +32,7 @@ from app.domain.claims import (
     StorableClaim,
     StoredEvidence,
     claim_content_fingerprint,
+    split_span_ref,
     validate_claim_transition,
 )
 from app.domain.text_normalization import NORMALIZATION_VERSION
@@ -210,6 +211,10 @@ class InMemoryClaimRepository(ClaimRepository):
                         sequence_index=chunk.sequence_index,
                         section_path=chunk.section_path,
                     )
+                if not stored.is_active:
+                    # A ref back in the fresh chunk set is current again (H6) —
+                    # mirror of the capture store re-activating an earlier hash.
+                    stored = replace(stored, is_active=True, superseded_by_id=None)
                 self._evidence[stored.id] = stored
                 return stored
         stored = StoredEvidence(
@@ -264,23 +269,45 @@ class InMemoryClaimRepository(ClaimRepository):
         rows = [
             e
             for e in self._evidence.values()
-            if e.user_id == user_id and e.experience_id == experience_id
+            if e.user_id == user_id and e.experience_id == experience_id and e.is_active
         ]
         return sorted(rows, key=_document_order)
 
     def list_evidence_for_elements(self, element_ids: Sequence[int]) -> list[StoredEvidence]:
         wanted = set(element_ids)
-        rows = [e for e in self._evidence.values() if e.element_id in wanted]
+        rows = [e for e in self._evidence.values() if e.element_id in wanted and e.is_active]
         return sorted(rows, key=_document_order)
+
+    def list_evidence_for_base_ref(
+        self, user_id: str, source_type: str, base_ref: str
+    ) -> list[StoredEvidence]:
+        rows = [
+            e
+            for e in self._evidence.values()
+            if e.user_id == user_id
+            and e.source_type == source_type
+            and split_span_ref(e.source_ref)[0] == base_ref
+        ]
+        return sorted(rows, key=lambda e: e.id)
+
+    def supersede_evidence(self, evidence_id: int, superseded_by_id: int | None) -> StoredEvidence:
+        stored = self._evidence.get(evidence_id)
+        if stored is None:
+            raise LookupError(f"no evidence with id {evidence_id}")
+        updated = replace(stored, is_active=False, superseded_by_id=superseded_by_id)
+        self._evidence[evidence_id] = updated
+        return updated
 
     def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
         # User attestations (claim:/story: refs) are human answers, never source
         # chunks awaiting roster assignment — they must not surface in this queue.
+        # Superseded rows are history, not queue items (H6).
         rows = [
             e
             for e in self._evidence.values()
             if e.user_id == user_id
             and e.experience_id is None
+            and e.is_active
             and e.source_type != SOURCE_USER_ATTESTATION
         ]
         return sorted(rows, key=lambda e: e.id)

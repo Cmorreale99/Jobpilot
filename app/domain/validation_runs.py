@@ -38,6 +38,11 @@ KIND_PROJECT_RECONCILIATION = "project_reconciliation"
 # lines carry every non-ok disposition (policy exclusions with reasons, failed reads) —
 # a source that didn't load is never silently indistinguishable from an empty one.
 KIND_SOURCE_GATHER = "source_gather"
+# One row per assignment run's evidence reconciliation (hardening H6): the summary
+# counts (new/reactivated/superseded/pins migrated) plus every warning — mixed-version
+# supersessions, unmigratable pins, and REVIEWED claims left citing superseded rows
+# (the human decided on text that no longer exists upstream; pass = none of those).
+KIND_EVIDENCE_RECONCILIATION = "evidence_reconciliation"
 
 
 @dataclass(frozen=True)
