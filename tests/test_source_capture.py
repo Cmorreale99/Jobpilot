@@ -19,7 +19,12 @@ from app.db.base import Base
 from app.db.session import create_session_factory
 from app.db.source_capture_store import SqlSourceCaptureStore
 from app.domain.claims import SOURCE_DRIVE, SOURCE_GITHUB_COMMIT, SOURCE_GITHUB_README
-from app.domain.source_capture import SourceCaptureStore, raw_content_hash
+from app.domain.source_capture import (
+    SourceCaptureStore,
+    SourceElementInput,
+    raw_content_hash,
+)
+from app.domain.source_structure import STRUCTURER_VERSION
 from app.domain.text_normalization import normalize_source_text
 from app.domain.validation_runs import KIND_SOURCE_GATHER
 from app.integrations.base import (
@@ -107,6 +112,50 @@ def test_capture_refreshes_document_metadata(store: SourceCaptureStore) -> None:
     assert document is not None and document.title == "New title"
 
 
+def test_record_elements_resolves_parents_and_stamps_the_version(
+    store: SourceCaptureStore,
+) -> None:
+    raw = "# Cooper.ai\n\nDuplicate rows overstated charges."
+    version = _capture(store, raw)
+    inputs = [
+        SourceElementInput(
+            sequence_index=0,
+            element_type="heading",
+            raw_start=0,
+            raw_end=11,
+            raw_text=raw[0:11],
+            normalized_text="# Cooper.ai",
+            level=1,
+        ),
+        SourceElementInput(
+            sequence_index=1,
+            element_type="paragraph",
+            raw_start=13,
+            raw_end=len(raw),
+            raw_text=raw[13:],
+            normalized_text=raw[13:],
+            parent_index=0,
+        ),
+    ]
+    stored = store.record_elements(version.id, inputs, structurer_version=1, ingestion_status="ok")
+    assert stored[1].parent_id == stored[0].id  # hierarchy survives persistence
+    listed = store.list_elements(version.id)
+    assert [(e.sequence_index, e.element_type, e.parent_id) for e in listed] == [
+        (0, "heading", None),
+        (1, "paragraph", stored[0].id),
+    ]
+    refreshed = store.get_active_version("u1", SOURCE_DRIVE, "drv1")
+    assert refreshed is not None
+    assert refreshed.structurer_version == 1
+    assert refreshed.ingestion_status == "ok"
+
+    # Elements are a pure derivation: re-recording replaces, never accumulates.
+    store.record_elements(version.id, inputs[:1], structurer_version=2, ingestion_status="ok")
+    assert len(store.list_elements(version.id)) == 1
+    refreshed = store.get_active_version("u1", SOURCE_DRIVE, "drv1")
+    assert refreshed is not None and refreshed.structurer_version == 2
+
+
 # --- gather: raw fidelity + disposition accounting ------------------------------------
 
 # Word-per-line PDF pathology: normalization reflows it, so raw != normalized — the
@@ -192,6 +241,53 @@ async def test_gather_persists_raw_pre_normalization_text() -> None:
     assert document.text == normalize_source_text(_MANGLED)
     assert document.text != active.raw_text  # capture happened BEFORE normalization
     assert normalize_source_text(active.raw_text) == document.text  # and derives it
+
+
+async def test_gather_records_element_trees_for_every_captured_version() -> None:
+    """H4 acceptance: every active version gets a reconciled, hierarchy-carrying
+    element tree — headings own their content; commits are one atomic element."""
+    store = InMemorySourceCaptureStore()
+    markdown = "# Cooper.ai\n\nDuplicate FedEx rows overstated charges.\n"
+    drive = FakeDriveClient(
+        sources=[_drive_source("drv1")], documents={"drv1": _drive_doc("drv1", markdown)}
+    )
+    repo = GitHubRepo(repo_ref="jordanrivera/carrier-etl", name="carrier-etl", owner="jordanrivera")
+    github = FakeGitHubClient(
+        repos=[repo],
+        readmes={repo.repo_ref: GitHubDocument(repo.repo_ref, "carrier-etl", "# Carrier ETL")},
+        commits={repo.repo_ref: [GitHubCommit(repo.repo_ref, "abc123", "Fix the dedupe job")]},
+    )
+    await gather_source_documents(drive, github, "u1", _settings(), capture_store=store)
+
+    version = store.get_active_version("u1", SOURCE_DRIVE, "drv1")
+    assert version is not None
+    assert version.structurer_version == STRUCTURER_VERSION
+    assert version.ingestion_status == "ok"
+    elements = store.list_elements(version.id)
+    assert [(e.element_type, e.parent_id) for e in elements] == [
+        ("heading", None),
+        ("paragraph", elements[0].id),  # the paragraph is OWNED by its heading
+    ]
+    assert markdown[elements[1].raw_start : elements[1].raw_end].startswith("Duplicate FedEx")
+
+    commit_version = store.get_active_version("u1", SOURCE_GITHUB_COMMIT, f"{repo.repo_ref}@abc123")
+    assert commit_version is not None and commit_version.ingestion_status == "ok"
+    (commit_element,) = store.list_elements(commit_version.id)
+    assert commit_element.element_type == "commit_message"
+
+
+async def test_regather_skips_restructuring_an_unchanged_version() -> None:
+    store = InMemorySourceCaptureStore()
+    drive = FakeDriveClient(
+        sources=[_drive_source("drv1")], documents={"drv1": _drive_doc("drv1", "Same body.")}
+    )
+    await gather_source_documents(drive, FakeGitHubClient(), "u1", _settings(), capture_store=store)
+    version = store.get_active_version("u1", SOURCE_DRIVE, "drv1")
+    assert version is not None
+    first_ids = [e.id for e in store.list_elements(version.id)]
+
+    await gather_source_documents(drive, FakeGitHubClient(), "u1", _settings(), capture_store=store)
+    assert [e.id for e in store.list_elements(version.id)] == first_ids  # not re-derived
 
 
 async def test_gather_captures_github_readme_and_commits() -> None:

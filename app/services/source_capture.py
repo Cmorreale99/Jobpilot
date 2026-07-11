@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 
 from app.domain.source_capture import (
     CapturedSourceDocument,
     CapturedSourceVersion,
+    SourceElementInput,
+    StoredSourceElement,
     raw_content_hash,
 )
 from app.domain.text_normalization import NORMALIZATION_VERSION
@@ -19,8 +22,10 @@ class InMemorySourceCaptureStore:
     def __init__(self) -> None:
         self._documents: dict[tuple[str, str, str], CapturedSourceDocument] = {}
         self._versions: dict[int, list[CapturedSourceVersion]] = {}  # by document id
+        self._elements: dict[int, list[StoredSourceElement]] = {}  # by version id
         self._next_document_id = 1
         self._next_version_id = 1
+        self._next_element_id = 1
 
     def capture(
         self,
@@ -100,6 +105,49 @@ class InMemorySourceCaptureStore:
         self, user_id: str, source_type: str, source_ref: str
     ) -> CapturedSourceDocument | None:
         return self._documents.get((user_id, source_type, source_ref))
+
+    def record_elements(
+        self,
+        version_id: int,
+        elements: Sequence[SourceElementInput],
+        *,
+        structurer_version: int,
+        ingestion_status: str,
+    ) -> list[StoredSourceElement]:
+        stored: list[StoredSourceElement] = []
+        parent_ids: dict[int, int] = {}  # sequence_index -> stored id
+        for element in elements:
+            row = StoredSourceElement(
+                id=self._next_element_id,
+                document_version_id=version_id,
+                sequence_index=element.sequence_index,
+                element_type=element.element_type,
+                raw_start=element.raw_start,
+                raw_end=element.raw_end,
+                normalized_text=element.normalized_text,
+                content_hash=raw_content_hash(element.raw_text),
+                level=element.level,
+                parent_id=(
+                    parent_ids[element.parent_index] if element.parent_index is not None else None
+                ),
+                extraction_status=element.extraction_status,
+                note=element.note,
+            )
+            self._next_element_id += 1
+            parent_ids[element.sequence_index] = row.id
+            stored.append(row)
+        self._elements[version_id] = stored  # replace: a pure derivation of raw
+        for document_id, versions in self._versions.items():
+            self._versions[document_id] = [
+                replace(v, structurer_version=structurer_version, ingestion_status=ingestion_status)
+                if v.id == version_id
+                else v
+                for v in versions
+            ]
+        return stored
+
+    def list_elements(self, version_id: int) -> list[StoredSourceElement]:
+        return sorted(self._elements.get(version_id, []), key=lambda e: e.sequence_index)
 
 
 __all__ = ["InMemorySourceCaptureStore"]

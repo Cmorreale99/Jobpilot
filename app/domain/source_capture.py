@@ -18,6 +18,7 @@ Pure contracts only; implementations live in ``services/source_capture.py``
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -50,7 +51,11 @@ class CapturedSourceVersion:
 
     ``raw_text`` is the text exactly as the client returned it — pre-normalization,
     pre-chunking. ``extractor`` records what produced it (e.g. ``drive:McpDriveClient``)
-    so a payload is auditable back to its extraction path.
+    so a payload is auditable back to its extraction path. ``structurer_version`` /
+    ``ingestion_status`` record the element derivation (H4): which structurer
+    generation produced this version's element tree and whether it reconciled
+    (``ok``) or left characters unaccounted (``failed``) — ``None`` before any
+    structuring pass.
     """
 
     id: int
@@ -61,6 +66,39 @@ class CapturedSourceVersion:
     normalization_version: int
     is_active: bool = True
     fetched_at: datetime | None = None
+    structurer_version: int | None = None
+    ingestion_status: str | None = None
+
+
+# Version-level reconciliation statuses (H4): did the element tree account for every
+# character of the raw text?
+INGESTION_OK = "ok"
+INGESTION_FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class StoredSourceElement:
+    """One persisted structural element of a captured version (H4).
+
+    Mirrors :class:`app.domain.source_structure.SourceElement` plus persistence
+    identity: ``parent_id`` is the stored id of the governing element (resolved from
+    the domain element's ``parent_index`` at write time), ``normalized_text`` is the
+    normalizer's view of the element's raw slice, and ``extraction_status`` is the
+    element's explicit disposition (``ok|unsupported|parser_error``).
+    """
+
+    id: int
+    document_version_id: int
+    sequence_index: int
+    element_type: str
+    raw_start: int
+    raw_end: int
+    normalized_text: str
+    content_hash: str
+    level: int | None = None
+    parent_id: int | None = None
+    extraction_status: str = "ok"
+    note: str | None = None
 
 
 @runtime_checkable
@@ -107,10 +145,56 @@ class SourceCaptureStore(Protocol):
         """The captured document identity/metadata, or ``None`` if never captured."""
         ...
 
+    def record_elements(
+        self,
+        version_id: int,
+        elements: Sequence[SourceElementInput],
+        *,
+        structurer_version: int,
+        ingestion_status: str,
+    ) -> list[StoredSourceElement]:
+        """Persist a version's element tree (H4), replacing any prior derivation.
+
+        Elements are a pure derivation of the immutable raw payload, so re-recording
+        (e.g. after a ``STRUCTURER_VERSION`` bump) replaces the version's rows —
+        the raw payload itself is never touched. Stamps the version row with the
+        structurer generation and its reconciliation status (``ok``/``failed``).
+        Parent links are resolved from each input's ``parent_index`` to stored ids.
+        """
+        ...
+
+    def list_elements(self, version_id: int) -> list[StoredSourceElement]:
+        """A version's element tree in document order (``sequence_index``)."""
+        ...
+
+
+@dataclass(frozen=True)
+class SourceElementInput:
+    """One element as handed to :meth:`SourceCaptureStore.record_elements`.
+
+    The persistence-agnostic shape: structural fields plus the pre-computed
+    ``normalized_text`` view; the store adds ids and resolves ``parent_index``.
+    """
+
+    sequence_index: int
+    element_type: str
+    raw_start: int
+    raw_end: int
+    raw_text: str
+    normalized_text: str
+    level: int | None = None
+    parent_index: int | None = None
+    extraction_status: str = "ok"
+    note: str | None = None
+
 
 __all__ = [
+    "INGESTION_FAILED",
+    "INGESTION_OK",
     "CapturedSourceDocument",
     "CapturedSourceVersion",
     "SourceCaptureStore",
+    "SourceElementInput",
+    "StoredSourceElement",
     "raw_content_hash",
 ]

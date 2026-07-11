@@ -7,16 +7,18 @@ keeping exactly one active version per document.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.db.models import SourceDocumentRow, SourceDocumentVersionRow
+from app.db.models import SourceDocumentRow, SourceDocumentVersionRow, SourceElementRow
 from app.domain.source_capture import (
     CapturedSourceDocument,
     CapturedSourceVersion,
+    SourceElementInput,
+    StoredSourceElement,
     raw_content_hash,
 )
 from app.domain.text_normalization import NORMALIZATION_VERSION
@@ -46,6 +48,25 @@ def _to_version(row: SourceDocumentVersionRow) -> CapturedSourceVersion:
         normalization_version=row.normalization_version,
         is_active=row.is_active,
         fetched_at=row.fetched_at,
+        structurer_version=row.structurer_version,
+        ingestion_status=row.ingestion_status,
+    )
+
+
+def _to_element(row: SourceElementRow) -> StoredSourceElement:
+    return StoredSourceElement(
+        id=row.id,
+        document_version_id=row.document_version_id,
+        sequence_index=row.sequence_index,
+        element_type=row.element_type,
+        raw_start=row.raw_start,
+        raw_end=row.raw_end,
+        normalized_text=row.normalized_text,
+        content_hash=row.content_hash,
+        level=row.level,
+        parent_id=row.parent_element_id,
+        extraction_status=row.extraction_status,
+        note=row.note,
     )
 
 
@@ -153,6 +174,61 @@ class SqlSourceCaptureStore:
         with self._session_factory() as session:
             row = self._document_row(session, user_id, source_type, source_ref)
             return _to_document(row) if row is not None else None
+
+    def record_elements(
+        self,
+        version_id: int,
+        elements: Sequence[SourceElementInput],
+        *,
+        structurer_version: int,
+        ingestion_status: str,
+    ) -> list[StoredSourceElement]:
+        with self._session_factory() as session:
+            version = session.get(SourceDocumentVersionRow, version_id)
+            if version is None:
+                raise LookupError(f"no source document version with id {version_id}")
+            # Elements are a pure derivation of the immutable raw payload: replace
+            # any prior derivation for this version (the raw row is never touched).
+            session.execute(
+                delete(SourceElementRow).where(SourceElementRow.document_version_id == version_id)
+            )
+            parent_ids: dict[int, int] = {}  # sequence_index -> stored id
+            rows: list[SourceElementRow] = []
+            for element in elements:
+                row = SourceElementRow(
+                    document_version_id=version_id,
+                    sequence_index=element.sequence_index,
+                    parent_element_id=(
+                        parent_ids[element.parent_index]
+                        if element.parent_index is not None
+                        else None
+                    ),
+                    element_type=element.element_type,
+                    level=element.level,
+                    raw_start=element.raw_start,
+                    raw_end=element.raw_end,
+                    normalized_text=element.normalized_text,
+                    content_hash=raw_content_hash(element.raw_text),
+                    extraction_status=element.extraction_status,
+                    note=element.note,
+                )
+                session.add(row)
+                session.flush()
+                parent_ids[element.sequence_index] = row.id
+                rows.append(row)
+            version.structurer_version = structurer_version
+            version.ingestion_status = ingestion_status
+            session.commit()
+            return [_to_element(row) for row in rows]
+
+    def list_elements(self, version_id: int) -> list[StoredSourceElement]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(SourceElementRow)
+                .where(SourceElementRow.document_version_id == version_id)
+                .order_by(SourceElementRow.sequence_index)
+            )
+            return [_to_element(row) for row in rows]
 
     @staticmethod
     def _document_row(

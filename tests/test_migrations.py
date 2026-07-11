@@ -333,6 +333,37 @@ def test_0017_refuses_to_drop_a_nonempty_cv_sources(tmp_path: Path) -> None:
         command.upgrade(cfg, "head")
 
 
+def test_0018_creates_source_elements_and_structuring_columns(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "elements.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    assert "source_elements" in inspector.get_table_names()
+    element_columns = {c["name"] for c in inspector.get_columns("source_elements")}
+    assert {
+        "document_version_id",
+        "sequence_index",
+        "parent_element_id",
+        "element_type",
+        "level",
+        "raw_start",
+        "raw_end",
+        "normalized_text",
+        "content_hash",
+        "extraction_status",
+    } <= element_columns
+    uniques = {u["name"] for u in inspector.get_unique_constraints("source_elements")}
+    assert "uq_element_version_seq" in uniques
+    version_columns = {c["name"] for c in inspector.get_columns("source_document_versions")}
+    assert {"structurer_version", "ingestion_status"} <= version_columns
+
+    command.downgrade(cfg, "0017")
+    inspector = sa.inspect(sa.create_engine(url))
+    assert "source_elements" not in inspector.get_table_names()
+    version_columns = {c["name"] for c in inspector.get_columns("source_document_versions")}
+    assert not {"structurer_version", "ingestion_status"} & version_columns
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")
