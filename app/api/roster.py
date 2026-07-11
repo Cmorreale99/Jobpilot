@@ -157,6 +157,18 @@ async def assign(
         "unassigned": report.unassigned,
         "pinned": report.pinned,
         "sources": report.gather.summary(),
+        # H5: the per-section ownership decisions and any LLM prompt truncations —
+        # both reported, never silent.
+        "sections": [
+            {
+                "source_ref": decision.source_ref,
+                "path": decision.path,
+                "experience_id": decision.experience_id,
+                "method": decision.method,
+            }
+            for decision in report.sections
+        ],
+        "truncated_prompts": report.truncated_prompts,
     }
 
 
@@ -199,6 +211,9 @@ def unassigned(user_id: str, repository: RepositoryDep) -> dict[str, Any]:
                 "source_ref": e.source_ref,
                 "chunk_text": e.chunk_text,
                 "assignment_method": e.assignment_method,
+                # H5: group the queue by governing section instead of raw refs.
+                "element_id": e.element_id,
+                "section_path": e.section_path,
             }
             for e in rows
         ],
@@ -235,6 +250,62 @@ def assign_evidence(
         "experience_id": updated.experience_id,
         "source_ref": updated.source_ref,
         "assignment_method": updated.assignment_method,
+    }
+
+
+@router.post("/sections/{element_id}/assign")
+def assign_section(
+    element_id: int,
+    body: EvidenceAssignRequest,
+    repository: RepositoryDep,
+    capture_store: CaptureStoreDep,
+) -> dict[str, Any]:
+    """Pin a whole section subtree to a CONFIRMED entity (H5).
+
+    The human corrects ownership at the level it was decided: the given element and
+    every descendant have their chunks stamped ``human`` — the H1 pin — so machine
+    re-runs never re-guess any of them.
+    """
+    root = capture_store.get_element(element_id)
+    if root is None:
+        raise HTTPException(status_code=404, detail=f"no source element with id {element_id}")
+    tree = capture_store.list_elements(root.document_version_id)
+    subtree_ids = {root.id}
+    grew = True
+    while grew:  # descendants by parent links (depth is tiny; no recursion needed)
+        grew = False
+        for element in tree:
+            if element.parent_id in subtree_ids and element.id not in subtree_ids:
+                subtree_ids.add(element.id)
+                grew = True
+    rows = repository.list_evidence_for_elements(sorted(subtree_ids))
+    if not rows:
+        raise HTTPException(
+            status_code=409,
+            detail=f"no evidence chunks are linked to section element {element_id} — "
+            "run roster assignment first",
+        )
+    experience = next(
+        (e for e in repository.list_experiences(rows[0].user_id) if e.id == body.experience_id),
+        None,
+    )
+    if experience is None:
+        raise HTTPException(
+            status_code=404, detail=f"no experience with id {body.experience_id} for this user"
+        )
+    if experience.status is not ExperienceStatus.CONFIRMED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"experience {experience.id} is {experience.status.value}, not confirmed — "
+            "evidence assigns to confirmed entities only",
+        )
+    for row in rows:
+        repository.assign_evidence(row.id, experience.id, method=ASSIGNMENT_HUMAN)
+    return {
+        "element_id": element_id,
+        "experience_id": experience.id,
+        "pinned": len(rows),
+        "section_path": rows[0].section_path,
     }
 
 

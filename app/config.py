@@ -182,6 +182,11 @@ class Settings(BaseSettings):
     # assignment BULK). Off by default; same real-client requirement/fallback as the
     # other LLM flags. Either way a HUMAN confirms the roster before extraction.
     roster_llm_detection: bool = False
+    # Structure-aware chunking + section-scoped ownership (hardening H5, the Cooper
+    # fix): chunks are cut from source elements (never across an element boundary) and
+    # inherit their top-level section's entity. False restores the flat-text per-chunk
+    # assigner — the one-release rollback lever; the schema stays either way.
+    structured_assignment: bool = True
     # Swap the heuristic story synthesizer (verbatim claim selection) for the LLM-backed one
     # (DEEP tier): it composes the Problem Space and groups Actions, grounded against cited
     # evidence and gated by validate_story_structure + the readiness gate. Off by default;

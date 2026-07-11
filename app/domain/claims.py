@@ -203,11 +203,20 @@ def validate_claim_transition(
 
 @dataclass(frozen=True)
 class EvidenceChunk:
-    """One citable unit of evidence (a commit message, a README, a Drive doc)."""
+    """One citable unit of evidence (a commit message, a README, a Drive doc).
+
+    ``element_id``/``sequence_index``/``section_path`` carry the chunk's structure
+    linkage (hardening H5): the persisted source element it was cut from, its document
+    order, and the governing heading trail. ``None`` for structureless sources
+    (commits, attestations) and legacy callers — purely additive.
+    """
 
     source_type: str
     source_ref: str
     chunk_text: str
+    element_id: int | None = None
+    sequence_index: int | None = None
+    section_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -298,6 +307,10 @@ class StoredEvidence:
     before versioning (V3 §2.2). ``assignment_method`` records HOW the assignment
     was made (``ASSIGNMENT_*``; ``None`` = legacy/unlabeled, treated as machine);
     ``human`` rows are pinned against machine re-runs (hardening H1).
+    ``element_id``/``sequence_index``/``section_path`` are the structure linkage (H5):
+    which persisted source element the chunk was cut from, its document order (a
+    column, not a parse of the ref), and the heading trail that governs it — ``None``
+    on legacy rows and structureless sources.
     """
 
     id: int
@@ -310,6 +323,9 @@ class StoredEvidence:
     normalization_version: int | None = None
     assignment_method: str | None = None
     assigned_at: datetime | None = None
+    element_id: int | None = None
+    sequence_index: int | None = None
+    section_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -962,7 +978,21 @@ class ClaimRepository(Protocol):
         ...
 
     def list_assigned_evidence(self, user_id: str, experience_id: int) -> list[StoredEvidence]:
-        """Every chunk assigned to one experience (the extraction group's evidence)."""
+        """Every chunk assigned to one experience (the extraction group's evidence).
+
+        Document order first (H5): rows carrying structure linkage sort by
+        ``(element_id, sequence_index)`` — element ids are minted in document order
+        per version — then legacy/structureless rows by insertion id.
+        """
+        ...
+
+    def list_evidence_for_elements(self, element_ids: Sequence[int]) -> list[StoredEvidence]:
+        """Every chunk cut from one of the given source elements (H5 section pin).
+
+        Element ids are globally unique (one document version's tree owns each), so
+        no user scoping is needed; used by the section-assign endpoint to stamp a
+        whole subtree's chunks with a human decision.
+        """
         ...
 
     def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:

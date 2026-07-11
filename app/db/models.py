@@ -315,6 +315,12 @@ class EvidenceRow(Base):
     # re-runs never overwrite them (hardening H1). NULL = legacy/unlabeled (machine).
     assignment_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
     assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Structure linkage (H5): the source element this chunk was cut from, its document
+    # order, and the governing heading trail. NULL on legacy rows and on chunks of
+    # structureless sources (commits, attestations) — those behave exactly as before.
+    element_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    sequence_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    section_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

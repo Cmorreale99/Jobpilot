@@ -21,11 +21,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app.config import Settings, get_settings
-from app.domain.chunking import chunk_normalized_text
+from app.domain.chunking import chunk_elements, chunk_normalized_text
 from app.domain.claims import (
     ASSIGNMENT_HUMAN,
     ASSIGNMENT_README_REF,
     ASSIGNMENT_REPO_REF,
+    ASSIGNMENT_SECTION,
     SOURCE_DRIVE,
     SOURCE_GITHUB_COMMIT,
     SOURCE_GITHUB_README,
@@ -46,6 +47,8 @@ from app.domain.project_reconciliation import (
 from app.domain.roster import (
     ChunkAssigner,
     RosterProposer,
+    SectionAssigner,
+    SectionContent,
     SourceDocument,
     detect_entity_overlaps,
 )
@@ -58,8 +61,11 @@ from app.domain.source_capture import (
 )
 from app.domain.source_structure import (
     STRUCTURER_VERSION,
+    SourceElement,
+    heading_trail,
     structure_commit_message,
     structure_source_text,
+    top_level_sections,
     verify_full_coverage,
 )
 from app.domain.text_normalization import normalize_source_text
@@ -77,7 +83,11 @@ from app.integrations.base import (
     UploadsClient,
 )
 from app.integrations.uploads import create_uploads_client
-from app.services.roster_factory import create_chunk_assigner, create_roster_proposer
+from app.services.roster_factory import (
+    create_chunk_assigner,
+    create_roster_proposer,
+    create_section_assigner,
+)
 from app.services.source_policy import (
     drive_exclusion_reason,
     repo_exclusion_reason,
@@ -156,11 +166,24 @@ class RosterDetectionReport:
 
 
 @dataclass(frozen=True)
+class SectionDecision:
+    """One per-section ownership decision of a structure-aware assignment run (H5)."""
+
+    source_ref: str
+    path: str | None  # the root heading text; None = preamble/no heading
+    experience_id: int | None
+    method: str  # how the SECTION decision was made (its chunks are stamped `section`)
+
+
+@dataclass(frozen=True)
 class RosterAssignmentReport:
     """What one assignment run scoped (per user).
 
     ``pinned`` counts chunks left untouched because a human assigned them
     (``assignment_method='human'``) — a machine run never overwrites those (H1).
+    ``sections`` records every per-section ownership decision of the structure-aware
+    path (H5); ``truncated_prompts`` counts texts cut to an LLM prompt budget this
+    run — truncation is a reported event, never silent (F12).
     """
 
     chunks: int
@@ -168,6 +191,8 @@ class RosterAssignmentReport:
     unassigned: int
     pinned: int = 0
     gather: GatherReport = field(default_factory=GatherReport)
+    sections: tuple[SectionDecision, ...] = ()
+    truncated_prompts: int = 0
 
 
 @dataclass(frozen=True)
@@ -331,6 +356,7 @@ async def gather_source_documents(
                 text=normalize_source_text(document.text),
                 mime_type=document.mime_type,
                 modified_time=document.modified_time,
+                raw_text=document.text,
             ),
             extractor=drive_extractor,
             raw_text=document.text,
@@ -354,6 +380,7 @@ async def gather_source_documents(
                     title=repo.name,
                     text=normalize_source_text(readme.text),
                     modified_time=repo.pushed_at,
+                    raw_text=readme.text,
                 ),
                 extractor=github_extractor,
                 raw_text=readme.text,
@@ -371,6 +398,7 @@ async def gather_source_documents(
                     title=repo.name,
                     text=normalize_source_text(commit.message),
                     modified_time=commit.authored_at,
+                    raw_text=commit.message,
                 ),
                 extractor=github_extractor,
                 raw_text=commit.message,
@@ -397,6 +425,7 @@ async def gather_source_documents(
                     text=normalize_source_text(upload.text),
                     mime_type=upload.mime_type,
                     modified_time=upload.modified_time,
+                    raw_text=upload.text,
                 ),
                 extractor=uploads_extractor,
                 raw_text=upload.text,
@@ -575,6 +604,52 @@ def _repo_entity(roster: list[Experience], repo_ref: str) -> Experience | None:
     return None
 
 
+@dataclass(frozen=True)
+class _PreparedChunk:
+    """One chunk ready to persist: its span ref plus H5 structure linkage."""
+
+    source_ref: str
+    text: str  # normalized
+    element_index: int | None = None
+    section_path: str | None = None
+
+
+def _prepare_element_chunks(
+    document: SourceDocument, elements: Sequence[SourceElement]
+) -> list[_PreparedChunk]:
+    """Element-derived chunks (H5): raw-coordinate span refs, heading trails attached.
+
+    A chunk whose text normalizes to nothing (separator debris) is dropped — it could
+    never be cited.
+    """
+    prepared: list[_PreparedChunk] = []
+    for piece in chunk_elements(elements):
+        normalized = normalize_source_text(piece.text)
+        if not normalized.strip():
+            continue
+        prepared.append(
+            _PreparedChunk(
+                source_ref=span_ref(document.source_ref, piece.raw_start, piece.raw_end),
+                text=normalized,
+                element_index=piece.element_index,
+                section_path=heading_trail(elements, piece.element_index),
+            )
+        )
+    return prepared
+
+
+def _element_ids_for(
+    capture_store: SourceCaptureStore | None, user_id: str, document: SourceDocument
+) -> dict[int, int]:
+    """Stored element ids by sequence index for a document's active version."""
+    if capture_store is None:
+        return {}
+    version = capture_store.get_active_version(user_id, document.source_type, document.source_ref)
+    if version is None:
+        return {}
+    return {e.sequence_index: e.id for e in capture_store.list_elements(version.id)}
+
+
 async def run_roster_assignment(
     drive_client: DriveClient,
     github_client: GitHubClient,
@@ -582,20 +657,28 @@ async def run_roster_assignment(
     repository: ClaimRepository,
     settings: Settings | None = None,
     assigner: ChunkAssigner | None = None,
+    section_assigner: SectionAssigner | None = None,
     *,
     capture_store: SourceCaptureStore | None = None,
     validation_log: ValidationRunLog | None = None,
 ) -> RosterAssignmentReport:
-    """Chunk every source with char spans and assign each chunk to a confirmed entity.
+    """Chunk every source and assign each chunk to a confirmed entity.
 
-    Repo evidence (README chunks + commits) assigns directly to the entity whose
-    name/aliases match the repo ref; document chunks go through the assigner. A chunk
-    nothing matches stays honestly unassigned and never feeds extraction. Every
-    assignment is labeled with HOW it was made, and a chunk a human assigned
-    (``assignment_method='human'``) is pinned — this run never overwrites it (H1).
+    Structure-aware since H5 (``STRUCTURED_ASSIGNMENT``, default on): chunks are cut
+    from source elements — never across an element boundary — and ownership is decided
+    once per top-level section subtree, inherited by the section's chunks
+    (``assignment_method='section'``). The heading is persisted context, not a prompt
+    hint: a Result paragraph with zero entity tokens can no longer be guessed onto a
+    lexically-similar wrong entity (the Cooper fix). Repo evidence (README chunks +
+    commits) assigns directly to the entity matching the repo ref — with structure,
+    correct by construction (a README's tree is one repo-owned document). Structureless
+    sources keep the per-chunk assigner, which still refuses ties. A chunk nothing
+    matches stays honestly unassigned and never feeds extraction; a human-assigned
+    chunk (``assignment_method='human'``) is pinned — this run never overwrites it (H1).
     """
     settings = settings or get_settings()
     assigner = assigner or create_chunk_assigner(settings)
+    section_assigner = section_assigner or create_section_assigner(settings)
     roster = _confirmed_roster(repository, user_id)
     if not roster:
         logger.warning(
@@ -615,6 +698,8 @@ async def run_roster_assignment(
     chunks = 0
     assigned = 0
     pinned = 0
+    truncated = 0
+    section_decisions: list[SectionDecision] = []
 
     def apply(stored: StoredEvidence, target: int | None, method: str | None) -> None:
         """Assign one chunk unless a human already decided it (the H1 pin)."""
@@ -626,6 +711,31 @@ async def run_roster_assignment(
             return
         repository.assign_evidence(stored.id, target, method=method if target is not None else None)
         assigned += 1 if target is not None else 0
+
+    def persist(
+        document: SourceDocument,
+        prepared: Sequence[_PreparedChunk],
+        targets: Sequence[int | None],
+        methods: Sequence[str | None],
+        element_ids: dict[int, int],
+    ) -> None:
+        for chunk, target, method in zip(prepared, targets, methods, strict=True):
+            stored = repository.upsert_evidence(
+                user_id,
+                EvidenceChunk(
+                    document.source_type,
+                    chunk.source_ref,
+                    chunk.text,
+                    element_id=(
+                        element_ids.get(chunk.element_index)
+                        if chunk.element_index is not None
+                        else None
+                    ),
+                    sequence_index=chunk.element_index,
+                    section_path=chunk.section_path,
+                ),
+            )
+            apply(stored, target, method)
 
     for document in documents:
         if document.source_type == SOURCE_GITHUB_COMMIT:
@@ -639,24 +749,91 @@ async def run_roster_assignment(
             apply(stored, entity.id if entity else None, ASSIGNMENT_REPO_REF)
             continue
 
-        pieces = chunk_normalized_text(document.text)
+        structured = settings.structured_assignment and document.raw_text is not None
+        if not structured:
+            # The flat-text path — the pre-H5 behavior, kept behind the flag as the
+            # one-release rollback lever (and for callers with no raw text).
+            pieces = chunk_normalized_text(document.text)
+            if document.source_type == SOURCE_GITHUB_README:
+                entity = _repo_entity(roster, document.source_ref)
+                targets: list[int | None] = [entity.id if entity else None] * len(pieces)
+                method = ASSIGNMENT_README_REF
+            else:
+                targets = assigner.assign([piece.text for piece in pieces], roster)
+                method = assigner.method
+                truncated += getattr(assigner, "last_truncated", 0)
+            for piece, target in zip(pieces, targets, strict=True):
+                stored = repository.upsert_evidence(
+                    user_id,
+                    EvidenceChunk(
+                        document.source_type,
+                        span_ref(document.source_ref, piece.start, piece.end),
+                        piece.text,
+                    ),
+                )
+                apply(stored, target, method)
+            continue
+
+        # --- structure-aware path (H5) ---------------------------------------------
+        raw_text = document.raw_text or ""
+        elements = structure_source_text(raw_text)
+        prepared = _prepare_element_chunks(document, elements)
+        element_ids = _element_ids_for(capture_store, user_id, document)
+
         if document.source_type == SOURCE_GITHUB_README:
+            # One repo-owned tree: every section belongs to the repo's entity.
             entity = _repo_entity(roster, document.source_ref)
-            targets: list[int | None] = [entity.id if entity else None] * len(pieces)
-            method = ASSIGNMENT_README_REF
-        else:
-            targets = assigner.assign([piece.text for piece in pieces], roster)
-            method = assigner.method
-        for piece, target in zip(pieces, targets, strict=True):
-            stored = repository.upsert_evidence(
-                user_id,
-                EvidenceChunk(
-                    document.source_type,
-                    span_ref(document.source_ref, piece.start, piece.end),
-                    piece.text,
+            target = entity.id if entity else None
+            persist(
+                document,
+                prepared,
+                [target] * len(prepared),
+                [ASSIGNMENT_README_REF] * len(prepared),
+                element_ids,
+            )
+            continue
+
+        sections = top_level_sections(elements)
+        has_headings = any(section.heading_index is not None for section in sections)
+        if not has_headings:
+            # Structureless source: no section context exists — per-chunk assignment
+            # survives here (and only here), still refusing ties.
+            targets = assigner.assign([chunk.text for chunk in prepared], roster)
+            truncated += getattr(assigner, "last_truncated", 0)
+            persist(document, prepared, targets, [assigner.method] * len(prepared), element_ids)
+            continue
+
+        contents = [
+            SectionContent(
+                heading=section.path,
+                body="\n".join(
+                    elements[index].raw_text
+                    for index in section.element_indices
+                    if index != section.heading_index
                 ),
             )
-            apply(stored, target, method)
+            for section in sections
+        ]
+        section_targets = section_assigner.assign_sections(contents, roster)
+        truncated += getattr(section_assigner, "last_truncated", 0)
+        target_by_element: dict[int, int | None] = {}
+        for section, section_target in zip(sections, section_targets, strict=True):
+            section_decisions.append(
+                SectionDecision(
+                    source_ref=document.source_ref,
+                    path=section.path,
+                    experience_id=section_target,
+                    method=section_assigner.method,
+                )
+            )
+            for index in section.element_indices:
+                target_by_element[index] = section_target
+        targets = [
+            target_by_element.get(chunk.element_index) if chunk.element_index is not None else None
+            for chunk in prepared
+        ]
+        methods = [ASSIGNMENT_SECTION if target is not None else None for target in targets]
+        persist(document, prepared, targets, methods, element_ids)
 
     report = RosterAssignmentReport(
         chunks=chunks,
@@ -664,14 +841,18 @@ async def run_roster_assignment(
         unassigned=chunks - assigned,
         pinned=pinned,
         gather=gathered.report,
+        sections=tuple(section_decisions),
+        truncated_prompts=truncated,
     )
     logger.info(
         "roster assignment for %s: %d chunk(s), %d assigned, %d honestly unassigned, "
-        "%d human-pinned (untouched)",
+        "%d human-pinned (untouched), %d section decision(s), %d truncated prompt(s)",
         user_id,
         report.chunks,
         report.assigned,
         report.unassigned,
         report.pinned,
+        len(report.sections),
+        report.truncated_prompts,
     )
     return report

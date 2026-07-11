@@ -37,6 +37,18 @@ from app.domain.claims import (
 from app.domain.text_normalization import NORMALIZATION_VERSION
 
 
+def _document_order(evidence: StoredEvidence) -> tuple[int, int, int, int]:
+    """Document order from columns (H5): structure-linked rows first, by element
+    (element ids are minted in document order per version), then sequence index;
+    legacy/structureless rows keep insertion order after them."""
+    return (
+        1 if evidence.element_id is None else 0,
+        evidence.element_id or 0,
+        evidence.sequence_index or 0,
+        evidence.id,
+    )
+
+
 class InMemoryClaimRepository(ClaimRepository):
     """Dict-backed claims persistence with the same semantics as the SQL version."""
 
@@ -189,7 +201,16 @@ class InMemoryClaimRepository(ClaimRepository):
                         chunk_text=chunk.chunk_text,
                         normalization_version=NORMALIZATION_VERSION,
                     )
-                    self._evidence[stored.id] = stored
+                if chunk.element_id is not None:
+                    # Structure linkage is a derivation of the current tree (H5):
+                    # refresh it; a legacy-shaped caller (None) never blanks it.
+                    stored = replace(
+                        stored,
+                        element_id=chunk.element_id,
+                        sequence_index=chunk.sequence_index,
+                        section_path=chunk.section_path,
+                    )
+                self._evidence[stored.id] = stored
                 return stored
         stored = StoredEvidence(
             id=self._next_evidence_id,
@@ -199,6 +220,9 @@ class InMemoryClaimRepository(ClaimRepository):
             chunk_text=chunk.chunk_text,
             created_at=datetime.now(tz=UTC),
             normalization_version=NORMALIZATION_VERSION,
+            element_id=chunk.element_id,
+            sequence_index=chunk.sequence_index,
+            section_path=chunk.section_path,
         )
         self._evidence[stored.id] = stored
         self._next_evidence_id += 1
@@ -242,7 +266,12 @@ class InMemoryClaimRepository(ClaimRepository):
             for e in self._evidence.values()
             if e.user_id == user_id and e.experience_id == experience_id
         ]
-        return sorted(rows, key=lambda e: e.id)
+        return sorted(rows, key=_document_order)
+
+    def list_evidence_for_elements(self, element_ids: Sequence[int]) -> list[StoredEvidence]:
+        wanted = set(element_ids)
+        rows = [e for e in self._evidence.values() if e.element_id in wanted]
+        return sorted(rows, key=_document_order)
 
     def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
         # User attestations (claim:/story: refs) are human answers, never source

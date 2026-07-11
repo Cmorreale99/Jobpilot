@@ -406,14 +406,19 @@ async def test_every_evidence_row_has_recoverable_pre_normalization_text() -> No
         base_ref, span = split_span_ref(row.source_ref)
         active = store.get_active_version("u1", row.source_type, base_ref)
         assert active is not None, f"no captured raw for {row.source_type}:{base_ref}"
-        # H3 recomputability: normalize(raw) reproduces the exact text the stored
-        # span points into — not just containment, slice equality.
-        normalized = normalize_source_text(active.raw_text)
+        # H3 recomputability, in each span coordinate space: structure-linked rows
+        # (H5) span the RAW text and normalize per slice; legacy flat rows span the
+        # normalized text. Either way the chunk derives from stored raw by slicing +
+        # the versioned normalizer — slice equality, not containment.
         if span is not None:
             start, end = span
-            assert normalized[start:end] == row.chunk_text
+            if row.element_id is not None or row.sequence_index is not None:
+                assert normalize_source_text(active.raw_text[start:end]) == row.chunk_text
+            else:
+                assert normalize_source_text(active.raw_text)[start:end] == row.chunk_text
         else:
-            assert row.chunk_text == normalized  # whole-document evidence (commits)
+            # Whole-document evidence (commits).
+            assert row.chunk_text == normalize_source_text(active.raw_text)
         assert active.normalization_version == row.normalization_version
 
 
