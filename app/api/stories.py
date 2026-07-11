@@ -15,10 +15,16 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_claim_repository, get_story_repository, get_validation_log
+from app.api.deps import (
+    get_claim_repository,
+    get_grouping_store,
+    get_story_repository,
+    get_validation_log,
+)
 from app.domain.applications import InvalidTransitionError
 from app.domain.bullet import BulletGenerationError
 from app.domain.claims import SOURCE_USER_ATTESTATION, ClaimRepository, evidence_source_url
+from app.domain.problem_space import GroupingStore
 from app.domain.project_story import (
     COMPONENT_PROBLEM,
     COMPONENT_RESULT,
@@ -56,6 +62,7 @@ router = APIRouter(prefix="/stories", tags=["stories"])
 RepositoryDep = Annotated[ClaimRepository, Depends(get_claim_repository)]
 StoryRepositoryDep = Annotated[ProjectStoryRepository, Depends(get_story_repository)]
 ValidationLogDep = Annotated[ValidationRunLog, Depends(get_validation_log)]
+GroupingStoreDep = Annotated[GroupingStore, Depends(get_grouping_store)]
 
 
 class AnswerRequest(BaseModel):
@@ -244,6 +251,7 @@ def synthesize(
     story_repository: StoryRepositoryDep,
     repository: RepositoryDep,
     validation_log: ValidationLogDep,
+    grouping_store: GroupingStoreDep,
     force: bool = False,
 ) -> dict[str, Any]:
     """Build one story draft per (confirmed entity, problem space), promoting the
@@ -255,7 +263,7 @@ def synthesize(
         repository,
         story_repository,
         synthesizer=create_story_synthesizer(),
-        detector=create_problem_space_detector(),
+        detector=create_problem_space_detector(grouping_store=grouping_store, user_id=user_id),
         validation_log=validation_log,
         force=force,
     )

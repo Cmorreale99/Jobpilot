@@ -20,6 +20,7 @@ from app.db.credentials_store import SqlOAuthCredentialStore
 from app.db.interview_repository import SqlInterviewRepository
 from app.db.job_repository import SqlJobRepository
 from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
+from app.db.problem_space_grouping_store import SqlGroupingStore
 from app.db.project_story_repository import SqlProjectStoryRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
 from app.db.validation_run_log import SqlValidationRunLog
@@ -29,6 +30,7 @@ from app.domain.claims import ClaimRepository
 from app.domain.interviews import InterviewRepository
 from app.domain.jobs import JobRepository
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore
+from app.domain.problem_space import GroupingStore
 from app.domain.project_story import ProjectStoryRepository
 from app.domain.validation_runs import ValidationRunLog
 from app.integrations.base import MailClient, MailConfigurationError
@@ -38,6 +40,7 @@ from app.integrations.oauth.factory import create_oauth_providers
 from app.security.crypto import TokenCipher, TokenEncryptionError
 from app.services.credentials import create_refreshing_store
 from app.services.oauth_flow import OAuthFlowService
+from app.services.problem_space_grouping import InMemoryGroupingStore
 
 
 def build_default_flow(settings: Settings) -> OAuthFlowService:
@@ -198,6 +201,27 @@ def get_story_repository(request: Request) -> ProjectStoryRepository:
     repository = SqlProjectStoryRepository(create_session_factory(engine))
     request.app.state.story_repository = repository
     return repository
+
+
+def get_grouping_store(request: Request) -> GroupingStore:
+    """Return the app's grouping store, building a SQL-backed one on first use.
+
+    Only the LLM detection path reads or writes recorded partitions, so with
+    ``PROBLEM_SPACE_LLM_DETECTION`` off this returns a throwaway in-memory store
+    rather than touching the database — tests with injected repositories never
+    build an engine as a side effect of hitting ``/synthesize``.
+    """
+    existing = getattr(request.app.state, "grouping_store", None)
+    if isinstance(existing, GroupingStore):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    if not settings.problem_space_llm_detection:
+        return InMemoryGroupingStore()  # unused by the heuristic path; never cached
+    engine = create_db_engine(settings)
+    create_all(engine)
+    store = SqlGroupingStore(create_session_factory(engine))
+    request.app.state.grouping_store = store
+    return store
 
 
 def get_validation_log(request: Request) -> ValidationRunLog:

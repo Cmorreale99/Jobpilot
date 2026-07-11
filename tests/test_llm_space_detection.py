@@ -201,6 +201,132 @@ def test_detection_failure_skips_the_entity_and_keeps_existing_drafts() -> None:
     assert any("space_detection_failed" in line for line in run.detail)
 
 
+# --- Increment 8: recorded partitions (the drift fix) --------------------------------------
+
+
+class _CountingDetector:
+    """Scripted groupings, consumed per call — counts consultations."""
+
+    def __init__(self, groupings: list[list[list[str]]]) -> None:
+        self._groupings = list(groupings)
+        self.calls = 0
+
+    def group_problems(self, problems):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return self._groupings.pop(0)
+
+
+def test_grouping_fingerprint_is_set_based_and_version_namespaced() -> None:
+    from app.domain.problem_space import grouping_fingerprint
+
+    base = grouping_fingerprint(["Alpha problem", "beta problem"])
+    assert grouping_fingerprint(["beta problem", "Alpha problem"]) == base  # order-free
+    assert grouping_fingerprint(["  alpha   PROBLEM ", "Beta Problem"]) == base  # normalized
+    assert grouping_fingerprint(["alpha problem", "gamma problem"]) != base
+    assert grouping_fingerprint(["Alpha problem", "beta problem"], version="v2") != base
+
+
+def test_persisted_detector_records_once_and_replays_forever() -> None:
+    from app.domain.problem_space import PersistedGroupingDetector
+    from app.services.problem_space_grouping import InMemoryGroupingStore
+
+    store = InMemoryGroupingStore()
+    inner = _CountingDetector([[["alpha problem", "beta problem"]]])
+    first = PersistedGroupingDetector(inner, store, "u1")
+    assert first.group_problems(["alpha problem", "beta problem"]) == [
+        ["alpha problem", "beta problem"]
+    ]
+    assert inner.calls == 1
+
+    # A fresh wrapper over the same store replays — the inner detector is never asked
+    # again, and the replay maps onto the CURRENT text variants (casing drifted).
+    replaying = PersistedGroupingDetector(_CountingDetector([]), store, "u1")
+    assert replaying.group_problems(["Alpha Problem", "Beta Problem"]) == [
+        ["Alpha Problem", "Beta Problem"]
+    ]
+
+    # A changed problem set is a new fingerprint — consult again.
+    fresh_inner = _CountingDetector([[["alpha problem"], ["gamma problem"]]])
+    changed = PersistedGroupingDetector(fresh_inner, store, "u1")
+    changed.group_problems(["alpha problem", "gamma problem"])
+    assert fresh_inner.calls == 1
+
+    # A version bump never replays recordings made under old semantics.
+    versioned_inner = _CountingDetector([[["alpha problem"], ["beta problem"]]])
+    versioned = PersistedGroupingDetector(versioned_inner, store, "u1", version="v2")
+    assert versioned.group_problems(["alpha problem", "beta problem"]) == [
+        ["alpha problem"],
+        ["beta problem"],
+    ]
+    assert versioned_inner.calls == 1
+
+
+@pytest.mark.parametrize("kind", ["in_memory", "sql"])
+def test_grouping_store_round_trip_and_first_write_wins(kind: str, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import sqlalchemy as sa
+    from app.db.base import Base
+    from app.db.problem_space_grouping_store import SqlGroupingStore
+    from app.db.session import create_session_factory
+    from app.services.problem_space_grouping import InMemoryGroupingStore
+
+    if kind == "in_memory":
+        store = InMemoryGroupingStore()
+    else:
+        engine = sa.create_engine(f"sqlite+pysqlite:///{tmp_path / 'groupings.db'}")
+        Base.metadata.create_all(engine)
+        store = SqlGroupingStore(create_session_factory(engine))
+
+    assert store.get("u1", "fp-1") is None
+    store.put("u1", "fp-1", [["a", "b"], ["c"]])
+    assert store.get("u1", "fp-1") == [["a", "b"], ["c"]]
+    store.put("u1", "fp-1", [["a"], ["b"], ["c"]])  # first write wins
+    assert store.get("u1", "fp-1") == [["a", "b"], ["c"]]
+    assert store.get("u2", "fp-1") is None  # per-user
+
+
+def test_recorded_partition_kills_drift_between_synthesis_and_eval() -> None:
+    """The live-verified failure mode, reproduced and fixed: the fake LLM would group
+    DIFFERENTLY on a second call, but the recorded partition replays — eval judges the
+    partition that built the stories (contamination 0) and the LLM is asked exactly
+    once for the unchanged problem set."""
+    from app.domain.problem_space import PersistedGroupingDetector
+    from app.services.problem_space_grouping import InMemoryGroupingStore
+
+    claims_repo = InMemoryClaimRepository()
+    stories = InMemoryProjectStoryRepository()
+    experience, _ = seed_cooper_repository(claims_repo)
+    # First call merges Cooper's two problems; a second call WOULD split them (drift).
+    client = FakeLlmClient(responses=[MERGE_ALL, '{"groups": [[1], [2]]}'])
+    detector = PersistedGroupingDetector(
+        LlmProblemSpaceDetector(client), InMemoryGroupingStore(), "u1", version="llm-v1"
+    )
+
+    run_story_synthesis("u1", claims_repo, stories, detector=detector)
+    eval_report = run_story_eval("u1", stories, claims_repo, detector=detector)
+
+    assert eval_report.cross_problem_space_contamination_count == 0
+    assert len(stories.list_stories_for_experience("u1", experience.id)) == 1
+    assert len(client.calls) == 1  # synthesis consulted; eval replayed the recording
+
+
+def test_factory_wraps_the_llm_detector_when_given_a_store() -> None:
+    from app.domain.problem_space import PersistedGroupingDetector
+    from app.services.problem_space_grouping import InMemoryGroupingStore
+
+    store = InMemoryGroupingStore()
+    wrapped = create_problem_space_detector(
+        Settings(problem_space_llm_detection=True),
+        llm_client=FakeLlmClient(),
+        grouping_store=store,
+        user_id="u1",
+    )
+    assert isinstance(wrapped, PersistedGroupingDetector)
+    # The heuristic path is never wrapped — a heuristic partition must not be
+    # replayed as if the LLM had produced it.
+    heuristic = create_problem_space_detector(Settings(), grouping_store=store, user_id="u1")
+    assert isinstance(heuristic, HeuristicProblemSpaceDetector)
+
+
 def test_heuristic_detector_reproduces_the_default_partition() -> None:
     """Explicit heuristic detector == no detector (the refactor changed nothing)."""
     claims = cooper_claims(experience_id=7)

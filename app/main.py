@@ -24,6 +24,7 @@ from app.domain.claims import ClaimRepository
 from app.domain.interviews import InterviewRepository
 from app.domain.jobs import JobRepository
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore
+from app.domain.problem_space import GroupingStore
 from app.domain.project_story import ProjectStoryRepository
 from app.domain.validation_runs import ValidationRunLog
 from app.integrations.base import MailClient
@@ -43,6 +44,7 @@ def create_app(
     artifact_store: ArtifactStore | None = None,
     story_repository: ProjectStoryRepository | None = None,
     validation_log: ValidationRunLog | None = None,
+    grouping_store: GroupingStore | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Tests inject mock-backed services; prod builds them lazily."""
     app = FastAPI(title="JobPilot", version="0.1.0")
@@ -57,6 +59,7 @@ def create_app(
     app.state.artifact_store = artifact_store
     app.state.story_repository = story_repository
     app.state.validation_log = validation_log
+    app.state.grouping_store = grouping_store
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(app.state.settings.dashboard_origin_list),

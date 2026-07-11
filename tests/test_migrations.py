@@ -256,6 +256,21 @@ def test_0014_backfills_problem_space_ids_for_v3_rows(tmp_path: Path) -> None:
     assert rows[1][3] == "missing_result"
 
 
+def test_0015_creates_problem_space_groupings(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "groupings.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    assert "problem_space_groupings" in inspector.get_table_names()
+    columns = {c["name"] for c in inspector.get_columns("problem_space_groupings")}
+    assert {"user_id", "fingerprint", "groups_json"} <= columns
+    uniques = {u["name"] for u in inspector.get_unique_constraints("problem_space_groupings")}
+    assert "uq_groupings_user_fingerprint" in uniques
+    command.downgrade(cfg, "0014")
+    tables = sa.inspect(sa.create_engine(url)).get_table_names()
+    assert "problem_space_groupings" not in tables
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")
