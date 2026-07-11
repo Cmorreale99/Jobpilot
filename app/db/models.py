@@ -342,6 +342,27 @@ class ProjectStoryRow(Base):
     )
 
 
+class ProblemSpaceGroupingRow(Base):
+    """One recorded problem-space partition (v3.1 Increment 8).
+
+    Keyed by the problem-set fingerprint (``grouping_fingerprint`` — includes the
+    detector's version namespace), storing the sanitized groups as normalized problem
+    keys. First write wins: synthesis, eval, and re-runs over the same problems
+    replay this row instead of re-asking a non-deterministic grouper.
+    """
+
+    __tablename__ = "problem_space_groupings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "fingerprint", name="uq_groupings_user_fingerprint"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    groups_json: Mapped[list[list[str]]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ArtifactRow(Base):
     """One generated file (V2: only ``master_cv_docx``), deduped per rendered version."""
 

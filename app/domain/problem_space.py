@@ -38,6 +38,7 @@ Pure logic: no imports from ``integrations/`` implementations or ``llm/``.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -203,6 +204,72 @@ class ProblemSpaceDetector(Protocol):
     """
 
     def group_problems(self, problems: Sequence[str]) -> list[list[str]]: ...
+
+
+@runtime_checkable
+class GroupingStore(Protocol):
+    """Persistence for recorded problem-space partitions (v3.1 Increment 8).
+
+    Keyed by ``(user_id, fingerprint)`` where the fingerprint hashes the problem
+    *set* (:func:`grouping_fingerprint`) — the grouping is a pure function of the
+    problems, so entity identity is irrelevant to the key. ``put`` is first-write-wins
+    (a recorded partition is a decision, not a cache to churn); groups are stored as
+    normalized problem keys.
+    """
+
+    def get(self, user_id: str, fingerprint: str) -> list[list[str]] | None: ...
+
+    def put(self, user_id: str, fingerprint: str, groups: Sequence[Sequence[str]]) -> None: ...
+
+
+def grouping_fingerprint(problems: Sequence[str], *, version: str = "") -> str:
+    """Stable hash of a problem SET (order-insensitive, whitespace/case-normalized).
+
+    ``version`` lets a detector namespace its recordings (e.g. the LLM prompt
+    version) so a semantic change to the grouper never silently replays partitions
+    recorded under the old semantics.
+    """
+    keys = sorted({_normalized(p) for p in problems if p.strip()})
+    material = "\x1e".join((version, *keys))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+class PersistedGroupingDetector:
+    """Records a detector's partitions and replays them for unchanged problem sets.
+
+    The drift fix (live-verified failure mode, 2026-07-11): synthesis, eval, and every
+    re-run over the same problems read ONE recorded partition instead of re-asking a
+    non-deterministic grouper — the contamination invariant judges the partition that
+    built the stories, and repeat LLM spend for unchanged entities drops to zero.
+    What is stored is the *sanitized* partition (grounded, complete, disjoint), keyed
+    by the problem-set fingerprint; a changed problem set means a new fingerprint and
+    a fresh consultation. First write wins — re-grouping the same problems requires
+    deleting the recorded row (or bumping ``version``), never a silent overwrite.
+    """
+
+    def __init__(
+        self,
+        inner: ProblemSpaceDetector,
+        store: GroupingStore,
+        user_id: str,
+        *,
+        version: str = "",
+    ) -> None:
+        self._inner = inner
+        self._store = store
+        self._user_id = user_id
+        self._version = version
+
+    def group_problems(self, problems: Sequence[str]) -> list[list[str]]:
+        by_key = {_normalized(p): p for p in problems if p.strip()}
+        fingerprint = grouping_fingerprint(problems, version=self._version)
+        stored = self._store.get(self._user_id, fingerprint)
+        if stored is not None:
+            replayed = [[by_key[key] for key in group if key in by_key] for group in stored]
+            return [group for group in replayed if group]
+        sanitized = _sanitized_groups(self._inner.group_problems(problems), by_key)
+        self._store.put(self._user_id, fingerprint, sanitized)
+        return [[by_key[key] for key in group] for group in sanitized]
 
 
 # Two bar-clearing problems share a space when their pain-point tags overlap AND they
@@ -750,8 +817,10 @@ __all__ = [
     "ActionCandidate",
     "BundleProblem",
     "BundleStatus",
+    "GroupingStore",
     "HeuristicProblemSpaceDetector",
     "PARBundle",
+    "PersistedGroupingDetector",
     "ProblemSpace",
     "ProblemSpaceDetectionError",
     "ProblemSpaceDetector",
@@ -759,6 +828,7 @@ __all__ = [
     "bundle_from_story",
     "claim_space_ids",
     "detect_problem_spaces",
+    "grouping_fingerprint",
     "space_claim_ids",
     "story_cross_space_claim_ids",
     "synthesis_units",

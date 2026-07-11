@@ -36,6 +36,11 @@ from app.llm.types import LlmMessage, ModelTier
 
 logger = logging.getLogger("app.llm.space_detection")
 
+# Namespaces recorded partitions (grouping_fingerprint's ``version``). Bump on ANY
+# change to _SYSTEM or the prompt shape — recordings made under old grouping
+# semantics must never silently replay under new ones.
+GROUPING_PROMPT_VERSION = "llm-v1"
+
 _SYSTEM = (
     "You group problem statements extracted from ONE project's sources into problem "
     "spaces. A problem space is one underlying challenge the project tackled. "
@@ -122,4 +127,4 @@ def _parse(payload: Any, *, count: int) -> list[list[int]]:
     return groups
 
 
-__all__ = ["LlmProblemSpaceDetector"]
+__all__ = ["GROUPING_PROMPT_VERSION", "LlmProblemSpaceDetector"]
