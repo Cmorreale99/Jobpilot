@@ -1,0 +1,4 @@
+Collapsed   multiple	whitespace		runs   inside a line.
+And    consecutive
+wrapped   lines
+join    with single spaces.

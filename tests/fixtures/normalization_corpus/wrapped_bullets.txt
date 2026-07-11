@@ -1,0 +1,11 @@
+# Projects
+
+- Rebuilt the settlement
+  pipeline with Kafka
+- Cut nightly runtime
+  by 70 percent
+
+1. Deduplicated the FedEx
+   carrier feed
+2) Corrected overstated charge
+   reporting

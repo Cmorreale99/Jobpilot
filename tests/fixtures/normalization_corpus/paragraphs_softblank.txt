@@ -1,0 +1,11 @@
+Won big
+
+Top 3.
+
+This sentence ends with terminal punctuation.
+
+So this neighboring paragraph always keeps its break from the one above.
+
+tiny
+
+fragment

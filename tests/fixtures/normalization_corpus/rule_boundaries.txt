@@ -1,0 +1,13 @@
+Shipped the exporter despite
+
+three word fragment
+
+and the sentence keeps going without terminal punctuation on this line
+
+The colon terminal keeps the break below:
+
+short item
+
+Ends with semicolon;
+
+next fragment

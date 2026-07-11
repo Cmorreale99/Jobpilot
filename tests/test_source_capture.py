@@ -307,11 +307,18 @@ async def test_every_evidence_row_has_recoverable_pre_normalization_text() -> No
         rows.extend(repo.list_assigned_evidence("u1", experience.id))
     assert rows
     for row in rows:
-        base_ref, _ = split_span_ref(row.source_ref)
+        base_ref, span = split_span_ref(row.source_ref)
         active = store.get_active_version("u1", row.source_type, base_ref)
         assert active is not None, f"no captured raw for {row.source_type}:{base_ref}"
-        # The durable chunk is an exact derivation of the captured raw payload.
-        assert row.chunk_text in normalize_source_text(active.raw_text)
+        # H3 recomputability: normalize(raw) reproduces the exact text the stored
+        # span points into — not just containment, slice equality.
+        normalized = normalize_source_text(active.raw_text)
+        if span is not None:
+            start, end = span
+            assert normalized[start:end] == row.chunk_text
+        else:
+            assert row.chunk_text == normalized  # whole-document evidence (commits)
+        assert active.normalization_version == row.normalization_version
 
 
 async def test_gather_report_statuses_cover_every_disposition() -> None:
