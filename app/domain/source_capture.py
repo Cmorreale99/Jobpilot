@@ -167,6 +167,10 @@ class SourceCaptureStore(Protocol):
         """A version's element tree in document order (``sequence_index``)."""
         ...
 
+    def get_element(self, element_id: int) -> StoredSourceElement | None:
+        """One stored element by id (H5 section pin), or ``None`` if unknown."""
+        ...
+
 
 @dataclass(frozen=True)
 class SourceElementInput:

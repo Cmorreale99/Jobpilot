@@ -364,6 +364,22 @@ def test_0018_creates_source_elements_and_structuring_columns(tmp_path: Path) ->
     assert not {"structurer_version", "ingestion_status"} & version_columns
 
 
+def test_0019_adds_evidence_structure_linkage(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "section_ownership.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    evidence_columns = {c["name"] for c in inspector.get_columns("evidence")}
+    assert {"element_id", "sequence_index", "section_path"} <= evidence_columns
+    indexes = {i["name"] for i in inspector.get_indexes("evidence")}
+    assert "ix_evidence_element_id" in indexes
+
+    command.downgrade(cfg, "0018")
+    inspector = sa.inspect(sa.create_engine(url))
+    evidence_columns = {c["name"] for c in inspector.get_columns("evidence")}
+    assert not {"element_id", "sequence_index", "section_path"} & evidence_columns
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")

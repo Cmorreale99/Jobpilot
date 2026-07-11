@@ -15,11 +15,13 @@ from app.domain.roster import (
     ChunkAssigner,
     HeuristicChunkAssigner,
     HeuristicRosterProposer,
+    HeuristicSectionAssigner,
     RosterProposer,
+    SectionAssigner,
 )
 from app.llm.client import LlmClient
 from app.llm.factory import create_llm_client
-from app.llm.roster import LlmChunkAssigner, LlmRosterProposer
+from app.llm.roster import LlmChunkAssigner, LlmRosterProposer, LlmSectionAssigner
 
 logger = logging.getLogger(__name__)
 
@@ -60,3 +62,16 @@ def create_chunk_assigner(
         return HeuristicChunkAssigner()
     client = _resolve_client(settings, llm_client)
     return LlmChunkAssigner(client) if client is not None else HeuristicChunkAssigner()
+
+
+def create_section_assigner(
+    settings: Settings | None = None,
+    *,
+    llm_client: LlmClient | None = None,
+) -> SectionAssigner:
+    """Return the LLM section assigner when configured, else the heuristic (H5)."""
+    settings = settings or get_settings()
+    if not settings.roster_llm_detection:
+        return HeuristicSectionAssigner()
+    client = _resolve_client(settings, llm_client)
+    return LlmSectionAssigner(client) if client is not None else HeuristicSectionAssigner()

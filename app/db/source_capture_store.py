@@ -230,6 +230,11 @@ class SqlSourceCaptureStore:
             )
             return [_to_element(row) for row in rows]
 
+    def get_element(self, element_id: int) -> StoredSourceElement | None:
+        with self._session_factory() as session:
+            row = session.get(SourceElementRow, element_id)
+            return _to_element(row) if row is not None else None
+
     @staticmethod
     def _document_row(
         session: Session, user_id: str, source_type: str, source_ref: str

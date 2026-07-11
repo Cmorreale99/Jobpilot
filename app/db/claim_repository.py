@@ -46,6 +46,16 @@ from app.domain.text_normalization import NORMALIZATION_VERSION
 
 _UNREVIEWED = (ClaimStatus.EXTRACTED.value, ClaimStatus.PENDING_REVIEW.value)
 
+# Document order from columns (H5): structure-linked rows first, by element (element
+# ids are minted in document order per version), then sequence index; legacy and
+# structureless rows keep insertion order after them.
+_DOCUMENT_ORDER = (
+    EvidenceRow.element_id.is_(None),
+    EvidenceRow.element_id,
+    EvidenceRow.sequence_index,
+    EvidenceRow.id,
+)
+
 
 def _to_column_value(value: Any) -> Any:
     """Convert a domain edit value to its DB representation (enums/tuples -> str/list)."""
@@ -85,6 +95,9 @@ def _to_evidence(row: EvidenceRow) -> StoredEvidence:
         normalization_version=row.normalization_version,
         assignment_method=row.assignment_method,
         assigned_at=row.assigned_at,
+        element_id=row.element_id,
+        sequence_index=row.sequence_index,
+        section_path=row.section_path,
     )
 
 
@@ -323,7 +336,18 @@ class SqlClaimRepository:
                     EvidenceRow.user_id == user_id,
                     EvidenceRow.experience_id == experience_id,
                 )
-                .order_by(EvidenceRow.id)
+                .order_by(*_DOCUMENT_ORDER)
+            )
+            return [_to_evidence(row) for row in rows]
+
+    def list_evidence_for_elements(self, element_ids: Sequence[int]) -> list[StoredEvidence]:
+        if not element_ids:
+            return []
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(EvidenceRow)
+                .where(EvidenceRow.element_id.in_(list(element_ids)))
+                .order_by(*_DOCUMENT_ORDER)
             )
             return [_to_evidence(row) for row in rows]
 
@@ -355,6 +379,12 @@ class SqlClaimRepository:
                 # Fresh text = fresh normalizer output: re-stamp the generation.
                 row.chunk_text = chunk.chunk_text
                 row.normalization_version = NORMALIZATION_VERSION
+            if chunk.element_id is not None:
+                # Structure linkage is a derivation of the current tree (H5):
+                # refresh it; a legacy-shaped caller (None) never blanks it.
+                row.element_id = chunk.element_id
+                row.sequence_index = chunk.sequence_index
+                row.section_path = chunk.section_path
             return row
         row = EvidenceRow(
             user_id=user_id,
@@ -362,6 +392,9 @@ class SqlClaimRepository:
             source_ref=chunk.source_ref,
             chunk_text=chunk.chunk_text,
             normalization_version=NORMALIZATION_VERSION,
+            element_id=chunk.element_id,
+            sequence_index=chunk.sequence_index,
+            section_path=chunk.section_path,
         )
         session.add(row)
         session.flush()

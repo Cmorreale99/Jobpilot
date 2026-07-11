@@ -26,6 +26,7 @@ Pure and deterministic — no I/O, no LLM.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 # BUMP THIS on ANY change to the scanning rules below — persisted elements record the
@@ -198,6 +199,82 @@ def structure_commit_message(raw: str) -> list[SourceElement]:
     ]
 
 
+# --- section views over the tree (H5) -------------------------------------------------
+# Read-only derivations for section-scoped ownership; they change no scanning rule and
+# therefore never require a STRUCTURER_VERSION bump.
+
+
+def heading_text(element: SourceElement) -> str:
+    """A heading's human text: the raw line minus its ``#`` marker."""
+    return element.raw_text.lstrip(" #").strip()
+
+
+def heading_trail(elements: Sequence[SourceElement], index: int) -> str | None:
+    """The heading trail governing one element, root-first (``"Cooper.ai > FedEx"``).
+
+    A heading's trail includes itself; anything else starts from its governing
+    heading. ``None`` when no heading governs the element (preamble/structureless).
+    """
+    trail: list[str] = []
+    start = elements[index]
+    current: SourceElement | None = start
+    if start.element_type != ELEMENT_HEADING:
+        current = elements[start.parent_index] if start.parent_index is not None else None
+    while current is not None:
+        trail.append(heading_text(current))
+        current = elements[current.parent_index] if current.parent_index is not None else None
+    if not trail:
+        return None
+    return " > ".join(reversed(trail))
+
+
+@dataclass(frozen=True)
+class SectionSubtree:
+    """One top-level section of a document: a root heading and everything it governs.
+
+    ``heading_index`` is the root heading's ``sequence_index`` — ``None`` for the
+    preamble pseudo-section (elements before any heading). ``path`` is the root
+    heading's text. This is the unit of ownership (H5): one entity decision per
+    subtree, inherited by every chunk cut from it.
+    """
+
+    heading_index: int | None
+    path: str | None
+    element_indices: tuple[int, ...]
+
+
+def top_level_sections(elements: Sequence[SourceElement]) -> list[SectionSubtree]:
+    """Partition the tree into top-level section subtrees, document order.
+
+    Every element lands in exactly one subtree: the root of its parent chain when
+    that root is a heading, else the preamble. A document with no headings is one
+    preamble section (the structureless case — per-chunk assignment applies).
+    """
+
+    def root_heading(index: int) -> int | None:
+        current = elements[index]
+        while current.parent_index is not None:
+            current = elements[current.parent_index]
+        return current.sequence_index if current.element_type == ELEMENT_HEADING else None
+
+    grouped: dict[int | None, list[int]] = {}
+    order: list[int | None] = []
+    for element in elements:
+        root = root_heading(element.sequence_index)
+        if root not in grouped:
+            grouped[root] = []
+            order.append(root)
+        grouped[root].append(element.sequence_index)
+    return [
+        SectionSubtree(
+            heading_index=root,
+            path=heading_text(elements[root]) if root is not None else None,
+            element_indices=tuple(grouped[root]),
+        )
+        for root in order
+    ]
+
+
 def verify_full_coverage(raw: str, elements: list[SourceElement]) -> list[str]:
     """The reconciliation invariant: zero silently dropped characters.
 
@@ -241,8 +318,12 @@ __all__ = [
     "STATUS_PARSER_ERROR",
     "STATUS_UNSUPPORTED",
     "STRUCTURER_VERSION",
+    "SectionSubtree",
     "SourceElement",
+    "heading_text",
+    "heading_trail",
     "structure_commit_message",
     "structure_source_text",
+    "top_level_sections",
     "verify_full_coverage",
 ]

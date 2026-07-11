@@ -149,5 +149,12 @@ class InMemorySourceCaptureStore:
     def list_elements(self, version_id: int) -> list[StoredSourceElement]:
         return sorted(self._elements.get(version_id, []), key=lambda e: e.sequence_index)
 
+    def get_element(self, element_id: int) -> StoredSourceElement | None:
+        for elements in self._elements.values():
+            for element in elements:
+                if element.id == element_id:
+                    return element
+        return None
+
 
 __all__ = ["InMemorySourceCaptureStore"]

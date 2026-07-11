@@ -57,6 +57,10 @@ class SourceDocument:
     mime_type: str | None = None
     modified_time: datetime | None = None
     size_bytes: int | None = None
+    # As-received text (H2/H5): what structure-aware chunking derives elements from.
+    # ``None`` for callers that only have normalized text — they fall back to the
+    # flat-text path.
+    raw_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +157,30 @@ class HeuristicRosterProposer:
         return proposals
 
 
+def _entity_profiles(roster: Sequence[Experience]) -> list[tuple[int, frozenset[str]]]:
+    return [
+        (
+            entity.id,
+            frozenset(token for name in (entity.name, *entity.aliases) for token in tokenize(name)),
+        )
+        for entity in roster
+    ]
+
+
+def _best_entity(text: str, profiles: Sequence[tuple[int, frozenset[str]]]) -> int | None:
+    """The unique highest token-overlap entity; a tie or zero overlap is ``None``."""
+    tokens = set(tokenize(text))
+    scored = sorted(
+        ((len(entity_tokens & tokens), entity_id) for entity_id, entity_tokens in profiles),
+        reverse=True,
+    )
+    if not scored or scored[0][0] == 0:
+        return None
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None  # ambiguous: refuse rather than guess
+    return scored[0][1]
+
+
 class HeuristicChunkAssigner:
     """Name/alias token-overlap scoring; a tie or zero overlap is ``None``.
 
@@ -163,28 +191,62 @@ class HeuristicChunkAssigner:
     method = ASSIGNMENT_HEURISTIC
 
     def assign(self, chunks: Sequence[str], roster: Sequence[Experience]) -> list[int | None]:
-        profiles = [
-            (
-                entity.id,
-                frozenset(
-                    token for name in (entity.name, *entity.aliases) for token in tokenize(name)
-                ),
-            )
-            for entity in roster
-        ]
+        profiles = _entity_profiles(roster)
+        return [_best_entity(chunk, profiles) for chunk in chunks]
+
+
+# --- section-scoped ownership (H5) ----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SectionContent:
+    """One top-level section subtree as the section assigner sees it.
+
+    ``heading`` is the root heading's text (``None`` for the preamble/structureless
+    pseudo-section); ``body`` is the subtree's remaining text in document order.
+    """
+
+    heading: str | None
+    body: str
+
+
+@runtime_checkable
+class SectionAssigner(Protocol):
+    """Decides ownership once per top-level section subtree (``None`` = unowned).
+
+    The H5 fix for the Cooper misassignment: a Result paragraph with zero entity
+    tokens inherits its section's owner instead of being re-guessed in isolation.
+    Returns one entry per section, aligned by index; ``method`` labels how the
+    *section decision* was made (chunks inheriting it are stamped ``section``).
+    """
+
+    method: str
+
+    def assign_sections(
+        self, sections: Sequence[SectionContent], roster: Sequence[Experience]
+    ) -> list[int | None]: ...
+
+
+class HeuristicSectionAssigner:
+    """Heading tokens decide first; only a silent heading falls back to the body.
+
+    The heading is the author's own ownership declaration, so it outranks body
+    vocabulary — a body mentioning another project's tools can never outvote the
+    section title (heading-context beats vocabulary). Both stages refuse ties.
+    """
+
+    method = ASSIGNMENT_HEURISTIC
+
+    def assign_sections(
+        self, sections: Sequence[SectionContent], roster: Sequence[Experience]
+    ) -> list[int | None]:
+        profiles = _entity_profiles(roster)
         assignments: list[int | None] = []
-        for chunk in chunks:
-            chunk_tokens = set(tokenize(chunk))
-            scored = sorted(
-                ((len(tokens & chunk_tokens), entity_id) for entity_id, tokens in profiles),
-                reverse=True,
-            )
-            if not scored or scored[0][0] == 0:
-                assignments.append(None)
-            elif len(scored) > 1 and scored[0][0] == scored[1][0]:
-                assignments.append(None)  # ambiguous: refuse rather than guess
-            else:
-                assignments.append(scored[0][1])
+        for section in sections:
+            target = _best_entity(section.heading, profiles) if section.heading else None
+            if target is None:
+                target = _best_entity(section.body, profiles)
+            assignments.append(target)
         return assignments
 
 
@@ -278,9 +340,12 @@ __all__ = [
     "EntityOverlap",
     "HeuristicChunkAssigner",
     "HeuristicRosterProposer",
+    "HeuristicSectionAssigner",
     "ProposedEntity",
     "RosterDetectionError",
     "RosterProposer",
+    "SectionAssigner",
+    "SectionContent",
     "SourceDocument",
     "detect_entity_overlaps",
 ]
