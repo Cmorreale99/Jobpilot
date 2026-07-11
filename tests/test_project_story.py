@@ -420,6 +420,26 @@ def test_t14_number_words_must_be_supported() -> None:
     assert unsupported_number_tokens("doubled the export success rate", sources) == ["doubled"]
 
 
+def test_t14_magnitude_notation_is_equivalent_never_new_information() -> None:
+    """ "195K" and "195,000" are one quantity in two notations (the live Cooper case:
+    the extractor rephrased the evidence's "195K+" as "195,000" and the gate
+    quarantined a true result). Equivalence widens notation, never quantities."""
+    evidence = ["Remediated defects across four carriers, removing 195K+ duplicate FedEx rows,"]
+    assert unsupported_number_tokens("Removed over 195,000 duplicate rows", evidence) == []
+    assert unsupported_number_tokens("Removed 195K duplicate rows", evidence) == []
+    # A different quantity still fails — equivalence is not tolerance.
+    assert unsupported_number_tokens("Removed 196,000 duplicate rows", evidence) == ["196000"]
+
+    # Symmetric: expanded evidence grounds suffixed text.
+    assert unsupported_number_tokens("cut charges by $4.01M", ["charges fell by $4,010,000"]) == []
+    assert unsupported_number_tokens("cut charges by $4.01M", ["charges fell by $4.01M"]) == []
+    assert unsupported_number_tokens("cut charges by $4.2M", ["charges fell by $4,010,000"]) == [
+        "$4.2M"
+    ]
+    # A magnitude suffix glued to a word is not a magnitude ("4Mbps" ungrounded by "4000000").
+    assert unsupported_number_tokens("upgraded to 4Mbps links", ["4000000 rows"]) == ["4"]
+
+
 # --- Ranking (§3.2): deterministic leverage, no LLM self-scores ---------------------------
 
 
