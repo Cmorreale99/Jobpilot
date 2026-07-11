@@ -82,12 +82,14 @@ def test_factory_returns_none_when_unconfigured() -> None:
 async def test_gathering_applies_format_policy_and_normalizes(
     uploads_settings: Settings,
 ) -> None:
-    documents = await gather_source_documents(
-        MockDriveClient(FIXTURES_DIR),
-        MockGitHubClient(GITHUB_FIXTURES_DIR),
-        "u1",
-        uploads_settings,
-    )
+    documents = (
+        await gather_source_documents(
+            MockDriveClient(FIXTURES_DIR),
+            MockGitHubClient(GITHUB_FIXTURES_DIR),
+            "u1",
+            uploads_settings,
+        )
+    ).documents
     uploads = [d for d in documents if d.source_type == SOURCE_UPLOAD]
     refs = {d.source_ref for d in uploads}
     assert refs == {"consulting_engagement.md", "award_letter.txt"}  # .pdf excluded
@@ -97,10 +99,12 @@ async def test_gathering_applies_format_policy_and_normalizes(
 
 
 async def test_uploads_skipped_entirely_when_unconfigured(settings: Settings) -> None:
-    documents = await gather_source_documents(
-        MockDriveClient(FIXTURES_DIR),
-        MockGitHubClient(GITHUB_FIXTURES_DIR),
-        "u1",
-        settings,  # conftest settings: uploads_dir empty
-    )
+    documents = (
+        await gather_source_documents(
+            MockDriveClient(FIXTURES_DIR),
+            MockGitHubClient(GITHUB_FIXTURES_DIR),
+            "u1",
+            settings,  # conftest settings: uploads_dir empty
+        )
+    ).documents
     assert all(d.source_type != SOURCE_UPLOAD for d in documents)

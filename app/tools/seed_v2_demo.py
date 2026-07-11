@@ -61,7 +61,9 @@ async def _confirm_fixture_roster(
     proposals explicitly and assigns each source's chunks to its own entity.
     Twin logic lives in ``tests/conftest.py::confirm_source_roster``.
     """
-    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+    documents = (
+        await gather_source_documents(drive_client, github_client, user_id, settings)
+    ).documents
     confirmed: dict[str, int] = {}
     for proposal in HeuristicRosterProposer().propose(documents):
         experience = repository.propose_experience(user_id, proposal.to_seed())

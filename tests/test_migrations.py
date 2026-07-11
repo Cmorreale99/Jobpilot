@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
@@ -53,11 +54,14 @@ def test_upgrade_creates_schema_then_downgrade_drops_it(tmp_path: Path) -> None:
     assert "oauth_credentials" not in sa.inspect(sa.create_engine(url)).get_table_names()
 
 
-def test_upgrade_creates_master_cv_and_cv_sources(tmp_path: Path) -> None:
+def test_upgrade_creates_master_cv_and_drops_dead_cv_sources(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "cv.db")
     command.upgrade(_config(url), "head")
     tables = set(sa.inspect(sa.create_engine(url)).get_table_names())
-    assert {"master_cv", "cv_sources"} <= tables
+    assert "master_cv" in tables
+    # cv_sources was dead V1 schema (never a writer); 0017 replaces it with the
+    # canonical capture tables.
+    assert "cv_sources" not in tables
 
 
 def test_upgrade_creates_jobs_and_matches(tmp_path: Path) -> None:
@@ -281,6 +285,52 @@ def test_0016_adds_evidence_assignment_method_columns(tmp_path: Path) -> None:
     command.downgrade(cfg, "0015")
     columns = {c["name"] for c in sa.inspect(sa.create_engine(url)).get_columns("evidence")}
     assert "assignment_method" not in columns and "assigned_at" not in columns
+
+
+def test_0017_creates_source_capture_tables_and_drops_cv_sources(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "capture.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    tables = set(inspector.get_table_names())
+    assert {"source_documents", "source_document_versions"} <= tables
+    assert "cv_sources" not in tables
+    doc_columns = {c["name"] for c in inspector.get_columns("source_documents")}
+    assert {"user_id", "source_type", "source_ref", "title", "mime_type", "size_bytes"} <= (
+        doc_columns
+    )
+    version_columns = {c["name"] for c in inspector.get_columns("source_document_versions")}
+    assert {
+        "document_id",
+        "content_hash",
+        "raw_text",
+        "extractor",
+        "normalization_version",
+        "is_active",
+    } <= version_columns
+
+    command.downgrade(cfg, "0016")
+    tables = set(sa.inspect(sa.create_engine(url)).get_table_names())
+    assert "cv_sources" in tables  # restored empty, exactly as 0002 defined it
+    assert not {"source_documents", "source_document_versions"} & tables
+
+
+def test_0017_refuses_to_drop_a_nonempty_cv_sources(tmp_path: Path) -> None:
+    """The guard: rows in cv_sources mean the dead-table finding was wrong for this
+    database — the migration must refuse rather than destroy."""
+    url = _sqlite_url(tmp_path, "guarded.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "0016")
+    with sa.create_engine(url).begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO cv_sources (user_id, source_type, external_ref, title, mime_type,"
+                " raw_text, content_hash, ingested_at)"
+                " VALUES ('u1', 'gdrive', 'ref1', 'T', 'text/plain', 'body', 'h', '2026-07-11')"
+            )
+        )
+    with pytest.raises(RuntimeError, match="cv_sources holds 1 row"):
+        command.upgrade(cfg, "head")
 
 
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:

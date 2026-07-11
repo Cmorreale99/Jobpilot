@@ -1,4 +1,4 @@
-"""ORM models: ``oauth_credentials``, ``master_cv``, ``cv_sources``.
+"""ORM models: ``oauth_credentials``, ``master_cv``, ``source_documents``, ...
 
 OAuth tokens are stored **encrypted** (the ``encrypted_*`` columns hold Fernet
 ciphertext); the store layer is the only place that encrypts/decrypts. Plaintext tokens
@@ -59,24 +59,53 @@ class MasterCvRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class CvSourceRow(Base):
-    """Deduped provenance for one ingested artifact, per user."""
+class SourceDocumentRow(Base):
+    """One captured source's identity + latest metadata (canonical capture, H2).
 
-    __tablename__ = "cv_sources"
+    Replaces the dead V1 ``cv_sources`` table (dropped in migration ``0017`` — it never
+    had a writer). One row per ``(user_id, source_type, source_ref)``; the raw payloads
+    live in ``source_document_versions``.
+    """
+
+    __tablename__ = "source_documents"
     __table_args__ = (
-        UniqueConstraint("user_id", "source_type", "external_ref", name="uq_cv_source_user_ref"),
+        UniqueConstraint("user_id", "source_type", "source_ref", name="uq_source_doc_user_ref"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[str] = mapped_column(String(255), index=True)
     source_type: Mapped[str] = mapped_column(String(32))
-    external_ref: Mapped[str] = mapped_column(String(512))
+    source_ref: Mapped[str] = mapped_column(String(512))
     title: Mapped[str] = mapped_column(String(1024))
-    mime_type: Mapped[str] = mapped_column(String(255))
-    raw_text: Mapped[str] = mapped_column(Text)
-    content_hash: Mapped[str] = mapped_column(String(64))
+    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     modified_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SourceDocumentVersionRow(Base):
+    """One immutable raw payload of a captured source (canonical capture, H2).
+
+    ``raw_text`` is the text exactly as the client returned it — **pre-normalization**.
+    Never updated or deleted after insert; only ``is_active`` moves (exactly one active
+    version per document; content returning to an earlier hash re-activates that row).
+    ``normalization_version`` records which normalizer generation downstream spans of
+    this payload were taken under.
+    """
+
+    __tablename__ = "source_document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "content_hash", name="uq_source_version_doc_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(Integer, index=True)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    raw_text: Mapped[str] = mapped_column(Text)
+    extractor: Mapped[str] = mapped_column(String(128))
+    normalization_version: Mapped[int] = mapped_column(Integer)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class JobRow(Base):

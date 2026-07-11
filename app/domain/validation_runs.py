@@ -34,6 +34,10 @@ KIND_STORY_EVAL = "story_eval"
 # One row per expected-project reconciliation pass (v3.1 Increment 5): pass = every
 # expected project detected; fail detail names each parsing gap / missing project.
 KIND_PROJECT_RECONCILIATION = "project_reconciliation"
+# One row per source-gather pass (hardening H2): pass = zero read failures; the detail
+# lines carry every non-ok disposition (policy exclusions with reasons, failed reads) —
+# a source that didn't load is never silently indistinguishable from an empty one.
+KIND_SOURCE_GATHER = "source_gather"
 
 
 @dataclass(frozen=True)
