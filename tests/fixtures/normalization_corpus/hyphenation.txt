@@ -1,0 +1,5 @@
+Migrated the warehouse to Snow-
+flake and cut nightly runtime.
+
+Adopted a state-
+of-the-art dedupe strategy for carrier rows.
