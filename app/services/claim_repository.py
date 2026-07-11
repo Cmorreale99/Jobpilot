@@ -221,11 +221,18 @@ class InMemoryClaimRepository(ClaimRepository):
             None,
         )
 
-    def assign_evidence(self, evidence_id: int, experience_id: int | None) -> StoredEvidence:
+    def assign_evidence(
+        self, evidence_id: int, experience_id: int | None, *, method: str | None = None
+    ) -> StoredEvidence:
         stored = self._evidence.get(evidence_id)
         if stored is None:
             raise LookupError(f"no evidence with id {evidence_id}")
-        updated = replace(stored, experience_id=experience_id)
+        updated = replace(
+            stored,
+            experience_id=experience_id,
+            assignment_method=method,
+            assigned_at=datetime.now(tz=UTC),
+        )
         self._evidence[evidence_id] = updated
         return updated
 

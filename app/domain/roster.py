@@ -25,6 +25,7 @@ from itertools import combinations
 from typing import Protocol, runtime_checkable
 
 from app.domain.claims import (
+    ASSIGNMENT_HEURISTIC,
     SOURCE_GITHUB_COMMIT,
     SOURCE_GITHUB_README,
     Claim,
@@ -91,8 +92,12 @@ class RosterProposer(Protocol):
 class ChunkAssigner(Protocol):
     """Assigns chunks to confirmed roster entities (``None`` = honestly unassigned).
 
-    Returns one entry per chunk text, aligned by index.
+    Returns one entry per chunk text, aligned by index. Implementations carry a
+    ``method`` label (an ``ASSIGNMENT_*`` value) so every assignment they make is
+    stamped with HOW it was decided (hardening H1).
     """
+
+    method: str
 
     def assign(self, chunks: Sequence[str], roster: Sequence[Experience]) -> list[int | None]: ...
 
@@ -145,6 +150,8 @@ class HeuristicChunkAssigner:
     Deliberately conservative: an unassigned chunk never feeds extraction, which is
     strictly better than feeding it to the wrong project.
     """
+
+    method = ASSIGNMENT_HEURISTIC
 
     def assign(self, chunks: Sequence[str], roster: Sequence[Experience]) -> list[int | None]:
         profiles = [

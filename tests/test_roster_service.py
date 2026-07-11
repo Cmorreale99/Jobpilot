@@ -15,6 +15,10 @@ from pathlib import Path
 import pytest
 from app.config import Settings
 from app.domain.claims import (
+    ASSIGNMENT_HEURISTIC,
+    ASSIGNMENT_HUMAN,
+    ASSIGNMENT_README_REF,
+    ASSIGNMENT_REPO_REF,
     SOURCE_DRIVE,
     SOURCE_GITHUB_COMMIT,
     SOURCE_GITHUB_README,
@@ -201,6 +205,63 @@ async def test_assignment_scopes_chunks_with_spans_and_honest_unassignment(
     # The resume evidence landed on the merged employer entity.
     employer_chunks = repo.list_assigned_evidence("u1", ids["employer"])
     assert any("Coopersmith" in e.chunk_text for e in employer_chunks)
+
+
+async def test_human_assignment_survives_machine_rerun(
+    drive_client: MockDriveClient,
+    github_client: MockGitHubClient,
+    roster_settings: Settings,
+) -> None:
+    """The H1 pin: a manual correction is never clobbered by a later assignment run.
+
+    Regression for hardening F2 — ``run_roster_assignment`` used to call
+    ``assign_evidence`` unconditionally, so the next run silently overwrote a human
+    decision with the assigner's fresh guess.
+    """
+    repo = InMemoryClaimRepository()
+    ids = await _reviewed_roster(drive_client, github_client, roster_settings, repo)
+    await run_roster_assignment(drive_client, github_client, "u1", repo, roster_settings)
+
+    # The human overrides the assigner: a chunk the heuristic put under Wellington
+    # (its text contains "Wellington", so a re-run WOULD move it back) goes to PFAS.
+    chunk = repo.list_assigned_evidence("u1", ids["wellington"])[0]
+    repo.assign_evidence(chunk.id, ids["pfas"], method=ASSIGNMENT_HUMAN)
+
+    report = await run_roster_assignment(drive_client, github_client, "u1", repo, roster_settings)
+
+    updated = repo.get_evidence(chunk.id)
+    assert updated is not None
+    assert updated.experience_id == ids["pfas"]  # the decision stands
+    assert updated.assignment_method == ASSIGNMENT_HUMAN
+    assert report.pinned == 1
+    assert report.assigned + report.unassigned == report.chunks
+
+
+async def test_assignment_paths_stamp_method_labels(
+    drive_client: MockDriveClient,
+    github_client: MockGitHubClient,
+    roster_settings: Settings,
+) -> None:
+    """Every assignment path labels HOW it decided (H1): repo_ref / readme_ref /
+    heuristic; unassigned chunks stay unlabeled."""
+    repo = InMemoryClaimRepository()
+    ids = await _reviewed_roster(drive_client, github_client, roster_settings, repo)
+    await run_roster_assignment(drive_client, github_client, "u1", repo, roster_settings)
+
+    carrier_evidence = repo.list_assigned_evidence("u1", ids["carrier"])
+    by_type = {
+        source_type: {e.assignment_method for e in carrier_evidence if e.source_type == source_type}
+        for source_type in (SOURCE_GITHUB_COMMIT, SOURCE_GITHUB_README)
+    }
+    assert by_type[SOURCE_GITHUB_COMMIT] == {ASSIGNMENT_REPO_REF}
+    assert by_type[SOURCE_GITHUB_README] == {ASSIGNMENT_README_REF}
+
+    for entity in ("wellington", "pfas", "employer"):
+        drive_evidence = repo.list_assigned_evidence("u1", ids[entity])
+        assert {e.assignment_method for e in drive_evidence} == {ASSIGNMENT_HEURISTIC}
+        assert all(e.assigned_at is not None for e in drive_evidence)
+
+    assert all(e.assignment_method is None for e in repo.list_unassigned_evidence("u1"))
 
 
 async def test_extraction_runs_per_confirmed_entity_and_claims_land_under_projects(

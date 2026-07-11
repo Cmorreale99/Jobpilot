@@ -266,6 +266,8 @@ def test_manual_assignment_resolves_the_queue_item(
     )
     assert response.status_code == 200
     assert response.json()["experience_id"] == experience.id
+    # The API stamps the human label — this is what pins the row against re-runs (H1).
+    assert response.json()["assignment_method"] == "human"
     assert client.get("/roster/unassigned", params={"user_id": "u1"}).json()["count"] == 0
     assert repo.list_assigned_evidence("u1", experience.id)
 

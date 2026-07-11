@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from app.domain.claims import Experience, ExperienceKind, ExperienceSection
+from app.domain.claims import ASSIGNMENT_LLM, Experience, ExperienceKind, ExperienceSection
 from app.domain.roster import (
     ProposedEntity,
     RosterDetectionError,
@@ -185,6 +185,8 @@ class LlmRosterProposer:
 
 class LlmChunkAssigner:
     """Chunk→entity assignment via one BULK-tier call per batch of chunks."""
+
+    method = ASSIGNMENT_LLM
 
     def __init__(self, client: LlmClient, *, tier: ModelTier = ModelTier.BULK) -> None:
         self._client = client

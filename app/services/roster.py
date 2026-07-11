@@ -23,6 +23,9 @@ from dataclasses import dataclass, field
 from app.config import Settings, get_settings
 from app.domain.chunking import chunk_normalized_text
 from app.domain.claims import (
+    ASSIGNMENT_HUMAN,
+    ASSIGNMENT_README_REF,
+    ASSIGNMENT_REPO_REF,
     SOURCE_DRIVE,
     SOURCE_GITHUB_COMMIT,
     SOURCE_GITHUB_README,
@@ -80,11 +83,16 @@ class RosterDetectionReport:
 
 @dataclass(frozen=True)
 class RosterAssignmentReport:
-    """What one assignment run scoped (per user)."""
+    """What one assignment run scoped (per user).
+
+    ``pinned`` counts chunks left untouched because a human assigned them
+    (``assignment_method='human'``) — a machine run never overwrites those (H1).
+    """
 
     chunks: int
     assigned: int
     unassigned: int
+    pinned: int = 0
 
 
 @dataclass(frozen=True)
@@ -343,7 +351,9 @@ async def run_roster_assignment(
 
     Repo evidence (README chunks + commits) assigns directly to the entity whose
     name/aliases match the repo ref; document chunks go through the assigner. A chunk
-    nothing matches stays honestly unassigned and never feeds extraction.
+    nothing matches stays honestly unassigned and never feeds extraction. Every
+    assignment is labeled with HOW it was made, and a chunk a human assigned
+    (``assignment_method='human'``) is pinned — this run never overwrites it (H1).
     """
     settings = settings or get_settings()
     assigner = assigner or create_chunk_assigner(settings)
@@ -357,6 +367,19 @@ async def run_roster_assignment(
     documents = await gather_source_documents(drive_client, github_client, user_id, settings)
     chunks = 0
     assigned = 0
+    pinned = 0
+
+    def apply(stored: StoredEvidence, target: int | None, method: str | None) -> None:
+        """Assign one chunk unless a human already decided it (the H1 pin)."""
+        nonlocal chunks, assigned, pinned
+        chunks += 1
+        if stored.assignment_method == ASSIGNMENT_HUMAN:
+            pinned += 1
+            assigned += 1 if stored.experience_id is not None else 0
+            return
+        repository.assign_evidence(stored.id, target, method=method if target is not None else None)
+        assigned += 1 if target is not None else 0
+
     for document in documents:
         if document.source_type == SOURCE_GITHUB_COMMIT:
             base_ref, _ = split_span_ref(document.source_ref)
@@ -366,17 +389,17 @@ async def run_roster_assignment(
                 user_id,
                 EvidenceChunk(document.source_type, document.source_ref, document.text),
             )
-            repository.assign_evidence(stored.id, entity.id if entity else None)
-            chunks += 1
-            assigned += 1 if entity else 0
+            apply(stored, entity.id if entity else None, ASSIGNMENT_REPO_REF)
             continue
 
         pieces = chunk_normalized_text(document.text)
         if document.source_type == SOURCE_GITHUB_README:
             entity = _repo_entity(roster, document.source_ref)
             targets: list[int | None] = [entity.id if entity else None] * len(pieces)
+            method = ASSIGNMENT_README_REF
         else:
             targets = assigner.assign([piece.text for piece in pieces], roster)
+            method = assigner.method
         for piece, target in zip(pieces, targets, strict=True):
             stored = repository.upsert_evidence(
                 user_id,
@@ -386,16 +409,18 @@ async def run_roster_assignment(
                     piece.text,
                 ),
             )
-            repository.assign_evidence(stored.id, target)
-            chunks += 1
-            assigned += 1 if target is not None else 0
+            apply(stored, target, method)
 
-    report = RosterAssignmentReport(chunks=chunks, assigned=assigned, unassigned=chunks - assigned)
+    report = RosterAssignmentReport(
+        chunks=chunks, assigned=assigned, unassigned=chunks - assigned, pinned=pinned
+    )
     logger.info(
-        "roster assignment for %s: %d chunk(s), %d assigned, %d honestly unassigned",
+        "roster assignment for %s: %d chunk(s), %d assigned, %d honestly unassigned, "
+        "%d human-pinned (untouched)",
         user_id,
         report.chunks,
         report.assigned,
         report.unassigned,
+        report.pinned,
     )
     return report

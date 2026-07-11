@@ -19,6 +19,7 @@ from app.api.deps import get_claim_repository, get_story_repository
 from app.config import Settings, get_settings
 from app.domain.applications import InvalidTransitionError
 from app.domain.claims import (
+    ASSIGNMENT_HUMAN,
     ClaimRepository,
     Experience,
     ExperienceKind,
@@ -128,6 +129,7 @@ async def assign(user_id: str, request: Request, repository: RepositoryDep) -> d
         "chunks": report.chunks,
         "assigned": report.assigned,
         "unassigned": report.unassigned,
+        "pinned": report.pinned,
     }
 
 
@@ -169,6 +171,7 @@ def unassigned(user_id: str, repository: RepositoryDep) -> dict[str, Any]:
                 "source_type": e.source_type,
                 "source_ref": e.source_ref,
                 "chunk_text": e.chunk_text,
+                "assignment_method": e.assignment_method,
             }
             for e in rows
         ],
@@ -197,11 +200,14 @@ def assign_evidence(
             detail=f"experience {experience.id} is {experience.status.value}, not confirmed — "
             "evidence assigns to confirmed entities only",
         )
-    updated = repository.assign_evidence(evidence_id, experience.id)
+    # A manual assignment is a retained human decision: labeled `human`, it is
+    # pinned — machine re-runs (`run_roster_assignment`) never overwrite it (H1).
+    updated = repository.assign_evidence(evidence_id, experience.id, method=ASSIGNMENT_HUMAN)
     return {
         "id": updated.id,
         "experience_id": updated.experience_id,
         "source_ref": updated.source_ref,
+        "assignment_method": updated.assignment_method,
     }
 
 
