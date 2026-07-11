@@ -82,7 +82,9 @@ async def confirm_source_roster(
     Returns the confirmed entities keyed by casefolded name. Twin logic lives in
     ``app/tools/seed_v2_demo.py`` (the demo seeder's roster review).
     """
-    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+    documents = (
+        await gather_source_documents(drive_client, github_client, user_id, settings)
+    ).documents
     confirmed: dict[str, Experience] = {}
     for proposal in HeuristicRosterProposer().propose(documents):
         experience = repository.propose_experience(user_id, proposal.to_seed())

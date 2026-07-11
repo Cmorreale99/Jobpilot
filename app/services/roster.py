@@ -49,10 +49,12 @@ from app.domain.roster import (
     SourceDocument,
     detect_entity_overlaps,
 )
+from app.domain.source_capture import SourceCaptureStore
 from app.domain.text_normalization import normalize_source_text
 from app.domain.validation_runs import (
     KIND_ENTITY_OVERLAP,
     KIND_PROJECT_RECONCILIATION,
+    KIND_SOURCE_GATHER,
     ValidationRunLog,
 )
 from app.integrations.base import (
@@ -65,12 +67,71 @@ from app.integrations.base import (
 from app.integrations.uploads import create_uploads_client
 from app.services.roster_factory import create_chunk_assigner, create_roster_proposer
 from app.services.source_policy import (
-    apply_repo_policy,
-    apply_source_policy,
-    apply_upload_policy,
+    drive_exclusion_reason,
+    repo_exclusion_reason,
+    upload_exclusion_reason,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Disposition statuses for the gather report (H2): every discovered candidate ends in
+# exactly one of these — a source can be excluded or fail to read, but never vanish.
+GATHER_OK = "ok"
+GATHER_READ_FAILED = "read_failed"
+GATHER_POLICY_EXCLUDED = "policy_excluded"
+
+
+@dataclass(frozen=True)
+class SourceDisposition:
+    """What happened to one discovered source during a gather pass."""
+
+    source_type: str
+    source_ref: str
+    title: str
+    status: str  # GATHER_OK | GATHER_READ_FAILED | GATHER_POLICY_EXCLUDED
+    reason: str | None = None
+
+    def describe(self) -> str:
+        suffix = f" ({self.reason})" if self.reason else ""
+        return f"{self.status}: {self.source_type}:{self.source_ref}{suffix}"
+
+
+@dataclass(frozen=True)
+class GatherReport:
+    """Full disposition accounting for one gather pass (H2): zero silent drops."""
+
+    dispositions: tuple[SourceDisposition, ...] = ()
+
+    def _with_status(self, status: str) -> list[SourceDisposition]:
+        return [d for d in self.dispositions if d.status == status]
+
+    @property
+    def ok(self) -> list[SourceDisposition]:
+        return self._with_status(GATHER_OK)
+
+    @property
+    def read_failed(self) -> list[SourceDisposition]:
+        return self._with_status(GATHER_READ_FAILED)
+
+    @property
+    def policy_excluded(self) -> list[SourceDisposition]:
+        return self._with_status(GATHER_POLICY_EXCLUDED)
+
+    def summary(self) -> dict[str, int]:
+        return {
+            GATHER_OK: len(self.ok),
+            GATHER_READ_FAILED: len(self.read_failed),
+            GATHER_POLICY_EXCLUDED: len(self.policy_excluded),
+        }
+
+
+@dataclass(frozen=True)
+class GatheredSources:
+    """The gather pass's output: the documents plus where everything else went."""
+
+    documents: list[SourceDocument]
+    report: GatherReport
 
 
 @dataclass(frozen=True)
@@ -79,6 +140,7 @@ class RosterDetectionReport:
 
     documents: int
     proposed: list[Experience] = field(default_factory=list)
+    gather: GatherReport = field(default_factory=GatherReport)
 
 
 @dataclass(frozen=True)
@@ -93,6 +155,7 @@ class RosterAssignmentReport:
     assigned: int
     unassigned: int
     pinned: int = 0
+    gather: GatherReport = field(default_factory=GatherReport)
 
 
 @dataclass(frozen=True)
@@ -130,72 +193,166 @@ async def gather_source_documents(
     settings: Settings | None = None,
     *,
     uploads_client: UploadsClient | None = None,
-) -> list[SourceDocument]:
-    """Every policy-approved source as one normalized document.
+    capture_store: SourceCaptureStore | None = None,
+    validation_log: ValidationRunLog | None = None,
+) -> GatheredSources:
+    """Every policy-approved source as one normalized document, with full accounting.
 
     Drive docs, repo READMEs + commits, and — when ``UPLOADS_DIR`` is configured (or a
     client injected) — local uploads, all normalized before anything downstream reads
-    them. This is the single evidence-gathering path of V2.
+    them. This is the single evidence-gathering path of V2, hardened (H2):
+
+    * Every discovered candidate ends in exactly one recorded disposition — gathered,
+      policy-excluded (with the reason), or read-failed (with the error). A source
+      that didn't load is never indistinguishable from an empty one.
+    * Read failures are symmetric across Drive/GitHub/uploads: logged, recorded,
+      never fatal to the rest of the gather — and never silent.
+    * When ``capture_store`` is provided, each document's **as-received** text is
+      persisted (idempotent by content hash) BEFORE normalization — the canonical
+      raw layer every downstream transform derives from.
+    * When ``validation_log`` is provided, the pass lands in ``validation_runs``
+      (kind ``source_gather``; pass = zero read failures).
     """
     settings = settings or get_settings()
     documents: list[SourceDocument] = []
+    dispositions: list[SourceDisposition] = []
 
-    for source in apply_source_policy(await drive_client.list_candidate_sources(user_id), settings):
+    def gathered(document: SourceDocument, *, extractor: str, raw_text: str) -> None:
+        """Capture raw, record the ok disposition, and keep the normalized document."""
+        if capture_store is not None:
+            capture_store.capture(
+                user_id,
+                source_type=document.source_type,
+                source_ref=document.source_ref,
+                title=document.title,
+                raw_text=raw_text,
+                extractor=extractor,
+                mime_type=document.mime_type,
+                modified_time=document.modified_time,
+                size_bytes=document.size_bytes,
+            )
+        documents.append(document)
+        dispositions.append(
+            SourceDisposition(document.source_type, document.source_ref, document.title, GATHER_OK)
+        )
+
+    def failed(source_type: str, source_ref: str, title: str, exc: Exception) -> None:
+        logger.warning("read failed for %s %s: %s", source_type, source_ref, exc)
+        dispositions.append(
+            SourceDisposition(source_type, source_ref, title, GATHER_READ_FAILED, reason=str(exc))
+        )
+
+    def excluded(source_type: str, source_ref: str, title: str, reason: str) -> None:
+        dispositions.append(
+            SourceDisposition(source_type, source_ref, title, GATHER_POLICY_EXCLUDED, reason=reason)
+        )
+
+    drive_extractor = f"drive:{type(drive_client).__name__}"
+    for source in await drive_client.list_candidate_sources(user_id):
+        reason = drive_exclusion_reason(source, settings)
+        if reason is not None:
+            excluded(SOURCE_DRIVE, source.source_ref, source.title, reason)
+            continue
         try:
             document = await drive_client.read_source(source.source_ref)
         except DriveResponseError as exc:
-            logger.warning("skipping Drive source %s: %s", source.title, exc)
+            failed(SOURCE_DRIVE, source.source_ref, source.title, exc)
             continue
-        documents.append(
+        gathered(
             SourceDocument(
                 source_type=SOURCE_DRIVE,
                 source_ref=document.source_ref,
                 title=document.title,
                 text=normalize_source_text(document.text),
-            )
+                mime_type=document.mime_type,
+                modified_time=document.modified_time,
+            ),
+            extractor=drive_extractor,
+            raw_text=document.text,
         )
 
-    for repo in apply_repo_policy(await github_client.list_candidate_repos(user_id), settings):
+    github_extractor = f"github:{type(github_client).__name__}"
+    for repo in await github_client.list_candidate_repos(user_id):
+        reason = repo_exclusion_reason(repo, settings)
+        if reason is not None:
+            excluded(SOURCE_GITHUB_README, repo.repo_ref, repo.name, reason)
+            continue
         try:
             readme = await github_client.read_repo(repo.repo_ref)
-            documents.append(
+        except GitHubResponseError as exc:
+            failed(SOURCE_GITHUB_README, repo.repo_ref, repo.name, exc)
+        else:
+            gathered(
                 SourceDocument(
                     source_type=SOURCE_GITHUB_README,
                     source_ref=repo.repo_ref,
                     title=repo.name,
                     text=normalize_source_text(readme.text),
-                )
+                    modified_time=repo.pushed_at,
+                ),
+                extractor=github_extractor,
+                raw_text=readme.text,
             )
-        except GitHubResponseError as exc:
-            logger.warning("no README evidence for %s: %s", repo.repo_ref, exc)
         try:
-            for commit in await github_client.list_commits(repo.repo_ref):
-                documents.append(
-                    SourceDocument(
-                        source_type=SOURCE_GITHUB_COMMIT,
-                        source_ref=f"{repo.repo_ref}@{commit.sha}",
-                        title=repo.name,
-                        text=normalize_source_text(commit.message),
-                    )
-                )
+            commits = await github_client.list_commits(repo.repo_ref)
         except GitHubResponseError as exc:
-            logger.warning("no commit evidence for %s: %s", repo.repo_ref, exc)
+            failed(SOURCE_GITHUB_COMMIT, f"{repo.repo_ref}@*", repo.name, exc)
+            continue
+        for commit in commits:
+            gathered(
+                SourceDocument(
+                    source_type=SOURCE_GITHUB_COMMIT,
+                    source_ref=f"{repo.repo_ref}@{commit.sha}",
+                    title=repo.name,
+                    text=normalize_source_text(commit.message),
+                    modified_time=commit.authored_at,
+                ),
+                extractor=github_extractor,
+                raw_text=commit.message,
+            )
 
     uploads_client = uploads_client or create_uploads_client(settings)
     if uploads_client is not None:
-        candidates = await uploads_client.list_candidate_uploads()
-        for candidate in apply_upload_policy(candidates, settings):
-            upload = await uploads_client.read_upload(candidate.upload_ref)
-            documents.append(
+        uploads_extractor = f"upload:{type(uploads_client).__name__}"
+        for candidate in await uploads_client.list_candidate_uploads():
+            reason = upload_exclusion_reason(candidate, settings)
+            if reason is not None:
+                excluded(SOURCE_UPLOAD, candidate.upload_ref, candidate.title, reason)
+                continue
+            try:
+                upload = await uploads_client.read_upload(candidate.upload_ref)
+            except (FileNotFoundError, OSError, UnicodeDecodeError) as exc:
+                failed(SOURCE_UPLOAD, candidate.upload_ref, candidate.title, exc)
+                continue
+            gathered(
                 SourceDocument(
                     source_type=SOURCE_UPLOAD,
                     source_ref=upload.upload_ref,
                     title=upload.title,
                     text=normalize_source_text(upload.text),
-                )
+                    mime_type=upload.mime_type,
+                    modified_time=upload.modified_time,
+                ),
+                extractor=uploads_extractor,
+                raw_text=upload.text,
             )
 
-    return documents
+    report = GatherReport(dispositions=tuple(dispositions))
+    if report.read_failed:
+        logger.warning(
+            "gather for %s: %d source(s) failed to read — see the gather report",
+            user_id,
+            len(report.read_failed),
+        )
+    if validation_log is not None:
+        validation_log.record(
+            user_id,
+            KIND_SOURCE_GATHER,
+            subject_ref="sources",
+            passed=not report.read_failed,
+            detail=tuple(d.describe() for d in report.dispositions if d.status != GATHER_OK),
+        )
+    return GatheredSources(documents=documents, report=report)
 
 
 async def run_roster_detection(
@@ -205,11 +362,22 @@ async def run_roster_detection(
     repository: ClaimRepository,
     settings: Settings | None = None,
     proposer: RosterProposer | None = None,
+    *,
+    capture_store: SourceCaptureStore | None = None,
+    validation_log: ValidationRunLog | None = None,
 ) -> RosterDetectionReport:
     """Gather sources, propose entities, persist NEW proposals (existing rows win)."""
     settings = settings or get_settings()
     proposer = proposer or create_roster_proposer(settings)
-    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+    gathered = await gather_source_documents(
+        drive_client,
+        github_client,
+        user_id,
+        settings,
+        capture_store=capture_store,
+        validation_log=validation_log,
+    )
+    documents = gathered.documents
 
     known = {e.id for e in repository.list_experiences(user_id)}
     proposed: list[Experience] = []
@@ -223,7 +391,9 @@ async def run_roster_detection(
         len(documents),
         len(proposed),
     )
-    return RosterDetectionReport(documents=len(documents), proposed=proposed)
+    return RosterDetectionReport(
+        documents=len(documents), proposed=proposed, gather=gathered.report
+    )
 
 
 def _confirmed_roster(repository: ClaimRepository, user_id: str) -> list[Experience]:
@@ -306,7 +476,8 @@ async def run_project_reconciliation(
     """
     settings = settings or get_settings()
     roster = _confirmed_roster(repository, user_id)
-    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+    gathered = await gather_source_documents(drive_client, github_client, user_id, settings)
+    documents = gathered.documents
     results = reconcile_expected_projects(expected_projects, roster, [d.text for d in documents])
     report = ProjectReconciliationReport(results=results)
 
@@ -346,6 +517,9 @@ async def run_roster_assignment(
     repository: ClaimRepository,
     settings: Settings | None = None,
     assigner: ChunkAssigner | None = None,
+    *,
+    capture_store: SourceCaptureStore | None = None,
+    validation_log: ValidationRunLog | None = None,
 ) -> RosterAssignmentReport:
     """Chunk every source with char spans and assign each chunk to a confirmed entity.
 
@@ -364,7 +538,15 @@ async def run_roster_assignment(
         )
         return RosterAssignmentReport(chunks=0, assigned=0, unassigned=0)
 
-    documents = await gather_source_documents(drive_client, github_client, user_id, settings)
+    gathered = await gather_source_documents(
+        drive_client,
+        github_client,
+        user_id,
+        settings,
+        capture_store=capture_store,
+        validation_log=validation_log,
+    )
+    documents = gathered.documents
     chunks = 0
     assigned = 0
     pinned = 0
@@ -412,7 +594,11 @@ async def run_roster_assignment(
             apply(stored, target, method)
 
     report = RosterAssignmentReport(
-        chunks=chunks, assigned=assigned, unassigned=chunks - assigned, pinned=pinned
+        chunks=chunks,
+        assigned=assigned,
+        unassigned=chunks - assigned,
+        pinned=pinned,
+        gather=gathered.report,
     )
     logger.info(
         "roster assignment for %s: %d chunk(s), %d assigned, %d honestly unassigned, "

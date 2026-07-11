@@ -191,9 +191,11 @@ async def test_pipeline_runs_through_mcp_client() -> None:
 
     # No github_username in the settings, so the repo policy admits nothing — the
     # documents come from the MCP Drive client alone.
-    documents = await gather_source_documents(
-        client, MockGitHubClient(GITHUB_FIXTURES_DIR), "user-1", _mcp_settings()
-    )
+    documents = (
+        await gather_source_documents(
+            client, MockGitHubClient(GITHUB_FIXTURES_DIR), "user-1", _mcp_settings()
+        )
+    ).documents
 
     (document,) = documents
     assert document.title == "Resume.txt"

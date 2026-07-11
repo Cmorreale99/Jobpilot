@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from itertools import combinations
 from typing import Protocol, runtime_checkable
 
@@ -42,12 +43,20 @@ from app.domain.matching import tokenize
 
 @dataclass(frozen=True)
 class SourceDocument:
-    """One normalized source artifact feeding detection and assignment."""
+    """One normalized source artifact feeding detection and assignment.
 
-    source_type: str  # drive | github_readme | github_commit
-    source_ref: str  # doc id / repo ref / repo@sha
+    Metadata fields ride along from the client (H2) so the capture layer and any
+    downstream audit can see them; they default to ``None`` where a source type has
+    no such concept (commits have no MIME type, READMEs no size).
+    """
+
+    source_type: str  # drive | github_readme | github_commit | upload
+    source_ref: str  # doc id / repo ref / repo@sha / filename
     title: str
     text: str  # normalized (see domain/text_normalization.py)
+    mime_type: str | None = None
+    modified_time: datetime | None = None
+    size_bytes: int | None = None
 
 
 @dataclass(frozen=True)

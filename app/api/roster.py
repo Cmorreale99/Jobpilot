@@ -15,7 +15,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from starlette.requests import Request
 
-from app.api.deps import get_claim_repository, get_story_repository
+from app.api.deps import (
+    get_claim_repository,
+    get_source_capture_store,
+    get_story_repository,
+    get_validation_log,
+)
 from app.config import Settings, get_settings
 from app.domain.applications import InvalidTransitionError
 from app.domain.claims import (
@@ -27,6 +32,8 @@ from app.domain.claims import (
 )
 from app.domain.project_story import ProjectStoryRepository
 from app.domain.roster import RosterDetectionError
+from app.domain.source_capture import SourceCaptureStore
+from app.domain.validation_runs import ValidationRunLog
 from app.integrations.drive_factory import create_drive_client
 from app.integrations.github_factory import create_github_client
 from app.services.roster import (
@@ -39,6 +46,8 @@ router = APIRouter(prefix="/roster", tags=["roster"])
 
 RepositoryDep = Annotated[ClaimRepository, Depends(get_claim_repository)]
 StoryRepositoryDep = Annotated[ProjectStoryRepository, Depends(get_story_repository)]
+CaptureStoreDep = Annotated[SourceCaptureStore, Depends(get_source_capture_store)]
+ValidationLogDep = Annotated[ValidationRunLog, Depends(get_validation_log)]
 
 
 def _settings(request: Request) -> Settings:
@@ -92,7 +101,13 @@ def list_roster(user_id: str, repository: RepositoryDep) -> list[dict[str, Any]]
 
 
 @router.post("/detect")
-async def detect(user_id: str, request: Request, repository: RepositoryDep) -> dict[str, Any]:
+async def detect(
+    user_id: str,
+    request: Request,
+    repository: RepositoryDep,
+    capture_store: CaptureStoreDep,
+    validation_log: ValidationLogDep,
+) -> dict[str, Any]:
     """Run roster detection over the configured sources; new entities land proposed."""
     settings = _settings(request)
     try:
@@ -102,17 +117,26 @@ async def detect(user_id: str, request: Request, repository: RepositoryDep) -> d
             user_id,
             repository,
             settings,
+            capture_store=capture_store,
+            validation_log=validation_log,
         )
     except RosterDetectionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "documents": report.documents,
         "proposed": [_serialize(e, repository) for e in report.proposed],
+        "sources": report.gather.summary(),
     }
 
 
 @router.post("/assign")
-async def assign(user_id: str, request: Request, repository: RepositoryDep) -> dict[str, Any]:
+async def assign(
+    user_id: str,
+    request: Request,
+    repository: RepositoryDep,
+    capture_store: CaptureStoreDep,
+    validation_log: ValidationLogDep,
+) -> dict[str, Any]:
     """Chunk every source and assign the chunks to the confirmed entities."""
     settings = _settings(request)
     try:
@@ -122,6 +146,8 @@ async def assign(user_id: str, request: Request, repository: RepositoryDep) -> d
             user_id,
             repository,
             settings,
+            capture_store=capture_store,
+            validation_log=validation_log,
         )
     except RosterDetectionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -130,6 +156,7 @@ async def assign(user_id: str, request: Request, repository: RepositoryDep) -> d
         "assigned": report.assigned,
         "unassigned": report.unassigned,
         "pinned": report.pinned,
+        "sources": report.gather.summary(),
     }
 
 

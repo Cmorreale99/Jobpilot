@@ -40,13 +40,18 @@ def is_in_scope(source: DriveSource, settings: Settings) -> bool:
     return source.folder_id == settings.gdrive_source_folder_id
 
 
+def drive_exclusion_reason(source: DriveSource, settings: Settings) -> str | None:
+    """Why this candidate is excluded, or ``None`` if it passes policy (H2 gather report)."""
+    if not is_mime_allowed(source.mime_type, settings):
+        return f"mime_not_allowed:{source.mime_type}"
+    if not is_in_scope(source, settings):
+        return "out_of_scope"
+    return None
+
+
 def apply_source_policy(sources: Iterable[DriveSource], settings: Settings) -> list[DriveSource]:
     """Filter raw candidate sources down to those safe to ingest."""
-    return [
-        source
-        for source in sources
-        if is_mime_allowed(source.mime_type, settings) and is_in_scope(source, settings)
-    ]
+    return [source for source in sources if drive_exclusion_reason(source, settings) is None]
 
 
 # --- GitHub repo policy ----------------------------------------------------------
@@ -76,13 +81,20 @@ def is_repo_kind_allowed(repo: GitHubRepo, settings: Settings) -> bool:
     return not (repo.is_private and not settings.github_include_private)
 
 
+def repo_exclusion_reason(repo: GitHubRepo, settings: Settings) -> str | None:
+    """Why this repo is excluded, or ``None`` if it passes policy (H2 gather report)."""
+    if repo.is_fork and not settings.github_include_forks:
+        return "fork_excluded"
+    if repo.is_private and not settings.github_include_private:
+        return "private_excluded"
+    if not is_repo_in_scope(repo, settings):
+        return "owner_out_of_scope"
+    return None
+
+
 def apply_repo_policy(repos: Iterable[GitHubRepo], settings: Settings) -> list[GitHubRepo]:
     """Filter raw candidate repos down to those safe to ingest as career evidence."""
-    return [
-        repo
-        for repo in repos
-        if is_repo_kind_allowed(repo, settings) and is_repo_in_scope(repo, settings)
-    ]
+    return [repo for repo in repos if repo_exclusion_reason(repo, settings) is None]
 
 
 # --- Uploads policy ----------------------------------------------------------------
@@ -91,8 +103,15 @@ def apply_repo_policy(repos: Iterable[GitHubRepo], settings: Settings) -> list[G
 # rule is a format allowlist: files the local client can genuinely extract text from.
 
 
+def upload_exclusion_reason(candidate: UploadCandidate, settings: Settings) -> str | None:
+    """Why this upload is excluded, or ``None`` if it passes policy (H2 gather report)."""
+    if candidate.mime_type not in settings.uploads_allowed_mime_types_set:
+        return f"mime_not_allowed:{candidate.mime_type}"
+    return None
+
+
 def apply_upload_policy(
     candidates: Iterable[UploadCandidate], settings: Settings
 ) -> list[UploadCandidate]:
     """Keep only uploads whose MIME type is on the extractable-text allowlist."""
-    return [c for c in candidates if c.mime_type in settings.uploads_allowed_mime_types_set]
+    return [c for c in candidates if upload_exclusion_reason(c, settings) is None]

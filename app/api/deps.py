@@ -23,6 +23,7 @@ from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
 from app.db.problem_space_grouping_store import SqlGroupingStore
 from app.db.project_story_repository import SqlProjectStoryRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
+from app.db.source_capture_store import SqlSourceCaptureStore
 from app.db.validation_run_log import SqlValidationRunLog
 from app.domain.applications import ApplicationRepository
 from app.domain.artifacts import ArtifactStore
@@ -32,6 +33,7 @@ from app.domain.jobs import JobRepository
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore
 from app.domain.problem_space import GroupingStore
 from app.domain.project_story import ProjectStoryRepository
+from app.domain.source_capture import SourceCaptureStore
 from app.domain.validation_runs import ValidationRunLog
 from app.integrations.base import MailClient, MailConfigurationError
 from app.integrations.mail_factory import create_mail_client
@@ -221,6 +223,19 @@ def get_grouping_store(request: Request) -> GroupingStore:
     create_all(engine)
     store = SqlGroupingStore(create_session_factory(engine))
     request.app.state.grouping_store = store
+    return store
+
+
+def get_source_capture_store(request: Request) -> SourceCaptureStore:
+    """Return the app's source-capture store, building a SQL-backed one on first use."""
+    existing = getattr(request.app.state, "source_capture_store", None)
+    if isinstance(existing, SourceCaptureStore):
+        return existing
+    settings = getattr(request.app.state, "settings", None) or get_settings()
+    engine = create_db_engine(settings)
+    create_all(engine)
+    store = SqlSourceCaptureStore(create_session_factory(engine))
+    request.app.state.source_capture_store = store
     return store
 
 
