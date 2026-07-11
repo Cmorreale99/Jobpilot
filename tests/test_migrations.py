@@ -380,6 +380,36 @@ def test_0019_adds_evidence_structure_linkage(tmp_path: Path) -> None:
     assert not {"element_id", "sequence_index", "section_path"} & evidence_columns
 
 
+def test_0020_adds_evidence_lifecycle_columns_defaulting_active(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "lifecycle.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "0019")
+    # A legacy row written before the lifecycle columns exist…
+    engine = sa.create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO evidence (user_id, source_type, source_ref, chunk_text)"
+                " VALUES ('u1', 'drive', 'drv1#chars=0-9', 'legacy row')"
+            )
+        )
+    command.upgrade(cfg, "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    evidence_columns = {c["name"] for c in inspector.get_columns("evidence")}
+    assert {"is_active", "superseded_by_id"} <= evidence_columns
+    with sa.create_engine(url).connect() as conn:
+        active, superseded_by = conn.execute(
+            sa.text("SELECT is_active, superseded_by_id FROM evidence")
+        ).one()
+    # …defaults active and unsuperseded: identical behavior until first supersession.
+    assert bool(active) is True and superseded_by is None
+
+    command.downgrade(cfg, "0019")
+    inspector = sa.inspect(sa.create_engine(url))
+    evidence_columns = {c["name"] for c in inspector.get_columns("evidence")}
+    assert not {"is_active", "superseded_by_id"} & evidence_columns
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")

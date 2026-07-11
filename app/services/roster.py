@@ -31,7 +31,9 @@ from app.domain.claims import (
     SOURCE_GITHUB_COMMIT,
     SOURCE_GITHUB_README,
     SOURCE_UPLOAD,
+    Claim,
     ClaimRepository,
+    ClaimStatus,
     EvidenceChunk,
     Experience,
     ExperienceStatus,
@@ -39,6 +41,7 @@ from app.domain.claims import (
     span_ref,
     split_span_ref,
 )
+from app.domain.evidence_lifecycle import plan_evidence_supersession
 from app.domain.project_reconciliation import (
     STATUS_DETECTED,
     ReconciliationResult,
@@ -68,9 +71,10 @@ from app.domain.source_structure import (
     top_level_sections,
     verify_full_coverage,
 )
-from app.domain.text_normalization import normalize_source_text
+from app.domain.text_normalization import NORMALIZATION_VERSION, normalize_source_text
 from app.domain.validation_runs import (
     KIND_ENTITY_OVERLAP,
+    KIND_EVIDENCE_RECONCILIATION,
     KIND_PROJECT_RECONCILIATION,
     KIND_SOURCE_GATHER,
     ValidationRunLog,
@@ -176,6 +180,35 @@ class SectionDecision:
 
 
 @dataclass(frozen=True)
+class EvidenceReconciliation:
+    """What one assignment run's supersession pass did (H6): visible replacement.
+
+    ``superseded`` rows were active before this run and absent from the fresh chunk
+    set — marked inactive (successor linked when determinable), never deleted.
+    ``pins_migrated`` counts human pins carried forward to successors (H1 preserved).
+    ``reviewed_stale_claims`` counts REVIEWED claims currently citing inactive
+    evidence — the human decided on text that no longer exists upstream; surfaced
+    loudly, never auto-resolved. ``warnings`` carries every non-clean event.
+    """
+
+    new: int = 0
+    reactivated: int = 0
+    superseded: int = 0
+    pins_migrated: int = 0
+    reviewed_stale_claims: int = 0
+    warnings: tuple[str, ...] = ()
+
+    def summary(self) -> dict[str, int]:
+        return {
+            "new": self.new,
+            "reactivated": self.reactivated,
+            "superseded": self.superseded,
+            "pins_migrated": self.pins_migrated,
+            "reviewed_stale_claims": self.reviewed_stale_claims,
+        }
+
+
+@dataclass(frozen=True)
 class RosterAssignmentReport:
     """What one assignment run scoped (per user).
 
@@ -183,7 +216,8 @@ class RosterAssignmentReport:
     (``assignment_method='human'``) — a machine run never overwrites those (H1).
     ``sections`` records every per-section ownership decision of the structure-aware
     path (H5); ``truncated_prompts`` counts texts cut to an LLM prompt budget this
-    run — truncation is a reported event, never silent (F12).
+    run — truncation is a reported event, never silent (F12). ``reconciliation`` is
+    the H6 lifecycle accounting: stale rows visibly superseded, never orphaned.
     """
 
     chunks: int
@@ -193,6 +227,7 @@ class RosterAssignmentReport:
     gather: GatherReport = field(default_factory=GatherReport)
     sections: tuple[SectionDecision, ...] = ()
     truncated_prompts: int = 0
+    reconciliation: EvidenceReconciliation = field(default_factory=EvidenceReconciliation)
 
 
 @dataclass(frozen=True)
@@ -700,17 +735,25 @@ async def run_roster_assignment(
     pinned = 0
     truncated = 0
     section_decisions: list[SectionDecision] = []
+    recon_new = 0
+    recon_reactivated = 0
+    recon_superseded = 0
+    recon_pins = 0
+    recon_warnings: list[str] = []
 
-    def apply(stored: StoredEvidence, target: int | None, method: str | None) -> None:
+    def apply(stored: StoredEvidence, target: int | None, method: str | None) -> StoredEvidence:
         """Assign one chunk unless a human already decided it (the H1 pin)."""
         nonlocal chunks, assigned, pinned
         chunks += 1
         if stored.assignment_method == ASSIGNMENT_HUMAN:
             pinned += 1
             assigned += 1 if stored.experience_id is not None else 0
-            return
-        repository.assign_evidence(stored.id, target, method=method if target is not None else None)
+            return stored
+        updated = repository.assign_evidence(
+            stored.id, target, method=method if target is not None else None
+        )
         assigned += 1 if target is not None else 0
+        return updated
 
     def persist(
         document: SourceDocument,
@@ -718,7 +761,8 @@ async def run_roster_assignment(
         targets: Sequence[int | None],
         methods: Sequence[str | None],
         element_ids: dict[int, int],
-    ) -> None:
+    ) -> list[StoredEvidence]:
+        fresh: list[StoredEvidence] = []
         for chunk, target, method in zip(prepared, targets, methods, strict=True):
             stored = repository.upsert_evidence(
                 user_id,
@@ -735,7 +779,38 @@ async def run_roster_assignment(
                     section_path=chunk.section_path,
                 ),
             )
-            apply(stored, target, method)
+            fresh.append(apply(stored, target, method))
+        return fresh
+
+    def reconcile(
+        document: SourceDocument, previous: list[StoredEvidence], fresh: list[StoredEvidence]
+    ) -> None:
+        """Supersede, never orphan (H6): active rows become exactly the fresh set."""
+        nonlocal recon_new, recon_reactivated, recon_superseded, recon_pins
+        plan = plan_evidence_supersession(
+            previous, fresh, current_normalization_version=NORMALIZATION_VERSION
+        )
+        for action in plan.supersede:
+            repository.supersede_evidence(action.evidence_id, action.successor_id)
+        for migration in plan.pin_migrations:
+            # The retained human decision (H1) carries forward to the row that now
+            # holds the same text - a pin never dies silently with its stale span.
+            repository.assign_evidence(
+                migration.successor_id, migration.experience_id, method=ASSIGNMENT_HUMAN
+            )
+        recon_new += len(plan.new_ids)
+        recon_reactivated += len(plan.reactivated_ids)
+        recon_superseded += len(plan.supersede)
+        recon_pins += len(plan.pin_migrations)
+        recon_warnings.extend(plan.warnings)
+        if plan.supersede:
+            logger.info(
+                "evidence reconciliation for %s %s: %d row(s) superseded, %d pin(s) migrated",
+                document.source_type,
+                document.source_ref,
+                len(plan.supersede),
+                len(plan.pin_migrations),
+            )
 
     for document in documents:
         if document.source_type == SOURCE_GITHUB_COMMIT:
@@ -748,6 +823,13 @@ async def run_roster_assignment(
             )
             apply(stored, entity.id if entity else None, ASSIGNMENT_REPO_REF)
             continue
+
+        # Everything persisted for this document BEFORE this run's upserts - the
+        # reconciliation baseline (H6). Commit refs are exempt above: one immutable
+        # content-addressed row per sha, the fresh set never changes shape.
+        previous = repository.list_evidence_for_base_ref(
+            user_id, document.source_type, document.source_ref
+        )
 
         structured = settings.structured_assignment and document.raw_text is not None
         if not structured:
@@ -762,6 +844,7 @@ async def run_roster_assignment(
                 targets = assigner.assign([piece.text for piece in pieces], roster)
                 method = assigner.method
                 truncated += getattr(assigner, "last_truncated", 0)
+            fresh: list[StoredEvidence] = []
             for piece, target in zip(pieces, targets, strict=True):
                 stored = repository.upsert_evidence(
                     user_id,
@@ -771,7 +854,8 @@ async def run_roster_assignment(
                         piece.text,
                     ),
                 )
-                apply(stored, target, method)
+                fresh.append(apply(stored, target, method))
+            reconcile(document, previous, fresh)
             continue
 
         # --- structure-aware path (H5) ---------------------------------------------
@@ -784,13 +868,14 @@ async def run_roster_assignment(
             # One repo-owned tree: every section belongs to the repo's entity.
             entity = _repo_entity(roster, document.source_ref)
             target = entity.id if entity else None
-            persist(
+            fresh = persist(
                 document,
                 prepared,
                 [target] * len(prepared),
                 [ASSIGNMENT_README_REF] * len(prepared),
                 element_ids,
             )
+            reconcile(document, previous, fresh)
             continue
 
         sections = top_level_sections(elements)
@@ -800,7 +885,10 @@ async def run_roster_assignment(
             # survives here (and only here), still refusing ties.
             targets = assigner.assign([chunk.text for chunk in prepared], roster)
             truncated += getattr(assigner, "last_truncated", 0)
-            persist(document, prepared, targets, [assigner.method] * len(prepared), element_ids)
+            fresh = persist(
+                document, prepared, targets, [assigner.method] * len(prepared), element_ids
+            )
+            reconcile(document, previous, fresh)
             continue
 
         contents = [
@@ -833,7 +921,38 @@ async def run_roster_assignment(
             for chunk in prepared
         ]
         methods = [ASSIGNMENT_SECTION if target is not None else None for target in targets]
-        persist(document, prepared, targets, methods, element_ids)
+        fresh = persist(document, prepared, targets, methods, element_ids)
+        reconcile(document, previous, fresh)
+
+    # Reviewed claims left citing superseded rows: the human decided on text that no
+    # longer exists upstream. Surfaced loudly — in the report, the warnings, and the
+    # validation run — never auto-resolved (H6).
+    stale_reviewed = list_reviewed_claims_on_superseded_evidence(user_id, repository)
+    for claim, stale_rows in stale_reviewed:
+        recon_warnings.append(
+            f"reviewed claim {claim.id} ({claim.status.value}) cites superseded "
+            f"evidence {', '.join(str(r.id) for r in stale_rows)} — the decided text "
+            "no longer exists upstream; re-review or re-extract"
+        )
+    reconciliation = EvidenceReconciliation(
+        new=recon_new,
+        reactivated=recon_reactivated,
+        superseded=recon_superseded,
+        pins_migrated=recon_pins,
+        reviewed_stale_claims=len(stale_reviewed),
+        warnings=tuple(recon_warnings),
+    )
+    if validation_log is not None:
+        validation_log.record(
+            user_id,
+            KIND_EVIDENCE_RECONCILIATION,
+            subject_ref="evidence",
+            passed=not stale_reviewed,
+            detail=(
+                ", ".join(f"{k}={v}" for k, v in reconciliation.summary().items()),
+                *reconciliation.warnings,
+            ),
+        )
 
     report = RosterAssignmentReport(
         chunks=chunks,
@@ -843,10 +962,13 @@ async def run_roster_assignment(
         gather=gathered.report,
         sections=tuple(section_decisions),
         truncated_prompts=truncated,
+        reconciliation=reconciliation,
     )
     logger.info(
         "roster assignment for %s: %d chunk(s), %d assigned, %d honestly unassigned, "
-        "%d human-pinned (untouched), %d section decision(s), %d truncated prompt(s)",
+        "%d human-pinned (untouched), %d section decision(s), %d truncated prompt(s); "
+        "reconciliation: %d new, %d reactivated, %d superseded, %d pin(s) migrated, "
+        "%d reviewed claim(s) on stale evidence",
         user_id,
         report.chunks,
         report.assigned,
@@ -854,5 +976,37 @@ async def run_roster_assignment(
         report.pinned,
         len(report.sections),
         report.truncated_prompts,
+        reconciliation.new,
+        reconciliation.reactivated,
+        reconciliation.superseded,
+        reconciliation.pins_migrated,
+        reconciliation.reviewed_stale_claims,
     )
     return report
+
+
+def list_reviewed_claims_on_superseded_evidence(
+    user_id: str, repository: ClaimRepository
+) -> list[tuple[Claim, list[StoredEvidence]]]:
+    """Every REVIEWED claim citing at least one superseded evidence row (H6).
+
+    The human approved or rejected content whose upstream text has since been
+    superseded — a decision made on text that no longer exists in the current
+    chunking. This is a standing review surface (``GET /roster/superseded-reviewed``),
+    recomputed from the lifecycle columns; it is never auto-resolved.
+    """
+    results: list[tuple[Claim, list[StoredEvidence]]] = []
+    cache: dict[int, StoredEvidence | None] = {}
+    for claim in repository.list_claims(user_id):
+        if claim.status not in (ClaimStatus.APPROVED, ClaimStatus.REJECTED):
+            continue
+        stale: list[StoredEvidence] = []
+        for link in claim.evidence:
+            if link.evidence_id not in cache:
+                cache[link.evidence_id] = repository.get_evidence(link.evidence_id)
+            row = cache[link.evidence_id]
+            if row is not None and not row.is_active:
+                stale.append(row)
+        if stale:
+            results.append((claim, stale))
+    return results

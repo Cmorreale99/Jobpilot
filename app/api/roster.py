@@ -37,6 +37,7 @@ from app.domain.validation_runs import ValidationRunLog
 from app.integrations.drive_factory import create_drive_client
 from app.integrations.github_factory import create_github_client
 from app.services.roster import (
+    list_reviewed_claims_on_superseded_evidence,
     run_overlap_detection,
     run_roster_assignment,
     run_roster_detection,
@@ -169,6 +170,11 @@ async def assign(
             for decision in report.sections
         ],
         "truncated_prompts": report.truncated_prompts,
+        # H6: stale rows visibly superseded, never orphaned — plus every warning.
+        "reconciliation": {
+            **report.reconciliation.summary(),
+            "warnings": list(report.reconciliation.warnings),
+        },
     }
 
 
@@ -250,6 +256,39 @@ def assign_evidence(
         "experience_id": updated.experience_id,
         "source_ref": updated.source_ref,
         "assignment_method": updated.assignment_method,
+    }
+
+
+@router.get("/superseded-reviewed")
+def superseded_reviewed(user_id: str, repository: RepositoryDep) -> dict[str, Any]:
+    """Reviewed claims citing superseded evidence — decisions on vanished text (H6).
+
+    A re-ingest superseded the rows these approve/reject decisions were made on.
+    Nothing is auto-resolved: the human re-reviews (or re-extraction produces fresh
+    claims on the current chunking) and this queue empties as they do.
+    """
+    rows = list_reviewed_claims_on_superseded_evidence(user_id, repository)
+    return {
+        "count": len(rows),
+        "items": [
+            {
+                "claim_id": claim.id,
+                "status": claim.status.value,
+                "experience_id": claim.experience_id,
+                "action_text": claim.action_text,
+                "superseded_evidence": [
+                    {
+                        "id": stale.id,
+                        "source_type": stale.source_type,
+                        "source_ref": stale.source_ref,
+                        "superseded_by_id": stale.superseded_by_id,
+                        "chunk_text": stale.chunk_text,
+                    }
+                    for stale in stale_rows
+                ],
+            }
+            for claim, stale_rows in rows
+        ],
     }
 
 

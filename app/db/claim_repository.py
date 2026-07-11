@@ -98,6 +98,8 @@ def _to_evidence(row: EvidenceRow) -> StoredEvidence:
         element_id=row.element_id,
         sequence_index=row.sequence_index,
         section_path=row.section_path,
+        is_active=row.is_active,
+        superseded_by_id=row.superseded_by_id,
     )
 
 
@@ -335,6 +337,7 @@ class SqlClaimRepository:
                 .where(
                     EvidenceRow.user_id == user_id,
                     EvidenceRow.experience_id == experience_id,
+                    EvidenceRow.is_active.is_(True),
                 )
                 .order_by(*_DOCUMENT_ORDER)
             )
@@ -346,10 +349,41 @@ class SqlClaimRepository:
         with self._session_factory() as session:
             rows = session.scalars(
                 select(EvidenceRow)
-                .where(EvidenceRow.element_id.in_(list(element_ids)))
+                .where(
+                    EvidenceRow.element_id.in_(list(element_ids)),
+                    EvidenceRow.is_active.is_(True),
+                )
                 .order_by(*_DOCUMENT_ORDER)
             )
             return [_to_evidence(row) for row in rows]
+
+    def list_evidence_for_base_ref(
+        self, user_id: str, source_type: str, base_ref: str
+    ) -> list[StoredEvidence]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(EvidenceRow)
+                .where(
+                    EvidenceRow.user_id == user_id,
+                    EvidenceRow.source_type == source_type,
+                    # The bare base ref or any #chars= span of it — active AND superseded.
+                    (EvidenceRow.source_ref == base_ref)
+                    | EvidenceRow.source_ref.startswith(f"{base_ref}#chars="),
+                )
+                .order_by(EvidenceRow.id)
+            )
+            return [_to_evidence(row) for row in rows]
+
+    def supersede_evidence(self, evidence_id: int, superseded_by_id: int | None) -> StoredEvidence:
+        with self._session_factory() as session:
+            row = session.get(EvidenceRow, evidence_id)
+            if row is None:
+                raise LookupError(f"no evidence with id {evidence_id}")
+            row.is_active = False
+            row.superseded_by_id = superseded_by_id
+            session.commit()
+            session.refresh(row)
+            return _to_evidence(row)
 
     def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
         with self._session_factory() as session:
@@ -358,6 +392,8 @@ class SqlClaimRepository:
                 .where(
                     EvidenceRow.user_id == user_id,
                     EvidenceRow.experience_id.is_(None),
+                    # Superseded rows are history, not queue items (H6).
+                    EvidenceRow.is_active.is_(True),
                     # Attestations (claim:/story: refs) are answers, not source chunks.
                     EvidenceRow.source_type != SOURCE_USER_ATTESTATION,
                 )
@@ -385,6 +421,11 @@ class SqlClaimRepository:
                 row.element_id = chunk.element_id
                 row.sequence_index = chunk.sequence_index
                 row.section_path = chunk.section_path
+            if not row.is_active:
+                # A ref back in the fresh chunk set is current again (H6) —
+                # mirror of the capture store re-activating an earlier hash.
+                row.is_active = True
+                row.superseded_by_id = None
             return row
         row = EvidenceRow(
             user_id=user_id,
