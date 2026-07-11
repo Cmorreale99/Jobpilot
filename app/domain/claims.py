@@ -161,6 +161,18 @@ SOURCE_UPLOAD = "upload"
 SOURCE_USER_ATTESTATION = "user_attestation"
 
 
+# Evidence assignment methods (hardening H1): HOW a chunk's project assignment was
+# made, so a human decision is distinguishable from a machine guess. ``human`` rows
+# are pinned — machine re-runs must never overwrite them (documented values, not a
+# CHECK constraint, same policy as source types).
+ASSIGNMENT_HEURISTIC = "heuristic"  # lexical alias-overlap assigner
+ASSIGNMENT_LLM = "llm"  # LLM chunk assigner
+ASSIGNMENT_README_REF = "readme_ref"  # README chunks force-assigned to their repo entity
+ASSIGNMENT_REPO_REF = "repo_ref"  # commit evidence assigned by repo-ref alias match
+ASSIGNMENT_HUMAN = "human"  # manual assignment — a retained decision, never overwritten
+ASSIGNMENT_SECTION = "section"  # reserved for H5 section-scoped ownership
+
+
 # --- State machine ------------------------------------------------------------------
 
 # extracted -> pending_review -> approved | rejected. Terminal states map to the
@@ -283,7 +295,9 @@ class StoredEvidence:
     until a confirmed roster claims it; unassigned chunks never feed extraction.
     ``normalization_version`` is the normalizer generation whose output this text
     (and any ``#chars=`` span in the ref) was taken from — ``None`` on rows written
-    before versioning (V3 §2.2).
+    before versioning (V3 §2.2). ``assignment_method`` records HOW the assignment
+    was made (``ASSIGNMENT_*``; ``None`` = legacy/unlabeled, treated as machine);
+    ``human`` rows are pinned against machine re-runs (hardening H1).
     """
 
     id: int
@@ -294,6 +308,8 @@ class StoredEvidence:
     created_at: datetime | None = None
     experience_id: int | None = None
     normalization_version: int | None = None
+    assignment_method: str | None = None
+    assigned_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -932,8 +948,17 @@ class ClaimRepository(Protocol):
 
     def upsert_evidence(self, user_id: str, chunk: EvidenceChunk) -> StoredEvidence: ...
 
-    def assign_evidence(self, evidence_id: int, experience_id: int | None) -> StoredEvidence:
-        """Set (or clear) a chunk's project assignment."""
+    def assign_evidence(
+        self, evidence_id: int, experience_id: int | None, *, method: str | None = None
+    ) -> StoredEvidence:
+        """Set (or clear) a chunk's project assignment, labeled with HOW it was made.
+
+        ``method`` is one of the ``ASSIGNMENT_*`` values (``None`` = unlabeled, e.g.
+        clearing an assignment or a legacy caller). The repository records the label;
+        the *pin* semantics — a machine run never overwriting an ``ASSIGNMENT_HUMAN``
+        row — are enforced by the callers that run assigners (``run_roster_assignment``),
+        so a human can still explicitly re-decide through this method.
+        """
         ...
 
     def list_assigned_evidence(self, user_id: str, experience_id: int) -> list[StoredEvidence]:
@@ -1218,6 +1243,12 @@ def plan_claim_edit(claim: Claim, edits: ClaimEdits) -> ClaimEditPlan:
 
 
 __all__ = [
+    "ASSIGNMENT_HEURISTIC",
+    "ASSIGNMENT_HUMAN",
+    "ASSIGNMENT_LLM",
+    "ASSIGNMENT_README_REF",
+    "ASSIGNMENT_REPO_REF",
+    "ASSIGNMENT_SECTION",
     "CLAIM_TRANSITIONS",
     "EXPERIENCE_TRANSITIONS",
     "AttestationLink",

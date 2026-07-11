@@ -83,6 +83,8 @@ def _to_evidence(row: EvidenceRow) -> StoredEvidence:
         created_at=row.created_at,
         experience_id=row.experience_id,
         normalization_version=row.normalization_version,
+        assignment_method=row.assignment_method,
+        assigned_at=row.assigned_at,
     )
 
 
@@ -299,12 +301,16 @@ class SqlClaimRepository:
             )
             return _to_evidence(row) if row is not None else None
 
-    def assign_evidence(self, evidence_id: int, experience_id: int | None) -> StoredEvidence:
+    def assign_evidence(
+        self, evidence_id: int, experience_id: int | None, *, method: str | None = None
+    ) -> StoredEvidence:
         with self._session_factory() as session:
             row = session.get(EvidenceRow, evidence_id)
             if row is None:
                 raise LookupError(f"no evidence with id {evidence_id}")
             row.experience_id = experience_id
+            row.assignment_method = method
+            row.assigned_at = datetime.now(tz=UTC)
             session.commit()
             session.refresh(row)
             return _to_evidence(row)

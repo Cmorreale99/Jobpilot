@@ -271,6 +271,18 @@ def test_0015_creates_problem_space_groupings(tmp_path: Path) -> None:
     assert "problem_space_groupings" not in tables
 
 
+def test_0016_adds_evidence_assignment_method_columns(tmp_path: Path) -> None:
+    url = _sqlite_url(tmp_path, "assignment_method.db")
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+    inspector = sa.inspect(sa.create_engine(url))
+    columns = {c["name"] for c in inspector.get_columns("evidence")}
+    assert {"assignment_method", "assigned_at"} <= columns
+    command.downgrade(cfg, "0015")
+    columns = {c["name"] for c in sa.inspect(sa.create_engine(url)).get_columns("evidence")}
+    assert "assignment_method" not in columns and "assigned_at" not in columns
+
+
 def test_sql_store_round_trips_on_migrated_schema(tmp_path: Path) -> None:
     url = _sqlite_url(tmp_path, "store.db")
     command.upgrade(_config(url), "head")

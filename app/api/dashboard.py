@@ -25,11 +25,8 @@ from app.domain.applications import (
     InvalidTransitionError,
 )
 from app.domain.jobs import JobMatch, JobRepository
-from app.domain.master_cv_snapshot import (
-    MasterCvSnapshotStore,
-    StoredSnapshot,
-    master_cv_from_snapshot,
-)
+from app.domain.master_cv_snapshot import MasterCvSnapshotStore, StoredSnapshot
+from app.domain.story_snapshot import master_cv_from_any_snapshot
 
 router = APIRouter(tags=["dashboard"])
 
@@ -42,7 +39,9 @@ SnapshotDep = Annotated[MasterCvSnapshotStore, Depends(get_snapshot_store)]
 
 
 def _serialize_master_cv(snapshot: StoredSnapshot) -> dict[str, Any]:
-    cv = master_cv_from_snapshot(snapshot)
+    # Dispatch on snapshot_of: story-shaped snapshots have no "claims" key, so the
+    # claim-only adapter would serialize them as an empty CV (hardening plan P0/F13).
+    cv = master_cv_from_any_snapshot(snapshot)
     return {
         "user_id": snapshot.user_id,
         "version": snapshot.version,

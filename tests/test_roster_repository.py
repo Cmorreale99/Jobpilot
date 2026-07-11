@@ -17,6 +17,7 @@ from app.db.claim_repository import SqlClaimRepository
 from app.db.session import create_session_factory
 from app.domain.applications import InvalidTransitionError
 from app.domain.claims import (
+    ASSIGNMENT_HUMAN,
     SOURCE_DRIVE,
     ClaimEvidenceRef,
     ClaimField,
@@ -157,6 +158,29 @@ def test_assign_evidence_sets_and_clears(repo: ClaimRepository) -> None:
     assert [e.id for e in repo.list_assigned_evidence("u1", entity.id)] == [stored.id]
     assert repo.assign_evidence(stored.id, None).experience_id is None
     assert repo.list_assigned_evidence("u1", entity.id) == []
+
+
+def test_assignment_method_stamped_and_merge_preserves_it(repo: ClaimRepository) -> None:
+    """H1: the method label rides the assignment, and a roster merge — which moves
+    evidence to the target — keeps the human's label intact."""
+    source = repo.propose_experience("u1", _seed("Coopersmith — Data Engineer"))
+    target = repo.propose_experience("u1", _seed("Coopersmith Data"))
+    repo.set_experience_status(source.id, ExperienceStatus.CONFIRMED)
+    repo.set_experience_status(target.id, ExperienceStatus.CONFIRMED)
+    stored = repo.upsert_evidence(
+        "u1", EvidenceChunk(SOURCE_DRIVE, "drv1#chars=0-30", "Built the carrier ETL.")
+    )
+    assert stored.assignment_method is None  # unlabeled until assigned
+
+    pinned = repo.assign_evidence(stored.id, source.id, method=ASSIGNMENT_HUMAN)
+    assert pinned.assignment_method == ASSIGNMENT_HUMAN
+    assert pinned.assigned_at is not None
+
+    repo.merge_experiences(source.id, target.id)
+    moved = repo.get_evidence(stored.id)
+    assert moved is not None
+    assert moved.experience_id == target.id
+    assert moved.assignment_method == ASSIGNMENT_HUMAN  # the decision label survives
 
 
 def test_unassigned_evidence_is_a_queryable_queue(repo: ClaimRepository) -> None:

@@ -245,6 +245,11 @@ class EvidenceRow(Base):
     # offsets into normalizer OUTPUT, so a rule change must be detectable instead of
     # silently dangling every span (V3 §2.2). NULL = written before versioning.
     normalization_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # HOW the current assignment was made (heuristic|llm|readme_ref|repo_ref|human|
+    # section — documented, not a CHECK constraint). `human` rows are pinned: machine
+    # re-runs never overwrite them (hardening H1). NULL = legacy/unlabeled (machine).
+    assignment_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
