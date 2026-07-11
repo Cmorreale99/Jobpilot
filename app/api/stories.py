@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.api.deps import (
@@ -21,6 +21,7 @@ from app.api.deps import (
     get_story_repository,
     get_validation_log,
 )
+from app.config import get_settings
 from app.domain.applications import InvalidTransitionError
 from app.domain.bullet import BulletGenerationError
 from app.domain.claims import SOURCE_USER_ATTESTATION, ClaimRepository, evidence_source_url
@@ -247,6 +248,7 @@ def list_stories(
 
 @router.post("/synthesize")
 def synthesize(
+    request: Request,
     user_id: str,
     story_repository: StoryRepositoryDep,
     repository: RepositoryDep,
@@ -258,12 +260,17 @@ def synthesize(
     structurally clean ones to ``pending_review`` and quarantining the rest. The synthesizer
     is heuristic (verbatim selection) unless ``STORY_LLM_SYNTHESIS`` is on, in which case
     the LLM composer runs."""
+    # The APP'S settings, never bare get_settings(): tests inject hermetic settings,
+    # and the factories must not read the developer's real .env behind their back.
+    settings = getattr(request.app.state, "settings", None) or get_settings()
     report = run_story_synthesis(
         user_id,
         repository,
         story_repository,
-        synthesizer=create_story_synthesizer(),
-        detector=create_problem_space_detector(grouping_store=grouping_store, user_id=user_id),
+        synthesizer=create_story_synthesizer(settings),
+        detector=create_problem_space_detector(
+            settings, grouping_store=grouping_store, user_id=user_id
+        ),
         validation_log=validation_log,
         force=force,
     )

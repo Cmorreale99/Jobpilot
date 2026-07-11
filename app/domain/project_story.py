@@ -699,7 +699,10 @@ FATAL_STORY_CODES = frozenset(
     }
 )
 
-_DIGIT_TOKEN_RE = re.compile(r"\$?\d[\d,]*(?:\.\d+)?%?")
+# Captures an optional K/M/B magnitude suffix ("195K+", "$4.01M") so notation
+# variants of one quantity can be recognized as equivalent (see _canonical_values).
+_DIGIT_TOKEN_RE = re.compile(r"\$?\d[\d,]*(?:\.\d+)?(?:[KkMmBb](?![a-zA-Z]))?%?")
+_SUFFIX_MULTIPLIERS = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 _NUMBER_WORDS = frozenset(
     {
         "zero",
@@ -746,22 +749,52 @@ def _number_tokens(text: str) -> tuple[frozenset[str], frozenset[str]]:
     return digits, words
 
 
+def _canonical_values(token: str) -> frozenset[str]:
+    """A digit token's canonical numeric value(s): "$4.01M" → {"4.01", "4010000"}.
+
+    Notation equivalence, never new information: "195K" and "195,000" are one
+    quantity written two ways (a rephrasing extractor or composer must not fail the
+    gate for it), while "196,000" still matches nothing "195K" grounds.
+    """
+    bare = token.replace(",", "").lstrip("$").rstrip("%").lower()
+    values = {bare}
+    if bare and bare[-1] in _SUFFIX_MULTIPLIERS:
+        number = bare[:-1]
+        try:
+            expanded = float(number) * _SUFFIX_MULTIPLIERS[bare[-1]]
+        except ValueError:
+            return frozenset(values)
+        values.add(number)
+        values.add(f"{expanded:.10g}")
+    return frozenset(values)
+
+
 def unsupported_number_tokens(text: str, allowed_sources: Sequence[str]) -> list[str]:
     """Numbers (digits AND number-words) in ``text`` found in no allowed source.
 
     The story-layer number gate (T14): quantified anything in a component's text must
     appear in the cited evidence chunks or attestations — generated text never grounds
-    further generation. Digit tokens are compared comma-normalized; number-words as
-    whole words, case-insensitive.
+    further generation. Digit tokens are compared comma-normalized, and magnitude
+    notation is equivalent ("195,000" is grounded by "195K+", "$4,010,000" by
+    "$4.01M" — same quantity, different notation); number-words as whole words,
+    case-insensitive.
     """
     digits, words = _number_tokens(text)
     allowed_digits: set[str] = set()
     allowed_words: set[str] = set()
+    allowed_canonical: set[str] = set()
     for source in allowed_sources:
         source_digits, source_words = _number_tokens(source)
         allowed_digits |= source_digits
         allowed_words |= source_words
-    return sorted(digits - allowed_digits) + sorted(words - allowed_words)
+        for token in source_digits:
+            allowed_canonical |= _canonical_values(token)
+    unsupported_digits = [
+        token
+        for token in sorted(digits - allowed_digits)
+        if not (_canonical_values(token) & allowed_canonical)
+    ]
+    return unsupported_digits + sorted(words - allowed_words)
 
 
 def resolve_component_evidence(
