@@ -106,6 +106,42 @@ class SourceDocumentVersionRow(Base):
     normalization_version: Mapped[int] = mapped_column(Integer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # H4 element derivation: which structurer generation produced this version's
+    # element tree, and whether it reconciled (ok) or left characters unaccounted
+    # (failed). NULL = no structuring pass yet.
+    structurer_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ingestion_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+
+class SourceElementRow(Base):
+    """One structural element of a captured source version (canonical structure, H4).
+
+    A pure, replaceable derivation of the version's immutable ``raw_text``:
+    ``raw_start``/``raw_end`` slice it verbatim, ``parent_element_id`` carries the
+    heading hierarchy, ``sequence_index`` the document order — the structure that
+    chunking and assignment consume (H5) instead of re-inferring.
+    """
+
+    __tablename__ = "source_elements"
+    __table_args__ = (
+        UniqueConstraint("document_version_id", "sequence_index", name="uq_element_version_seq"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_version_id: Mapped[int] = mapped_column(Integer, index=True)
+    sequence_index: Mapped[int] = mapped_column(Integer)
+    parent_element_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    element_type: Mapped[str] = mapped_column(String(32))
+    level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    raw_start: Mapped[int] = mapped_column(Integer)
+    raw_end: Mapped[int] = mapped_column(Integer)
+    normalized_text: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    # Explicit per-element disposition (ok|unsupported|parser_error) — the text
+    # scanner only emits ok; the V4 binary parsers share this schema and the rule
+    # that nothing is silently dropped.
+    extraction_status: Mapped[str] = mapped_column(String(16), default="ok")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class JobRow(Base):

@@ -1,0 +1,248 @@
+"""Canonical source structure: raw text → a deterministic element tree (hardening H4).
+
+*Structure is source data.* A document's hierarchy — which heading governs which
+paragraphs, how lists nest, what order everything came in — is part of the source
+itself, not something a chunker or assigner should re-infer later. This module derives
+that structure from the **captured raw text** (H2), deterministically and versioned,
+so it is recomputable and its loss modes are visible:
+
+* ``structure_source_text`` scans Markdown-ish/plain raw text into a flat,
+  document-ordered list of :class:`SourceElement`\\ s, each carrying its **verbatim
+  raw span** (``raw[raw_start:raw_end] == raw_text``), its type, its nesting level,
+  and its parent (the governing heading) by sequence index.
+* ``structure_commit_message`` wraps a commit message as a single element.
+* ``verify_full_coverage`` is the reconciliation invariant: element spans plus
+  whitespace-only separators must account for **every character** of the raw text —
+  zero silently dropped characters. Our text scanner satisfies it by construction;
+  future parsers (PDF/DOCX, V4/M23) populate the same shapes and face the same check.
+
+``STRUCTURER_VERSION`` follows the ``NORMALIZATION_VERSION`` discipline: bump on ANY
+rule change; the golden-corpus digest test (``app/tools/structure_digest.py``) makes
+an un-bumped change a red suite.
+
+Pure and deterministic — no I/O, no LLM.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+# BUMP THIS on ANY change to the scanning rules below — persisted elements record the
+# structurer generation that produced them, and the digest test enforces the bump.
+STRUCTURER_VERSION = 1
+
+# Element types (documented values, deliberately no CHECK constraint — same policy as
+# evidence source types). ``table``/``table_row`` are reserved for the V4 PDF/DOCX
+# parsers; the text scanner never emits them.
+ELEMENT_HEADING = "heading"
+ELEMENT_PARAGRAPH = "paragraph"
+ELEMENT_LIST_ITEM = "list_item"
+ELEMENT_CODE_BLOCK = "code_block"
+ELEMENT_BLOCKQUOTE = "blockquote"
+ELEMENT_COMMIT_MESSAGE = "commit_message"
+
+# Per-element dispositions (the H4 acceptance: every element has one, explicitly).
+# The deterministic text scanner only ever emits ``ok``; ``unsupported`` and
+# ``parser_error`` exist for the V4 binary parsers that share this schema.
+STATUS_OK = "ok"
+STATUS_UNSUPPORTED = "unsupported"
+STATUS_PARSER_ERROR = "parser_error"
+
+_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s")
+_BULLET_RE = re.compile(r"^(\s*)(?:[-*•·]|\d+[.)])\s+")
+_QUOTE_RE = re.compile(r"^ {0,3}>")
+_FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
+
+
+@dataclass(frozen=True)
+class SourceElement:
+    """One structural element of a raw source document.
+
+    ``raw_start``/``raw_end`` are end-exclusive offsets into the raw text; the
+    verbatim-slice invariant ``raw[raw_start:raw_end] == raw_text`` always holds.
+    ``parent_index`` is the ``sequence_index`` of the governing element — for a
+    heading, the nearest shallower heading; for everything else, the current heading —
+    or ``None`` at document top level.
+    """
+
+    sequence_index: int
+    element_type: str
+    raw_start: int
+    raw_end: int
+    raw_text: str
+    level: int | None = None  # heading depth / list nesting (1-based)
+    parent_index: int | None = None
+
+
+def _line_spans(raw: str) -> list[tuple[int, int, str]]:
+    """(start, end, content) per line; end excludes the ``\\n`` separator."""
+    spans: list[tuple[int, int, str]] = []
+    offset = 0
+    for line in raw.split("\n"):
+        spans.append((offset, offset + len(line), line))
+        offset += len(line) + 1
+    return spans
+
+
+def _is_structural(line: str) -> bool:
+    return bool(_HEADING_RE.match(line) or _BULLET_RE.match(line) or _QUOTE_RE.match(line))
+
+
+def structure_source_text(raw: str) -> list[SourceElement]:
+    """Scan raw document text into its ordered, hierarchy-carrying element list."""
+    lines = _line_spans(raw)
+    elements: list[SourceElement] = []
+    heading_stack: list[tuple[int, int]] = []  # (level, sequence_index)
+
+    def emit(
+        element_type: str,
+        first_line: int,
+        last_line: int,
+        *,
+        level: int | None = None,
+        parent: int | None = None,
+    ) -> None:
+        start = lines[first_line][0]
+        end = lines[last_line][1]
+        elements.append(
+            SourceElement(
+                sequence_index=len(elements),
+                element_type=element_type,
+                raw_start=start,
+                raw_end=end,
+                raw_text=raw[start:end],
+                level=level,
+                parent_index=parent,
+            )
+        )
+
+    def current_heading() -> int | None:
+        return heading_stack[-1][1] if heading_stack else None
+
+    i = 0
+    while i < len(lines):
+        _, _, content = lines[i]
+        if not content.strip():
+            i += 1
+            continue
+
+        heading = _HEADING_RE.match(content)
+        if heading:
+            level = len(heading.group(1))
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            emit(ELEMENT_HEADING, i, i, level=level, parent=current_heading())
+            heading_stack.append((level, len(elements) - 1))
+            i += 1
+            continue
+
+        if _FENCE_RE.match(content):
+            j = i + 1
+            while j < len(lines) and not _FENCE_RE.match(lines[j][2]):
+                j += 1
+            last = min(j, len(lines) - 1)  # include the closing fence; tolerate EOF
+            emit(ELEMENT_CODE_BLOCK, i, last, parent=current_heading())
+            i = last + 1
+            continue
+
+        if _QUOTE_RE.match(content):
+            j = i
+            while j + 1 < len(lines) and _QUOTE_RE.match(lines[j + 1][2]):
+                j += 1
+            emit(ELEMENT_BLOCKQUOTE, i, j, parent=current_heading())
+            i = j + 1
+            continue
+
+        bullet = _BULLET_RE.match(content)
+        if bullet:
+            indent = len(bullet.group(1))
+            j = i
+            # Continuation lines: deeper-indented, non-blank, non-structural.
+            while j + 1 < len(lines):
+                nxt = lines[j + 1][2]
+                if not nxt.strip() or _is_structural(nxt):
+                    break
+                if len(nxt) - len(nxt.lstrip()) <= indent:
+                    break
+                j += 1
+            emit(ELEMENT_LIST_ITEM, i, j, level=1 + indent // 2, parent=current_heading())
+            i = j + 1
+            continue
+
+        # Paragraph: consecutive non-blank, non-structural lines.
+        j = i
+        while j + 1 < len(lines):
+            nxt = lines[j + 1][2]
+            if not nxt.strip() or _is_structural(nxt) or _FENCE_RE.match(nxt):
+                break
+            j += 1
+        emit(ELEMENT_PARAGRAPH, i, j, parent=current_heading())
+        i = j + 1
+
+    return elements
+
+
+def structure_commit_message(raw: str) -> list[SourceElement]:
+    """A commit message is one atomic element covering the whole raw text."""
+    if not raw:
+        return []
+    return [
+        SourceElement(
+            sequence_index=0,
+            element_type=ELEMENT_COMMIT_MESSAGE,
+            raw_start=0,
+            raw_end=len(raw),
+            raw_text=raw,
+        )
+    ]
+
+
+def verify_full_coverage(raw: str, elements: list[SourceElement]) -> list[str]:
+    """The reconciliation invariant: zero silently dropped characters.
+
+    Element spans must be in-bounds, non-overlapping, in document order, slice-exact,
+    and every uncovered gap (before, between, after) must be whitespace-only. Returns
+    human-readable violations; empty means the tree fully accounts for the raw text.
+    """
+    violations: list[str] = []
+    cursor = 0
+    for element in sorted(elements, key=lambda e: e.raw_start):
+        if element.raw_start < cursor:
+            violations.append(
+                f"element {element.sequence_index} overlaps previous coverage "
+                f"(starts {element.raw_start}, cursor {cursor})"
+            )
+        if element.raw_end > len(raw) or element.raw_start > len(raw):
+            violations.append(f"element {element.sequence_index} span exceeds raw length")
+            continue
+        if raw[element.raw_start : element.raw_end] != element.raw_text:
+            violations.append(f"element {element.sequence_index} raw_text is not its slice")
+        gap = raw[cursor : element.raw_start]
+        if gap.strip():
+            violations.append(
+                f"non-whitespace characters uncovered at {cursor}-{element.raw_start}: {gap!r:.80}"
+            )
+        cursor = max(cursor, element.raw_end)
+    tail = raw[cursor:]
+    if tail.strip():
+        violations.append(f"non-whitespace characters uncovered at tail {cursor}: {tail!r:.80}")
+    return violations
+
+
+__all__ = [
+    "ELEMENT_BLOCKQUOTE",
+    "ELEMENT_CODE_BLOCK",
+    "ELEMENT_COMMIT_MESSAGE",
+    "ELEMENT_HEADING",
+    "ELEMENT_LIST_ITEM",
+    "ELEMENT_PARAGRAPH",
+    "STATUS_OK",
+    "STATUS_PARSER_ERROR",
+    "STATUS_UNSUPPORTED",
+    "STRUCTURER_VERSION",
+    "SourceElement",
+    "structure_commit_message",
+    "structure_source_text",
+    "verify_full_coverage",
+]

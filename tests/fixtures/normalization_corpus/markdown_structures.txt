@@ -1,0 +1,22 @@
+# Top section
+
+Intro paragraph under the top section.
+
+## Nested section
+
+- outer bullet item
+  - nested bullet item
+    with a continuation line
+- second outer item
+
+```python
+def kept_verbatim():
+    return "code fences are one element"
+```
+
+> a quoted line
+> and its continuation
+
+### Deeper heading
+
+Closing paragraph owned by the deeper heading.

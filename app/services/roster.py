@@ -49,7 +49,19 @@ from app.domain.roster import (
     SourceDocument,
     detect_entity_overlaps,
 )
-from app.domain.source_capture import SourceCaptureStore
+from app.domain.source_capture import (
+    INGESTION_FAILED,
+    INGESTION_OK,
+    CapturedSourceVersion,
+    SourceCaptureStore,
+    SourceElementInput,
+)
+from app.domain.source_structure import (
+    STRUCTURER_VERSION,
+    structure_commit_message,
+    structure_source_text,
+    verify_full_coverage,
+)
 from app.domain.text_normalization import normalize_source_text
 from app.domain.validation_runs import (
     KIND_ENTITY_OVERLAP,
@@ -186,6 +198,58 @@ class ProjectReconciliationReport:
         return [r for r in self.results if r.status != STATUS_DETECTED]
 
 
+def _record_structure(
+    capture_store: SourceCaptureStore,
+    source_type: str,
+    version: CapturedSourceVersion,
+    raw_text: str,
+) -> None:
+    """Derive + persist a version's element tree (H4), with the coverage invariant.
+
+    Elements are a pure derivation of the immutable raw payload: an unchanged version
+    already structured by the current ``STRUCTURER_VERSION`` (and reconciled) is
+    skipped; a structurer bump or a previously failed pass re-derives. A coverage
+    violation marks the version ``failed`` — loudly — so a tree that lost characters
+    can never quietly pose as a complete account of its source.
+    """
+    if version.structurer_version == STRUCTURER_VERSION and version.ingestion_status == (
+        INGESTION_OK
+    ):
+        return
+    elements = (
+        structure_commit_message(raw_text)
+        if source_type == SOURCE_GITHUB_COMMIT
+        else structure_source_text(raw_text)
+    )
+    violations = verify_full_coverage(raw_text, elements)
+    status = INGESTION_FAILED if violations else INGESTION_OK
+    if violations:
+        logger.warning(
+            "structure reconciliation FAILED for source version %d (%d violation(s)): %s",
+            version.id,
+            len(violations),
+            "; ".join(violations[:5]),
+        )
+    capture_store.record_elements(
+        version.id,
+        [
+            SourceElementInput(
+                sequence_index=element.sequence_index,
+                element_type=element.element_type,
+                raw_start=element.raw_start,
+                raw_end=element.raw_end,
+                raw_text=element.raw_text,
+                normalized_text=normalize_source_text(element.raw_text),
+                level=element.level,
+                parent_index=element.parent_index,
+            )
+            for element in elements
+        ],
+        structurer_version=STRUCTURER_VERSION,
+        ingestion_status=status,
+    )
+
+
 async def gather_source_documents(
     drive_client: DriveClient,
     github_client: GitHubClient,
@@ -218,9 +282,9 @@ async def gather_source_documents(
     dispositions: list[SourceDisposition] = []
 
     def gathered(document: SourceDocument, *, extractor: str, raw_text: str) -> None:
-        """Capture raw, record the ok disposition, and keep the normalized document."""
+        """Capture raw + its element tree, record ok, keep the normalized document."""
         if capture_store is not None:
-            capture_store.capture(
+            version = capture_store.capture(
                 user_id,
                 source_type=document.source_type,
                 source_ref=document.source_ref,
@@ -231,6 +295,7 @@ async def gather_source_documents(
                 modified_time=document.modified_time,
                 size_bytes=document.size_bytes,
             )
+            _record_structure(capture_store, document.source_type, version, raw_text)
         documents.append(document)
         dispositions.append(
             SourceDisposition(document.source_type, document.source_ref, document.title, GATHER_OK)
