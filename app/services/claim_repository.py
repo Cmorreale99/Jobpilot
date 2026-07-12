@@ -202,10 +202,11 @@ class InMemoryClaimRepository(ClaimRepository):
                         chunk_text=chunk.chunk_text,
                         normalization_version=NORMALIZATION_VERSION,
                     )
-                elif stored.normalization_version is None:
-                    # A pre-versioning row whose ref the current run re-produced
-                    # verbatim: the current normalizer just vouched for this text —
-                    # stamp it (H8 version-consistency closes on legacy rows).
+                elif stored.normalization_version != NORMALIZATION_VERSION:
+                    # A row (pre-versioning or older-generation) whose ref the
+                    # current run re-produced VERBATIM: the current normalizer just
+                    # vouched for this exact text — stamp the current generation, or
+                    # a normalizer bump strands every unchanged row forever.
                     stored = replace(stored, normalization_version=NORMALIZATION_VERSION)
                 if chunk.element_id is not None:
                     # Structure linkage is a derivation of the current tree (H5):

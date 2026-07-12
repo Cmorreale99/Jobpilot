@@ -422,10 +422,12 @@ class SqlClaimRepository:
                 # Fresh text = fresh normalizer output: re-stamp the generation.
                 row.chunk_text = chunk.chunk_text
                 row.normalization_version = NORMALIZATION_VERSION
-            elif row.normalization_version is None:
-                # A pre-versioning row whose ref the current run re-produced
-                # verbatim: the current normalizer just vouched for this text —
-                # stamp it (H8 version-consistency closes on legacy rows).
+            elif row.normalization_version != NORMALIZATION_VERSION:
+                # A row (pre-versioning or older-generation) whose ref the current
+                # run re-produced VERBATIM: the current normalizer just vouched for
+                # this exact text — stamp the current generation, or a normalizer
+                # bump strands every unchanged row on the old stamp forever (H8
+                # version-consistency observed 1,525 such rows live, 2026-07-12).
                 row.normalization_version = NORMALIZATION_VERSION
             if chunk.element_id is not None:
                 # Structure linkage is a derivation of the current tree (H5):
