@@ -56,7 +56,9 @@ logger = logging.getLogger("app.llm.extraction")
 # another batch stays an honest missing Result rather than a cross-batch guess.
 # The char budget also bounds the OUTPUT: pass-1 JSON quotes the input verbatim, so a
 # batch must be small enough that its claims + quotes fit under max_tokens (observed
-# live: a 24K-char batch of dense commit bodies truncated an 8192-token completion).
+# live: a 24K-char batch of dense commit bodies truncated an 8192-token completion;
+# 2026-07-12, even 14K-char batches truncated 8192 — "no text blocks" — which is why
+# the extractor default is 16384, not the client-wide setting).
 _MAX_BATCH_CHUNKS = 30
 _MAX_BATCH_CHARS = 14_000
 
@@ -187,7 +189,7 @@ class LlmTwoPassExtractor:
         client: LlmClient,
         *,
         tier: ModelTier = ModelTier.BULK,
-        max_tokens: int = 8192,
+        max_tokens: int = 16384,
     ) -> None:
         self._client = client
         self._tier = tier

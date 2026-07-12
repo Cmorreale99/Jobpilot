@@ -403,10 +403,23 @@ def _map_source(item: dict[str, Any]) -> DriveSource:
     )
 
 
+# workspace-mcp reports an extraction failure as the file's CONTENT: one bracketed
+# sentence like "[Could not extract text from PDF (929738 bytes) - the file may be
+# scanned/image-only. ...]" (observed live). Treating that as document text poisons
+# the pipeline — the error message becomes captured raw text and an evidence chunk.
+_EXTRACTION_FAILURE_SENTINEL = re.compile(r"\[(?:Could not|Unable to|No text)\b[^\[\]]*\]")
+
+
 def _map_document(payload: dict[str, Any], source_ref: str) -> DriveDocument:
     text = payload.get("content", payload.get("body", ""))
     if not isinstance(text, str):
         raise DriveResponseError("Drive file content payload had no text 'content'.")
+    if _EXTRACTION_FAILURE_SENTINEL.fullmatch(text.strip()):
+        # A read failure, never content: the gather records it as read_failed, so a
+        # source that didn't load stays distinguishable from an empty one (H2).
+        raise DriveResponseError(
+            f"Drive MCP could not extract text from {source_ref}: {text.strip()[:300]}"
+        )
     return DriveDocument(
         source_ref=source_ref,
         title=str(payload.get("name", "")),

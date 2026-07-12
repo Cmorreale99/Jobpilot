@@ -24,6 +24,12 @@ the persisted state alone (PIPELINE_HARDENING_PLAN.md §7):
   chunks, and attestation-backed components resolve to their attestation rows.
 * **version_consistency** — active rows and versions are stamped with the current
   ``NORMALIZATION_VERSION``/``STRUCTURER_VERSION`` (H3: derivations are versioned).
+* **entity_coverage** — every CONFIRMED roster entity holds at least one active
+  evidence chunk, and every confirmed entity with evidence has at least one claim.
+  Provenance integrity is not completeness: a confirmed project whose source text was
+  captured but swallowed by a neighboring chunk (the Paper-recommender case), or whose
+  evidence extraction never processed, is a silent hole in the output — the gate
+  names it instead of passing around it.
 
 Pure and deterministic — no I/O; ``services/pipeline_audit.py`` assembles the data and
 records the scorecard, ``python -m app.tools.audit_pipeline`` is the CLI.
@@ -40,6 +46,8 @@ from app.domain.claims import (
     Claim,
     ClaimField,
     ClaimStatus,
+    Experience,
+    ExperienceStatus,
     StoredEvidence,
     split_span_ref,
 )
@@ -376,6 +384,46 @@ def check_version_consistency(
     )
 
 
+def check_entity_coverage(
+    experiences: Sequence[Experience],
+    evidence: Sequence[StoredEvidence],
+    claims: Sequence[Claim],
+) -> AuditCheck:
+    """Completeness, not just integrity: every confirmed entity is fed and processed.
+
+    A confirmed roster entity is a human decision that a real-world project belongs
+    in the output. One with zero active evidence means its source text exists but the
+    interpretation layer never routed a single chunk to it (captured-but-swallowed —
+    the Paper-recommender failure). One with evidence but zero claims means extraction
+    never ran for it or produced nothing (the JobPilot failure). Both read as "done"
+    on every integrity check while a whole project is silently absent downstream.
+    """
+    failures: list[str] = []
+    confirmed = [e for e in experiences if e.status is ExperienceStatus.CONFIRMED]
+    chunk_counts: dict[int, int] = {}
+    for row in _active_source_rows(evidence):
+        if row.experience_id is not None:
+            chunk_counts[row.experience_id] = chunk_counts.get(row.experience_id, 0) + 1
+    claim_counts: dict[int, int] = {}
+    for claim in claims:
+        claim_counts[claim.experience_id] = claim_counts.get(claim.experience_id, 0) + 1
+    for entity in confirmed:
+        chunks = chunk_counts.get(entity.id, 0)
+        if chunks == 0:
+            failures.append(
+                f"experience {entity.id} ({entity.name!r}): confirmed with ZERO active "
+                "evidence chunks — its text was captured but never assigned to it "
+                "(chunk-boundary swallow or assignment gap)"
+            )
+        elif claim_counts.get(entity.id, 0) == 0:
+            failures.append(
+                f"experience {entity.id} ({entity.name!r}): {chunks} active evidence "
+                "chunk(s) but ZERO claims — extraction never ran for this entity or "
+                "produced nothing"
+            )
+    return AuditCheck(name="entity_coverage", checked=len(confirmed), failures=tuple(failures))
+
+
 def run_audit_checks(
     *,
     evidence: Sequence[StoredEvidence],
@@ -385,6 +433,7 @@ def run_audit_checks(
     versions_by_ref: Mapping[tuple[str, str], CapturedSourceVersion | None],
     elements_by_id: Mapping[int, StoredSourceElement],
     attestations_by_ref: Mapping[str, StoredEvidence],
+    experiences: Sequence[Experience] = (),
 ) -> AuditScorecard:
     """Run every gate check over assembled state — pure, ordered, complete."""
     claims_by_id = {c.id: c for c in claims}
@@ -400,6 +449,7 @@ def run_audit_checks(
                 stories, claims_by_id, evidence_by_id, attestations_by_ref, elements_by_id
             ),
             check_version_consistency(evidence, documents),
+            check_entity_coverage(experiences, evidence, claims),
         )
     )
 
@@ -412,6 +462,7 @@ __all__ = [
     "check_active_orphans",
     "check_capture",
     "check_element_coverage",
+    "check_entity_coverage",
     "check_ownership_labeled",
     "check_provenance_walk",
     "check_reviewed_on_stale",

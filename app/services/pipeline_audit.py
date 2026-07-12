@@ -76,6 +76,7 @@ def run_pipeline_audit(
         evidence=evidence,
         claims=claims,
         stories=stories,
+        experiences=repository.list_experiences(user_id),
         documents=documents,
         versions_by_ref=versions_by_ref,
         elements_by_id=elements_by_id,
