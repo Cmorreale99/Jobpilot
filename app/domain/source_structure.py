@@ -10,6 +10,14 @@ so it is recomputable and its loss modes are visible:
   document-ordered list of :class:`SourceElement`\\ s, each carrying its **verbatim
   raw span** (``raw[raw_start:raw_end] == raw_text``), its type, its nesting level,
   and its parent (the governing heading) by sequence index.
+* The scanner is **reflow-aware** (H5.1): element grouping makes the same join
+  decisions as ``normalize_source_text`` (``domain/text_normalization.py``), so
+  word-per-line PDF damage — one- or two-word fragments separated by whitespace-only
+  lines — lands inside ONE paragraph element instead of one element per word, and a
+  bullet's flush-left continuation lines stay inside the bullet. Spans remain raw
+  coordinates; ``normalize(raw[start:end])`` of an element is clean prose. (The first
+  live H5 run word-shredded real Drive PDFs precisely because the structurer broke on
+  every blank line the normalizer would have reflowed.)
 * ``structure_commit_message`` wraps a commit message as a single element.
 * ``verify_full_coverage`` is the reconciliation invariant: element spans plus
   whitespace-only separators must account for **every character** of the raw text —
@@ -29,9 +37,13 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from app.domain.text_normalization import blank_is_soft, starts_structure
+
 # BUMP THIS on ANY change to the scanning rules below — persisted elements record the
 # structurer generation that produced them, and the digest test enforces the bump.
-STRUCTURER_VERSION = 1
+# v2 (H5.1): reflow-aware grouping — soft-blank word-per-line fragments join their
+# paragraph; list items absorb flush-left continuation lines (normalizer parity).
+STRUCTURER_VERSION = 2
 
 # Element types (documented values, deliberately no CHECK constraint — same policy as
 # evidence source types). ``table``/``table_row`` are reserved for the V4 PDF/DOCX
@@ -159,25 +171,49 @@ def structure_source_text(raw: str) -> list[SourceElement]:
         if bullet:
             indent = len(bullet.group(1))
             j = i
-            # Continuation lines: deeper-indented, non-blank, non-structural.
+            # Continuation lines: any non-blank, non-structural line (normalizer
+            # parity: a flush-left wrapped line after a bullet joins the bullet). A
+            # blank line always ends a list item — the bullet began as structure, so
+            # no blank after it is ever "soft".
             while j + 1 < len(lines):
                 nxt = lines[j + 1][2]
-                if not nxt.strip() or _is_structural(nxt):
-                    break
-                if len(nxt) - len(nxt.lstrip()) <= indent:
+                if not nxt.strip() or _is_structural(nxt) or _FENCE_RE.match(nxt):
                     break
                 j += 1
             emit(ELEMENT_LIST_ITEM, i, j, level=1 + indent // 2, parent=current_heading())
             i = j + 1
             continue
 
-        # Paragraph: consecutive non-blank, non-structural lines.
+        # Paragraph: consecutive non-blank, non-structural lines — PLUS soft-blank
+        # continuations (normalizer parity): in word-per-line PDF damage a
+        # whitespace-only line sits between fragments, and those fragments belong to
+        # this paragraph, not to one element each. ``acc`` mirrors the normalizer's
+        # accumulated output line so both modules make the same join decision.
         j = i
-        while j + 1 < len(lines):
-            nxt = lines[j + 1][2]
-            if not nxt.strip() or _is_structural(nxt) or _FENCE_RE.match(nxt):
+        acc = " ".join(content.split())
+        acc_structural = starts_structure(content)
+        while True:
+            k = j + 1
+            while k < len(lines) and not lines[k][2].strip():
+                k += 1  # skip blank lines to the next candidate
+            if k >= len(lines):
                 break
-            j += 1
+            nxt = lines[k][2]
+            if _is_structural(nxt) or _FENCE_RE.match(nxt):
+                break
+            collapsed = " ".join(nxt.split())
+            if k > j + 1:
+                # Blank line(s) between: join only when the blank is soft junk.
+                if starts_structure(nxt) or not blank_is_soft(acc, acc_structural, collapsed):
+                    break
+                acc = f"{acc} {collapsed}"
+            elif starts_structure(nxt):
+                # A ``label:`` line starts a fresh output line (same paragraph).
+                acc = collapsed
+                acc_structural = True
+            else:
+                acc = f"{acc} {collapsed}"
+            j = k
         emit(ELEMENT_PARAGRAPH, i, j, parent=current_heading())
         i = j + 1
 

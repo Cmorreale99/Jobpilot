@@ -97,6 +97,10 @@ def chunk_normalized_text(text: str, *, max_chars: int = MAX_CHUNK_CHARS) -> lis
 # whitespace — the preferred split point inside an oversized element.
 _SENTENCE_END_RE = re.compile(r"[.!?][)\"”']*\s")
 
+# A chunk must contain at least one word character to be citable evidence — markdown
+# separators ('---', '***') and stray punctuation elements yield nothing.
+_WORD_CHAR_RE = re.compile(r"[A-Za-z0-9]")
+
 
 @dataclass(frozen=True)
 class ElementChunk:
@@ -145,11 +149,13 @@ def chunk_elements(
     """Cut citation-sized chunks from source elements, never across a boundary.
 
     One chunk per element when it fits; an oversized element splits at sentence
-    boundaries within its own raw slice. Whitespace-only elements yield nothing.
+    boundaries within its own raw slice. Elements with no word characters —
+    whitespace, markdown separators ('---'), stray punctuation — yield nothing:
+    they could never carry a citable quote.
     """
     chunks: list[ElementChunk] = []
     for element in elements:
-        if not element.raw_text.strip():
+        if not _WORD_CHAR_RE.search(element.raw_text):
             continue
         if len(element.raw_text) <= max_chars:
             spans = [(element.raw_start, element.raw_end)]

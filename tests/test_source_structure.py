@@ -118,6 +118,79 @@ def test_full_coverage_over_the_golden_corpus_and_roster_fixtures() -> None:
         assert violations == [], f"{path.name}: {violations}"
 
 
+# --- reflow-aware grouping (H5.1): the live word-shred regression ----------------------
+
+_PDF_DAMAGE = (
+    "Automated a logistics-reporting pipeline that converts multi-tab Excel\n"
+    "datasets,\n"
+    " \n"
+    "loads\n"
+    " \n"
+    "five\n"
+    " \n"
+    "production\n"
+    " \n"
+    "staging\n"
+    " \n"
+    "tables,\n"
+    " \n"
+    "and\n"
+    " \n"
+    "enables\n"
+    " \n"
+    "daily\n"
+    " \n"
+    "analytics/AI\n"
+    " \n"
+    "refreshes.\n"
+    "\n"
+    "A real paragraph with terminal punctuation keeps its own break.\n"
+)
+
+
+def test_word_per_line_damage_stays_one_paragraph_element() -> None:
+    """The first live H5 run turned each PDF word into an element ('schema',
+    'design,', '~$8M'...). Soft blanks between fragments must reflow into the
+    governing paragraph — normalizer parity — while spans stay raw and verbatim."""
+    elements = structure_source_text(_PDF_DAMAGE)
+    assert [e.element_type for e in elements] == [ELEMENT_PARAGRAPH, ELEMENT_PARAGRAPH]
+    damaged, clean = elements
+    # Every fragment landed inside the first element; none became its own element.
+    assert "refreshes." in damaged.raw_text and damaged.raw_text.startswith("Automated")
+    assert clean.raw_text == "A real paragraph with terminal punctuation keeps its own break."
+    for element in elements:
+        assert _PDF_DAMAGE[element.raw_start : element.raw_end] == element.raw_text
+    assert verify_full_coverage(_PDF_DAMAGE, elements) == []
+
+
+def test_hard_paragraph_breaks_survive_reflow() -> None:
+    """Multi-word prose ending in terminal punctuation is a real paragraph break —
+    the reflow rule must not glue genuine paragraphs together."""
+    raw = "First real paragraph ends here.\n\nSecond real paragraph stands alone.\n"
+    elements = structure_source_text(raw)
+    assert [e.raw_text for e in elements] == [
+        "First real paragraph ends here.",
+        "Second real paragraph stands alone.",
+    ]
+
+
+def test_bullet_absorbs_flush_left_continuation() -> None:
+    """A wrapped bullet whose continuation lands at column 0 (PDF extraction) stays
+    one list item — the mid-clause truncation the live run exhibited — while a blank
+    line still ends the item (a bullet is structure; no blank after it is soft)."""
+    raw = (
+        "- Reverse-engineered an unmapped 250-table Oracle database, discovering\n"
+        "relationships, and data dependencies.\n"
+        "\n"
+        "next\n"
+    )
+    elements = structure_source_text(raw)
+    assert elements[0].element_type == ELEMENT_LIST_ITEM
+    assert elements[0].raw_text.endswith("relationships, and data dependencies.")
+    assert elements[1].raw_text == "next"
+    assert verify_full_coverage(raw, elements) == []
+
+
 # --- the verifier's own teeth (negative controls) --------------------------------------
 
 

@@ -167,6 +167,18 @@ def test_whitespace_only_elements_yield_no_chunks() -> None:
     assert chunk_elements([blank]) == []
 
 
+def test_wordless_elements_yield_no_chunks() -> None:
+    """Markdown separators and stray punctuation could never carry a citable quote —
+    the live run stored '---' rows as evidence (H5.1)."""
+    from app.domain.source_structure import SourceElement
+
+    separator = SourceElement(0, "paragraph", 0, 3, "---")
+    stray = SourceElement(1, "paragraph", 4, 5, "&")
+    kept = SourceElement(2, "paragraph", 6, 13, "real w1")
+    chunks = chunk_elements([separator, stray, kept])
+    assert [c.text for c in chunks] == ["real w1"]
+
+
 # --- section views ---------------------------------------------------------------------
 
 
