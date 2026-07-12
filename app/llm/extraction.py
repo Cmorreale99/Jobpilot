@@ -173,7 +173,14 @@ class _Pass2Result:
 
 
 class LlmTwoPassExtractor:
-    """Two-pass PAR extraction via an :class:`LlmClient`; loud failure, no fallback."""
+    """Two-pass PAR extraction via an :class:`LlmClient`; loud failure, no fallback.
+
+    ``last_severed`` counts the pass-2 results of the most recent :meth:`extract` whose
+    ``claim_index`` fell outside their batch's pass-1 claims — the observable trace of
+    batch severance (an outcome statement whose work claim lives in another batch) or
+    model noise. Either way the Result stays honestly missing; H7 makes the loss
+    countable instead of silent (F8), mirroring the assigner's ``last_truncated``.
+    """
 
     def __init__(
         self,
@@ -185,8 +192,10 @@ class LlmTwoPassExtractor:
         self._client = client
         self._tier = tier
         self._max_tokens = max_tokens
+        self.last_severed = 0
 
     def extract(self, group: EvidenceGroup, violations: Sequence[str] = ()) -> list[DraftClaim]:
+        self.last_severed = 0
         if not any(chunk.chunk_text.strip() for chunk in group.chunks):
             return []
         batches = _split_group(group)
@@ -271,6 +280,16 @@ class LlmTwoPassExtractor:
         result_by_claim: dict[int, _Pass2Result] = {}
         for result in results:
             if result.claim_index not in range(len(claims)):
+                # A Result pointing outside this batch's claims: batch severance (or
+                # noise). Counted, never guessed across batches (F8).
+                self.last_severed += 1
+                logger.warning(
+                    "pass-2 result for %r cites claim_index %d outside its batch "
+                    "(%d claims) — Result stays missing, counted as severed",
+                    group.experience.name,
+                    result.claim_index,
+                    len(claims),
+                )
                 continue
             if not _quote_ok(group, result.chunk_index, result.outcome_quote):
                 logger.warning("dropping ungrounded outcome quote; Result stays missing")

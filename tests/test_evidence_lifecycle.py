@@ -195,6 +195,54 @@ def test_planner_migrates_human_pin_to_successor_and_warns_when_it_cannot() -> N
     assert any("no determinable successor" in w for w in plan.warnings)
 
 
+def test_pin_never_migrates_onto_a_broader_successor() -> None:
+    """The live 2026-07-11 case: a 9-char word-chunk pin migrated by containment onto
+    the whole intro paragraph — a `human` stamp over content no human reviewed. A
+    broader successor keeps the supersession pointer; the pin becomes a warning."""
+    pinned = _row(
+        1,
+        "ingestion",
+        assignment_method=ASSIGNMENT_HUMAN,
+        experience_id=7,
+    )
+    broader = _row(
+        9,
+        "Reverse-engineers broken data systems: schema design, data ingestion & more.",
+        ref="drv1#chars=0-80",
+        assignment_method=ASSIGNMENT_HEURISTIC,
+        experience_id=3,
+    )
+    plan = plan_evidence_supersession([pinned], [broader])
+    # Lineage is still recorded — only the decision does not transfer.
+    assert [(a.evidence_id, a.successor_id) for a in plan.supersede] == [(1, 9)]
+    assert plan.pin_migrations == ()
+    assert any("broader" in w and "re-pin" in w for w in plan.warnings)
+
+
+def test_pin_migrates_onto_a_piece_of_the_decided_text() -> None:
+    """The human decided the WHOLE stale text, so a successor holding a piece of it
+    inherits the decision soundly (a re-split chunk keeps its pin)."""
+    pinned = _row(
+        1,
+        "Cut reconciliation time from four hours to twenty minutes. Documented it too.",
+        assignment_method=ASSIGNMENT_HUMAN,
+        experience_id=7,
+    )
+    piece = _row(
+        9,
+        "Cut reconciliation time from four hours to twenty minutes.",
+        ref="drv1#chars=50-110",
+        assignment_method=ASSIGNMENT_HEURISTIC,
+        experience_id=3,
+    )
+    plan = plan_evidence_supersession([pinned], [piece])
+    ((successor_id, experience_id),) = [
+        (m.successor_id, m.experience_id) for m in plan.pin_migrations
+    ]
+    assert (successor_id, experience_id) == (9, 7)
+    assert plan.warnings == ()
+
+
 def test_planner_never_overwrites_a_human_decided_successor() -> None:
     pinned = _row(
         1,

@@ -436,6 +436,26 @@ async def test_dropped_claims_never_reach_the_repository(
     dropped_runs = [r for r in log.list_runs("u1") if r.subject_ref.startswith("dropped:")]
     assert dropped_runs and all(not r.passed for r in dropped_runs)
 
+    # H7 (F7): the run detail carries the WHOLE dropped draft as JSON, not an
+    # 80-char preview — the drop is reconstructable after the fact.
+    import json
+
+    payloads = []
+    for run in dropped_runs:
+        for line in run.detail:
+            try:
+                payloads.append(json.loads(line))
+            except ValueError:
+                continue
+    drafts = [p for p in payloads if isinstance(p, dict) and p.get("action_text") == "extracted"]
+    assert drafts, "no dropped-draft JSON found in the validation_runs detail"
+    draft_json = drafts[0]
+    assert draft_json["result_kind"] == "missing"
+    [evidence_ref] = draft_json["evidence"]
+    assert evidence_ref["source_type"] == _CHUNK.source_type
+    assert evidence_ref["source_ref"] == _CHUNK.source_ref
+    assert evidence_ref["field"] == "action"
+
 
 async def test_same_content_never_queues_under_two_experiences(
     drive_client: MockDriveClient,

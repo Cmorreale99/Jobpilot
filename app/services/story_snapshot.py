@@ -25,6 +25,8 @@ from app.domain.claims import (
     Experience,
     ExperienceStatus,
     ResultKind,
+    StoredEvidence,
+    evidence_source_url,
 )
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore, StoredSnapshot
 from app.domain.project_story import (
@@ -49,11 +51,20 @@ logger = logging.getLogger(__name__)
 
 def _attestation(
     claim_repository: ClaimRepository, story: ProjectStory, component: str
-) -> str | None:
-    stored = claim_repository.get_evidence_by_ref(
+) -> StoredEvidence | None:
+    return claim_repository.get_evidence_by_ref(
         story.user_id, SOURCE_USER_ATTESTATION, f"story:{story.id}:{component}"
     )
-    return stored.chunk_text if stored is not None else None
+
+
+def _evidence_ref(stored: StoredEvidence) -> dict[str, Any]:
+    """One frozen provenance ref (H7): the snapshot names its sources without live rows."""
+    return {
+        "source_type": stored.source_type,
+        "source_ref": stored.source_ref,
+        "source_url": evidence_source_url(stored.source_type, stored.source_ref),
+        "normalization_version": stored.normalization_version,
+    }
 
 
 def _prepare_renderable(
@@ -77,16 +88,16 @@ def _prepare_renderable(
         if c.experience_id == story.experience_id
     }
 
-    def evidence_text(claim_ids: list[int], attested: str | None = None) -> str:
-        chunks = [
-            stored.chunk_text
-            for stored in resolve_component_evidence(
-                claim_ids, claims_by_id, claim_repository.get_evidence
-            )
-        ]
-        if attested is not None:
-            chunks.append(attested)
-        return "\n".join(chunks)
+    def component_evidence(claim_ids: list[int]) -> list[StoredEvidence]:
+        return resolve_component_evidence(claim_ids, claims_by_id, claim_repository.get_evidence)
+
+    def evidence_text(rows: list[StoredEvidence]) -> str:
+        return "\n".join(stored.chunk_text for stored in rows)
+
+    def evidence_refs(rows: list[StoredEvidence]) -> list[dict[str, Any]]:
+        # H7 (F9): refs are baked alongside evidence_text, so the frozen snapshot is
+        # self-describing about provenance — deliberately part of the fingerprint.
+        return [_evidence_ref(stored) for stored in rows]
 
     # Problem: evidenced (composed, clears the bar, valid refs) or user-attested.
     attested_problem = _attestation(claim_repository, story, COMPONENT_PROBLEM)
@@ -97,18 +108,21 @@ def _prepare_renderable(
         and not assess_problem_text(content.problem_text or "")
         and valid_problem_refs
     ):
+        rows = component_evidence(valid_problem_refs)
         problem = {
             "text": content.problem_text,
             "claim_ids": list(valid_problem_refs),
-            "evidence_text": evidence_text(valid_problem_refs),
+            "evidence_text": evidence_text(rows),
+            "evidence_refs": evidence_refs(rows),
         }
     elif attested_problem:
         problem = {
-            "text": attested_problem,
+            "text": attested_problem.chunk_text,
             "claim_ids": [],
             "attested": True,
             "source_ref": f"story:{story.id}:{COMPONENT_PROBLEM}",
-            "evidence_text": attested_problem,
+            "evidence_text": attested_problem.chunk_text,
+            "evidence_refs": [_evidence_ref(attested_problem)],
         }
 
     # Actions: every selected action citing at least one of this entity's claims.
@@ -116,12 +130,14 @@ def _prepare_renderable(
     for action in content.actions:
         valid_refs = [i for i in action.claim_ids if i in claims_by_id]
         if action.summary.strip() and valid_refs:
+            rows = component_evidence(valid_refs)
             actions.append(
                 {
                     "component_id": action.component_id,
                     "text": action.summary,
                     "claim_ids": valid_refs,
-                    "evidence_text": evidence_text(valid_refs),
+                    "evidence_text": evidence_text(rows),
+                    "evidence_refs": evidence_refs(rows),
                 }
             )
 
@@ -131,13 +147,15 @@ def _prepare_renderable(
         valid = [claims_by_id[i] for i in result.claim_ids if i in claims_by_id]
         if any(c.result_kind is not ResultKind.MISSING for c in valid):
             valid_ids = [c.id for c in valid]
+            rows = component_evidence(valid_ids)
             results.append(
                 {
                     "component_id": result.component_id,
                     "text": result.text,
                     "claim_ids": valid_ids,
                     "outcome_quote": result.outcome_quote,
-                    "evidence_text": evidence_text(valid_ids),
+                    "evidence_text": evidence_text(rows),
+                    "evidence_refs": evidence_refs(rows),
                 }
             )
     if not results:
@@ -145,13 +163,14 @@ def _prepare_renderable(
         if attested_result:
             results.append(
                 {
-                    "component_id": component_id("r", attested_result),
-                    "text": attested_result,
+                    "component_id": component_id("r", attested_result.chunk_text),
+                    "text": attested_result.chunk_text,
                     "claim_ids": [],
                     "outcome_quote": None,
                     "attested": True,
                     "source_ref": f"story:{story.id}:{COMPONENT_RESULT}",
-                    "evidence_text": attested_result,
+                    "evidence_text": attested_result.chunk_text,
+                    "evidence_refs": [_evidence_ref(attested_result)],
                 }
             )
 
