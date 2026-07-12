@@ -47,15 +47,32 @@ _TERMINAL = (".", "!", "?", ":", ";")
 _FRAGMENT_TOKENS = 2  # a line this short next to a soft blank is PDF debris, not prose
 
 
-def _starts_structure(line: str) -> bool:
+def starts_structure(line: str) -> bool:
+    """True when a line begins output structure: a bullet, ``#`` header, or ``label:``.
+
+    Public because the structurer (``domain/source_structure.py``, H5.1) must make the
+    SAME join decisions as this module so element boundaries match normalized-line
+    boundaries — one predicate, two consumers.
+    """
     return bool(_BULLET_RE.match(line) or _HEADER_RE.match(line) or _LABEL_RE.match(line))
 
 
-def _blank_is_soft(previous: str, previous_structural: bool, current: str) -> bool:
-    """True when a blank line is word-per-line spacing junk rather than a paragraph."""
+def blank_is_soft(previous: str, previous_structural: bool, current: str) -> bool:
+    """True when a blank line is word-per-line spacing junk rather than a paragraph.
+
+    ``previous`` is the accumulated output line so far (whitespace-collapsed),
+    ``previous_structural`` whether that line began as structure, ``current`` the
+    collapsed next non-blank line. Shared with the structurer (see
+    :func:`starts_structure`).
+    """
     if previous_structural or previous.endswith(_TERMINAL):
         return False
     return len(previous.split()) <= _FRAGMENT_TOKENS or len(current.split()) <= _FRAGMENT_TOKENS
+
+
+# Backward-compatible private aliases (internal call sites below).
+_starts_structure = starts_structure
+_blank_is_soft = blank_is_soft
 
 
 def normalize_source_text(text: str) -> str:
@@ -87,4 +104,4 @@ def normalize_source_text(text: str) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["normalize_source_text"]
+__all__ = ["blank_is_soft", "normalize_source_text", "starts_structure"]
