@@ -11,6 +11,13 @@ plans the third way, purely:
 * a **human-pinned** superseded row with a determinable successor migrates its pin —
   the retained decision (H1) carries forward to the row that now holds the same text,
   never dies with the stale span; an unmigratable pin becomes a warning, never silence;
+* a pin migrates only onto a successor holding **no more than the decided text** (exact
+  match, or a piece of it): the human decided THAT text, so a fragment inherits the
+  decision soundly — but a successor that merely *contains* the decided text is broader
+  than the decision, and stamping it ``human`` would forge a decision over content no
+  human reviewed (observed live 2026-07-11: a 9-char word-chunk pin migrated by
+  containment onto a 483-char intro paragraph). Broader successors keep the
+  supersession pointer; the pin becomes a warning (H7);
 * rows whose ref reappears in the fresh set are counted as **reactivated** (the repos
   re-activate on upsert); brand-new refs are counted as **new**;
 * a superseded row written under an older normalizer generation produces a
@@ -59,23 +66,36 @@ class SupersessionPlan:
     warnings: tuple[str, ...] = field(default=())
 
 
-def _successor_for(stale: StoredEvidence, fresh: Sequence[StoredEvidence]) -> int | None:
+# How a successor relates to the stale text it carries forward. Pin migration keys on
+# this: EXACT and PIECE successors hold no more than what the human decided; a BROADER
+# successor holds content beyond the decision and must not inherit the pin.
+_MATCH_EXACT = "exact"
+_MATCH_PIECE = "piece"  # successor text is contained in the stale (decided) text
+_MATCH_BROADER = "broader"  # successor text contains the stale text plus more
+
+
+def _successor_for(
+    stale: StoredEvidence, fresh: Sequence[StoredEvidence]
+) -> tuple[int, str] | None:
     """The fresh row that carries the stale row's text forward, if determinable.
 
     Exact normalized-text match first; then containment either way (an old paragraph
     chunk living inside a new element chunk, or a piece of a re-split one). First
-    match in document order — deterministic, never a similarity guess.
+    match in document order — deterministic, never a similarity guess. Returns the
+    successor id with its match kind.
     """
     stale_text = _normalized(stale.chunk_text)
     if not stale_text:
         return None
     for row in fresh:
         if _normalized(row.chunk_text) == stale_text:
-            return row.id
+            return row.id, _MATCH_EXACT
     for row in fresh:
         fresh_text = _normalized(row.chunk_text)
-        if stale_text in fresh_text or (fresh_text and fresh_text in stale_text):
-            return row.id
+        if stale_text in fresh_text:
+            return row.id, _MATCH_BROADER
+        if fresh_text and fresh_text in stale_text:
+            return row.id, _MATCH_PIECE
     return None
 
 
@@ -113,7 +133,8 @@ def plan_evidence_supersession(
     for row in sorted(existing, key=lambda e: e.id):
         if row.id in fresh_ids or not row.is_active:
             continue  # still current, or already-visible history
-        successor_id = _successor_for(row, fresh)
+        match = _successor_for(row, fresh)
+        successor_id, match_kind = match if match is not None else (None, None)
         supersessions.append(Supersession(evidence_id=row.id, successor_id=successor_id))
         if (
             current_normalization_version is not None
@@ -132,6 +153,15 @@ def plan_evidence_supersession(
             warnings.append(
                 f"human-pinned evidence {row.id} ({row.source_ref}) superseded with no "
                 "determinable successor — re-pin its text manually"
+            )
+            continue
+        if match_kind == _MATCH_BROADER:
+            # The successor holds MORE than the decided text: migrating would stamp
+            # `human` on content no human reviewed (H7). Pointer stays; pin warns.
+            warnings.append(
+                f"human-pinned evidence {row.id} ({row.source_ref}) superseded by "
+                f"broader evidence {successor_id} — the pin covers only part of the "
+                "successor; re-pin manually if the whole successor is that entity's"
             )
             continue
         successor = fresh_by_id[successor_id]

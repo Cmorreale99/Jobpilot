@@ -38,6 +38,7 @@ claim. Idempotent by construction: evidence and experiences upsert, and
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Collection
 from dataclasses import dataclass, field
@@ -82,6 +83,7 @@ class ExtractionReport:
     deduped: list[str] = field(default_factory=list)  # duplicates of already-queued content
     failed_groups: list[str] = field(default_factory=list)  # extraction failed outright
     skipped_unchanged: list[str] = field(default_factory=list)  # evidence fingerprint matched
+    severed_results: int = 0  # pass-2 results citing outside their batch (H7/F8)
 
     @property
     def flagged(self) -> list[Claim]:
@@ -251,6 +253,41 @@ def extract_and_validate_group(extractor: ClaimExtractor, group: EvidenceGroup) 
     return result
 
 
+def _dropped_draft_json(draft: DraftClaim) -> str:
+    """The FULL dropped draft, reconstructable from its ``validation_runs`` row (H7/F7).
+
+    A drop is a deliberate quality gate; losing the dropped content to an 80-char
+    preview made the gate unauditable. Chunk texts are not repeated — the evidence
+    refs point at persisted rows.
+    """
+    return json.dumps(
+        {
+            "action_text": draft.action_text,
+            "action_tools": list(draft.action_tools),
+            "problem_text": draft.problem_text,
+            "problem_cost_dimension": (
+                draft.problem_cost_dimension.value if draft.problem_cost_dimension else None
+            ),
+            "problem_inefficiency": (
+                draft.problem_inefficiency.value if draft.problem_inefficiency else None
+            ),
+            "result_text": draft.result_text,
+            "result_kind": draft.result_kind.value,
+            "result_metric_json": draft.result_metric_json,
+            "evidence": [
+                {
+                    "source_type": ref.chunk.source_type,
+                    "source_ref": ref.chunk.source_ref,
+                    "field": ref.field.value,
+                    "outcome_quote": ref.outcome_quote,
+                }
+                for ref in draft.evidence
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
 def _group_fingerprint(group: EvidenceGroup) -> str:
     """Stable hash of a group's evidence content (what extraction actually reads)."""
     material = "\x1e".join(
@@ -364,6 +401,7 @@ async def run_claim_extraction(
     deduped: list[str] = []
     failed_groups: list[str] = []
     skipped_unchanged: list[str] = []
+    severed_results = 0
     for group in groups:
         experience = entities[group.experience.name.casefold()]
         group_hash = _group_fingerprint(group)
@@ -377,6 +415,9 @@ async def run_claim_extraction(
             repository.upsert_evidence(user_id, chunk)
         try:
             extraction = extract_and_validate_group(extractor, group)
+            # H7 (F8): a batched group whose pass-2 cited outside its batch left a
+            # Result honestly missing — count the loss instead of losing it silently.
+            severed_results += getattr(extractor, "last_severed", 0)
         except ClaimExtractionError as exc:
             # Loud, isolated failure: the group is skipped (existing claims stay),
             # recorded, and reported — never silently answered by another extractor.
@@ -395,12 +436,14 @@ async def run_claim_extraction(
         for draft, violations in extraction.dropped:
             dropped.append(f"{experience.name}: {draft.action_text[:80]}")
             if validation_log is not None:
+                # H7 (F7): the row carries the WHOLE dropped draft, not a preview —
+                # every deliberate drop is auditable and reconstructable after the fact.
                 validation_log.record(
                     user_id,
                     KIND_PAR_VALIDATION,
                     subject_ref=f"dropped:{experience.name}",
                     passed=False,
-                    detail=violations,
+                    detail=(*(str(v) for v in violations), _dropped_draft_json(draft)),
                 )
 
         # Cross-experience dedupe: content already queued (or decided) anywhere for
@@ -452,6 +495,7 @@ async def run_claim_extraction(
         deduped=deduped,
         failed_groups=failed_groups,
         skipped_unchanged=skipped_unchanged,
+        severed_results=severed_results,
     )
     if validation_log is not None and report.claims:
         # The per-run scorecard (audit Phase 4): extractor/prompt changes get a
@@ -462,7 +506,7 @@ async def run_claim_extraction(
             KIND_EXTRACTION_EVAL,
             subject_ref="extraction_run",
             passed=metrics.boundary_clean,
-            detail=metrics.detail_lines(),
+            detail=(*metrics.detail_lines(), f"severed_results={severed_results}"),
         )
     logger.info(
         "claim extraction for %s: %d claim(s) pending review (%d flagged, %d missing results); "

@@ -183,6 +183,28 @@ def test_service_renders_only_approved_stories() -> None:
     assert all(b["claim_ids"] for b in entry["bullets"])  # every bullet traces to claims (T13)
 
 
+def test_snapshot_components_carry_frozen_evidence_refs() -> None:
+    """H7 (F9): the frozen snapshot names its sources — every component carries
+    evidence_refs alongside evidence_text, so provenance survives without live rows."""
+    content = _approved_massdep_snapshot()
+    [entry] = content["sections"][ExperienceSection.PROFESSIONAL_EXPERIENCE.value]
+    components = [*entry["actions"], *entry["results"]]
+    if entry["problem"]:
+        components.append(entry["problem"])
+    assert components
+    for component in components:
+        refs = component["evidence_refs"]
+        assert refs, f"component {component.get('component_id')} has no evidence_refs"
+        for ref in refs:
+            assert set(ref) == {
+                "source_type",
+                "source_ref",
+                "source_url",
+                "normalization_version",
+            }
+            assert ref["source_type"] and ref["source_ref"]
+
+
 def test_attested_result_renders_and_problem_is_not_bulleted() -> None:
     corpus = build_live_corpus()
     stories = InMemoryProjectStoryRepository()

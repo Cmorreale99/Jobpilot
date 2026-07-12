@@ -125,6 +125,44 @@ def test_ungrounded_outcome_quote_leaves_result_missing() -> None:
     assert claims[0].result_metric_json is None
 
 
+def test_out_of_batch_claim_index_is_counted_as_severed() -> None:
+    """H7 (F8): a pass-2 result citing a claim_index outside its batch leaves the
+    Result honestly missing AND increments the counted loss — never a silent drop,
+    never a cross-batch guess."""
+    client = FakeLlmClient(
+        [
+            _GROUNDED_PASS1,
+            _pass2(
+                [
+                    {
+                        "claim_index": 7,  # this batch has exactly one pass-1 claim
+                        "chunk_index": 1,
+                        "outcome_quote": (
+                            "Cut ingestion failure rate from 12% to 0.5% across the scoring jobs."
+                        ),
+                        "result_text": "Cut ingestion failure rate from 12% to 0.5%",
+                        "result_kind": "quantified",
+                        "metric_text": "Cut ingestion failure rate from 12% to 0.5%",
+                        "resolves": "quality",
+                    }
+                ]
+            ),
+        ]
+    )
+    extractor = LlmTwoPassExtractor(client)
+    claims = extractor.extract(_GROUP)
+
+    assert extractor.last_severed == 1
+    assert len(claims) == 1
+    assert claims[0].result_kind is ResultKind.MISSING
+
+    # The counter is per-extract, not cumulative across calls.
+    client2 = FakeLlmClient([_GROUNDED_PASS1, _pass2([])])
+    extractor2 = LlmTwoPassExtractor(client2)
+    extractor2.extract(_GROUP)
+    assert extractor2.last_severed == 0
+
+
 def test_ungrounded_action_quote_drops_the_claim_and_skips_pass2() -> None:
     client = FakeLlmClient(
         [
