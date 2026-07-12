@@ -202,6 +202,11 @@ class InMemoryClaimRepository(ClaimRepository):
                         chunk_text=chunk.chunk_text,
                         normalization_version=NORMALIZATION_VERSION,
                     )
+                elif stored.normalization_version is None:
+                    # A pre-versioning row whose ref the current run re-produced
+                    # verbatim: the current normalizer just vouched for this text —
+                    # stamp it (H8 version-consistency closes on legacy rows).
+                    stored = replace(stored, normalization_version=NORMALIZATION_VERSION)
                 if chunk.element_id is not None:
                     # Structure linkage is a derivation of the current tree (H5):
                     # refresh it; a legacy-shaped caller (None) never blanks it.
@@ -297,6 +302,10 @@ class InMemoryClaimRepository(ClaimRepository):
         updated = replace(stored, is_active=False, superseded_by_id=superseded_by_id)
         self._evidence[evidence_id] = updated
         return updated
+
+    def list_all_evidence(self, user_id: str) -> list[StoredEvidence]:
+        rows = [e for e in self._evidence.values() if e.user_id == user_id]
+        return sorted(rows, key=lambda e: e.id)
 
     def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
         # User attestations (claim:/story: refs) are human answers, never source

@@ -385,6 +385,13 @@ class SqlClaimRepository:
             session.refresh(row)
             return _to_evidence(row)
 
+    def list_all_evidence(self, user_id: str) -> list[StoredEvidence]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.user_id == user_id).order_by(EvidenceRow.id)
+            )
+            return [_to_evidence(row) for row in rows]
+
     def list_unassigned_evidence(self, user_id: str) -> list[StoredEvidence]:
         with self._session_factory() as session:
             rows = session.scalars(
@@ -414,6 +421,11 @@ class SqlClaimRepository:
             if row.chunk_text != chunk.chunk_text:
                 # Fresh text = fresh normalizer output: re-stamp the generation.
                 row.chunk_text = chunk.chunk_text
+                row.normalization_version = NORMALIZATION_VERSION
+            elif row.normalization_version is None:
+                # A pre-versioning row whose ref the current run re-produced
+                # verbatim: the current normalizer just vouched for this text —
+                # stamp it (H8 version-consistency closes on legacy rows).
                 row.normalization_version = NORMALIZATION_VERSION
             if chunk.element_id is not None:
                 # Structure linkage is a derivation of the current tree (H5):

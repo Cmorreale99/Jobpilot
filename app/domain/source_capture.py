@@ -145,6 +145,10 @@ class SourceCaptureStore(Protocol):
         """The captured document identity/metadata, or ``None`` if never captured."""
         ...
 
+    def list_documents(self, user_id: str) -> list[CapturedSourceDocument]:
+        """Every captured document for one user (the audit's enumeration surface, H8)."""
+        ...
+
     def record_elements(
         self,
         version_id: int,

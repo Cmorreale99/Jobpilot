@@ -43,6 +43,12 @@ KIND_SOURCE_GATHER = "source_gather"
 # supersessions, unmigratable pins, and REVIEWED claims left citing superseded rows
 # (the human decided on text that no longer exists upstream; pass = none of those).
 KIND_EVIDENCE_RECONCILIATION = "evidence_reconciliation"
+# One scorecard row per end-to-end pipeline audit (hardening H8): every invariant of
+# the V4 readiness gate checked offline — capture, element coverage, ownership
+# labeling, lifecycle orphans, the approved-story provenance walk, version
+# consistency. ``passed`` = every check green; this row is the gate's sign-off
+# artifact (PIPELINE_HARDENING_PLAN.md §7).
+KIND_PIPELINE_AUDIT = "pipeline_audit"
 
 
 @dataclass(frozen=True)
