@@ -20,6 +20,7 @@ import logging
 from app.config import get_settings
 from app.db.claim_repository import SqlClaimRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
+from app.db.source_capture_store import SqlSourceCaptureStore
 from app.db.validation_run_log import SqlValidationRunLog
 from app.integrations.drive_factory import create_drive_client
 from app.integrations.github_factory import create_github_client
@@ -33,6 +34,7 @@ async def _run() -> None:
     create_all(engine)
     session_factory = create_session_factory(engine)
     repository = SqlClaimRepository(session_factory)
+    validation_log = SqlValidationRunLog(session_factory)
     drive_client = create_drive_client(settings)
     github_client = create_github_client(settings)
 
@@ -40,8 +42,16 @@ async def _run() -> None:
     # sources. Without a confirmed roster, assignment warns and no-ops — and
     # extraction then REFUSES (there is no per-file fallback): run
     # `python -m app.tools.run_roster_detection` and confirm the roster first.
+    # Wired like POST /roster/assign: the gather captures raw source text (H2)
+    # and the reconciliation pass lands in validation_runs (H6).
     assignment = await run_roster_assignment(
-        drive_client, github_client, settings.pipeline_user_id, repository, settings
+        drive_client,
+        github_client,
+        settings.pipeline_user_id,
+        repository,
+        settings,
+        capture_store=SqlSourceCaptureStore(session_factory),
+        validation_log=validation_log,
     )
     if assignment.chunks:
         print(
@@ -53,7 +63,7 @@ async def _run() -> None:
         settings.pipeline_user_id,
         repository,
         settings,
-        validation_log=SqlValidationRunLog(session_factory),
+        validation_log=validation_log,
     )
     print(
         f"claims: {len(report.claims)} pending review "

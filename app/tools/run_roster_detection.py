@@ -17,6 +17,8 @@ import logging
 from app.config import get_settings
 from app.db.claim_repository import SqlClaimRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
+from app.db.source_capture_store import SqlSourceCaptureStore
+from app.db.validation_run_log import SqlValidationRunLog
 from app.integrations.drive_factory import create_drive_client
 from app.integrations.github_factory import create_github_client
 from app.services.roster import run_roster_detection
@@ -26,13 +28,18 @@ async def _run() -> None:
     settings = get_settings()
     engine = create_db_engine(settings)
     create_all(engine)
+    session_factory = create_session_factory(engine)
 
+    # Same wiring as POST /roster/detect: the gather must capture each source's
+    # as-received raw text (H2) and log the pass — a CLI ingest is not exempt.
     report = await run_roster_detection(
         create_drive_client(settings),
         create_github_client(settings),
         settings.pipeline_user_id,
-        SqlClaimRepository(create_session_factory(engine)),
+        SqlClaimRepository(session_factory),
         settings,
+        capture_store=SqlSourceCaptureStore(session_factory),
+        validation_log=SqlValidationRunLog(session_factory),
     )
     print(f"documents read: {report.documents}")
     print(f"new proposals awaiting review: {len(report.proposed)}")

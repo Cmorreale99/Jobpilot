@@ -35,7 +35,11 @@ import re
 # (``evidence.normalization_version``). BUMP THIS on ANY change to the rules below —
 # that is what makes a normalizer change detectable instead of silently dangling
 # every stored span (docs/ARCHITECTURE_V3.md §2.2).
-NORMALIZATION_VERSION = 1
+# v2: section/entry cues for blank-line-free PDF resume text — ALL-CAPS section
+# headings, ``Title, ORG`` entry lines, and month-year date(-range) lines keep their
+# own output line instead of joining the run (the doc-7 single-blob defect: a whole
+# two-column resume collapsed into one line because none of the v1 cues fired).
+NORMALIZATION_VERSION = 2
 
 _LINE_HYPHEN_RE = re.compile(r"(\w)-[ \t]*\n[ \t]*(?=\w)")
 _BULLET_RE = re.compile(r"^\s*(?:[-*•·]|\d+[.)])\s+")
@@ -43,18 +47,76 @@ _LABEL_RE = re.compile(r"^\s*[A-Za-z][\w ]{0,24}:\s+\S")
 _HEADER_RE = re.compile(r"^\s*#")
 _TERMINAL = (".", "!", "?", ":", ";")
 
+_MONTHS = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+_MONTH_ALT = "|".join(_MONTHS)
+# ``January 2022 - May 2022`` / ``January 2023 – Present`` / ``May 2024`` — a line
+# that IS a date or date range marks an entry boundary in resume-shaped text. The
+# dash class covers ASCII and the Unicode hyphen/dash block (U+2010–U+2015).
+_DATE_LINE_RE = re.compile(
+    rf"^\s*(?:{_MONTH_ALT})\.? \d{{4}}"
+    rf"(?:\s*(?:[-‐-―]|to)\s*(?:(?:{_MONTH_ALT})\.? \d{{4}}|Present))?\s*$"
+)
+# ``Stock Market Simulation (IQP), WPI`` — a short line ending in ``, ORG`` (an
+# all-caps organization token) is an entry title.
+_TITLE_ORG_RE = re.compile(r"^\s*\S.{0,58}?, [A-Z]{2,8}\s*$")
+
 
 _FRAGMENT_TOKENS = 2  # a line this short next to a soft blank is PDF debris, not prose
 
 
+def is_section_heading(line: str) -> bool:
+    """True for a short ALL-CAPS line: a section heading (EXPERIENCE, SKILLS, ...).
+
+    Requires at least four letters (so stray acronyms like ``SQL`` stay body text),
+    at most six words / 48 chars, no ``:`` (those are ``label:`` lines), and no
+    bullet/``#`` marker (those already have their own rules).
+    """
+    collapsed = " ".join(line.split())
+    if not collapsed or len(collapsed) > 48 or ":" in collapsed:
+        return False
+    if _BULLET_RE.match(line) or _HEADER_RE.match(line):
+        return False
+    letters = [c for c in collapsed if c.isalpha()]
+    if len(letters) < 4 or not all(c.isupper() for c in letters):
+        return False
+    return len(collapsed.split()) <= 6
+
+
+def is_entry_boundary(line: str) -> bool:
+    """True for an entry title (``Title, ORG``) or a date(-range) line."""
+    return bool(_TITLE_ORG_RE.match(line) or _DATE_LINE_RE.match(line))
+
+
 def starts_structure(line: str) -> bool:
-    """True when a line begins output structure: a bullet, ``#`` header, or ``label:``.
+    """True when a line begins output structure.
+
+    v1 cues: a bullet, ``#`` header, or ``label:``. v2 adds the blank-line-free PDF
+    resume cues: ALL-CAPS section headings and entry title/date lines.
 
     Public because the structurer (``domain/source_structure.py``, H5.1) must make the
     SAME join decisions as this module so element boundaries match normalized-line
     boundaries — one predicate, two consumers.
     """
-    return bool(_BULLET_RE.match(line) or _HEADER_RE.match(line) or _LABEL_RE.match(line))
+    return bool(
+        _BULLET_RE.match(line)
+        or _HEADER_RE.match(line)
+        or _LABEL_RE.match(line)
+        or is_section_heading(line)
+        or is_entry_boundary(line)
+    )
 
 
 def blank_is_soft(previous: str, previous_structural: bool, current: str) -> bool:
@@ -104,4 +166,10 @@ def normalize_source_text(text: str) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["blank_is_soft", "normalize_source_text", "starts_structure"]
+__all__ = [
+    "blank_is_soft",
+    "is_entry_boundary",
+    "is_section_heading",
+    "normalize_source_text",
+    "starts_structure",
+]

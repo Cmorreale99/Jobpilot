@@ -180,6 +180,7 @@ def test_consistent_corpus_scores_all_green_and_records_the_row() -> None:
         "reviewed_on_stale",
         "provenance_walk",
         "version_consistency",
+        "entity_coverage",
     }
     assert all(c.checked > 0 for c in scorecard.checks), "every check saw real rows"
     [run] = seeded.log.list_runs(_USER, KIND_PIPELINE_AUDIT)
@@ -187,6 +188,54 @@ def test_consistent_corpus_scores_all_green_and_records_the_row() -> None:
 
 
 # --- negative controls (§6 #32): each corruption fails ITS check, names its rows -------
+
+
+def test_confirmed_entity_with_no_evidence_fails_entity_coverage() -> None:
+    # The Paper-recommender failure: a confirmed real-world project whose source text
+    # was captured but swallowed into a neighboring entity's chunk — zero chunks ever
+    # reach it, so it is silently absent from every downstream artifact.
+    seeded = _Seeded()
+    starved = seeded.repo.upsert_experience(
+        _USER,
+        ExperienceSeed(
+            name="Paper recommender system",
+            section=ExperienceSection.PROJECTS_HACKATHONS,
+            kind=ExperienceKind.PROJECT,
+        ),
+    )
+    check = seeded.check("entity_coverage")
+    assert not check.passed
+    assert any(
+        f"experience {starved.id}" in f and "ZERO active evidence" in f for f in check.failures
+    )
+
+
+def test_confirmed_entity_with_evidence_but_no_claims_fails_entity_coverage() -> None:
+    # The JobPilot failure: evidence assigned, but extraction never ran for the
+    # entity (confirmed after the last run) — no claims, no story, no card.
+    seeded = _Seeded()
+    unprocessed = seeded.repo.upsert_experience(
+        _USER,
+        ExperienceSeed(
+            name="Jobpilot",
+            section=ExperienceSection.PROJECTS_HACKATHONS,
+            kind=ExperienceKind.PROJECT,
+        ),
+    )
+    row = seeded.repo.upsert_evidence(
+        _USER,
+        EvidenceChunk(
+            SOURCE_DRIVE,
+            f"drv1#chars={seeded.stored_elements[0].raw_start}-{seeded.stored_elements[0].raw_end}",
+            seeded.chunks[0].chunk_text,
+            element_id=seeded.stored_elements[0].id,
+            sequence_index=0,
+        ),
+    )
+    seeded.repo.assign_evidence(row.id, unprocessed.id, method=ASSIGNMENT_SECTION)
+    check = seeded.check("entity_coverage")
+    assert not check.passed
+    assert any(f"experience {unprocessed.id}" in f and "ZERO claims" in f for f in check.failures)
 
 
 def test_uncaptured_evidence_fails_capture() -> None:

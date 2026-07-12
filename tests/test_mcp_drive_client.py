@@ -119,6 +119,31 @@ async def test_read_source_maps_content() -> None:
     assert doc.mime_type == "text/plain"
 
 
+async def test_extraction_failure_sentinel_is_a_read_failure_not_content() -> None:
+    """workspace-mcp reports unextractable files as bracketed CONTENT (observed live:
+    a 929KB scanned PDF whose 'text' became an evidence chunk). That is a read
+    failure — it must raise, so the gather records read_failed, never captures it."""
+    sentinel = (
+        "[Could not extract text from PDF (929738 bytes) - the file may be "
+        "scanned/image-only. Use get_drive_file_download_url to get a direct "
+        "download link instead.]"
+    )
+    payload = {"name": "Form.pdf", "mimeType": "application/pdf", "content": sentinel}
+    client, _ = _client({TOOLS.read_content: _FakeResult(structured=payload)})
+
+    with pytest.raises(DriveResponseError, match="could not extract text"):
+        await client.read_source("1AbC")
+
+
+async def test_empty_document_content_is_still_content() -> None:
+    """An honestly empty file is not an extraction failure — it must map, not raise."""
+    payload = {"name": "Empty", "mimeType": "text/plain", "content": ""}
+    client, _ = _client({TOOLS.read_content: _FakeResult(structured=payload)})
+
+    doc = await client.read_source("1AbC")
+    assert doc.text == ""
+
+
 async def test_get_source_metadata_maps_size() -> None:
     payload = {"name": "Resume", "mimeType": "text/plain", "size": "2048"}
     client, _ = _client({TOOLS.metadata: _FakeResult(structured=payload)})

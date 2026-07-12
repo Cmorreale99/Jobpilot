@@ -85,6 +85,10 @@ def test_two_passes_assemble_a_grounded_claim() -> None:
 
     assert client.call_count == 2
     assert all(call.tier is ModelTier.BULK for call in client.calls)
+    # Thinking must be disabled on every extraction call: the model default
+    # (adaptive) shares max_tokens with the text and starved dense batches to
+    # zero text blocks live (2026-07-12).
+    assert all(call.thinking == {"type": "disabled"} for call in client.calls)
     assert len(claims) == 1
     claim = claims[0]
     assert claim.action_tools == ("Kafka", "Python")

@@ -1,0 +1,35 @@
+Jordan Rivera
+DATA SCI ENTI ST
+Researched various strategies and
+techniques to invest in the market
+using a public simulator, an
+online program that mimics the market
+Implemented statistical analysis methods
+such as linear regression and hypothesis
+testing
+EXPERIENCE
+Market Simulation (IQP), WPI
+January 2022 - May 2022
+Developed a program that uses the
+contextual information of a document to
+find relevant papers
+Trained model using NLP similarity to find
+relevant papers in a conference
+papers dataset when given an
+abstract
+Paper recommender system, WPI
+January 2023 – Present
+A highly motivated data science
+enthusiast looking to leverage technology
+Programming: Python, Java, R, HTML
+SQL
+SKILLS
+ABOUT ME
+Worcester Polytechnic Institute (WPI)
+May 2024
+Bachelors of Data Science
+GPA: 3.51/4.0
+EDUCATION
+CONTACT
+555-555-1205
+jordan@example.com

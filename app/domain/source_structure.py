@@ -37,13 +37,22 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from app.domain.text_normalization import blank_is_soft, starts_structure
+from app.domain.text_normalization import (
+    blank_is_soft,
+    is_entry_boundary,
+    is_section_heading,
+    starts_structure,
+)
 
 # BUMP THIS on ANY change to the scanning rules below — persisted elements record the
 # structurer generation that produced them, and the digest test enforces the bump.
 # v2 (H5.1): reflow-aware grouping — soft-blank word-per-line fragments join their
 # paragraph; list items absorb flush-left continuation lines (normalizer parity).
-STRUCTURER_VERSION = 2
+# v3: blank-line-free PDF resume cues (normalizer v2 parity) — a short ALL-CAPS line
+# becomes a level-1 heading, and entry title/date lines break the paragraph run, so a
+# whole two-column resume no longer collapses into ONE element (the doc-7 defect that
+# welded 'Paper recommender system' into a neighboring project's chunk).
+STRUCTURER_VERSION = 3
 
 # Element types (documented values, deliberately no CHECK constraint — same policy as
 # evidence source types). ``table``/``table_row`` are reserved for the V4 PDF/DOCX
@@ -99,7 +108,13 @@ def _line_spans(raw: str) -> list[tuple[int, int, str]]:
 
 
 def _is_structural(line: str) -> bool:
-    return bool(_HEADING_RE.match(line) or _BULLET_RE.match(line) or _QUOTE_RE.match(line))
+    return bool(
+        _HEADING_RE.match(line)
+        or _BULLET_RE.match(line)
+        or _QUOTE_RE.match(line)
+        or is_section_heading(line)
+        or is_entry_boundary(line)
+    )
 
 
 def structure_source_text(raw: str) -> list[SourceElement]:
@@ -147,6 +162,16 @@ def structure_source_text(raw: str) -> list[SourceElement]:
                 heading_stack.pop()
             emit(ELEMENT_HEADING, i, i, level=level, parent=current_heading())
             heading_stack.append((level, len(elements) - 1))
+            i += 1
+            continue
+
+        if is_section_heading(content):
+            # A short ALL-CAPS line is a top-level section heading (v3): the cue
+            # blank-line-free PDF resume text actually carries (EXPERIENCE, SKILLS).
+            while heading_stack and heading_stack[-1][0] >= 1:
+                heading_stack.pop()
+            emit(ELEMENT_HEADING, i, i, level=1, parent=current_heading())
+            heading_stack.append((1, len(elements) - 1))
             i += 1
             continue
 
