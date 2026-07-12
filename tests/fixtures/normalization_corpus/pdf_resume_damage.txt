@@ -1,0 +1,51 @@
+Cam Morreale Reverse-engineers broken data systems into scalable decision infrastructure.
+Core focus:
+schema
+
+design,
+
+data
+
+ingestion
+
+&
+
+normalization Data & Analytics Tooling — Pandas, NumPy, Scikit-learn.
+• Automated a logistics-reporting pipeline that converts multi-tab Excel
+datasets,
+
+loads
+
+five
+
+production
+
+staging
+
+tables,
+
+and
+
+enables
+
+daily
+
+analytics/AI
+
+refreshes.
+• Reverse-engineered an unmapped 250-table Oracle database, discovering
+relationships,
+
+and
+
+data
+
+dependencies
+
+across
+
+teams.
+
+A closing paragraph with terminal punctuation stands alone.
+
+---
