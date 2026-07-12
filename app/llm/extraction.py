@@ -223,6 +223,10 @@ class LlmTwoPassExtractor:
         # and defeat the cache.
         chunk_context = f"Evidence chunks:\n{_render_chunks(group)}"
         try:
+            # Thinking OFF: extraction is mechanical verbatim quoting into strict
+            # JSON. Adaptive thinking (the model default) shares the max_tokens
+            # budget with the text and, on dense commit batches, consumed ALL of it
+            # — "no text blocks" at 16K output, observed live 2026-07-12.
             pass1 = complete_json(
                 self._client,
                 cached_context=chunk_context,
@@ -230,6 +234,7 @@ class LlmTwoPassExtractor:
                 tier=self._tier,
                 validator=_parse_pass1,
                 max_tokens=self._max_tokens,
+                thinking={"type": "disabled"},
             )
             grounded = self._ground_pass1(group, pass1)
             if not grounded:
@@ -241,6 +246,7 @@ class LlmTwoPassExtractor:
                 tier=self._tier,
                 validator=_parse_pass2,
                 max_tokens=self._max_tokens,
+                thinking={"type": "disabled"},
             )
         except LlmError as exc:
             logger.error("LLM extraction failed for %r: %s", group.experience.name, exc)

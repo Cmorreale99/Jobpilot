@@ -36,6 +36,7 @@ class LlmClient(Protocol):
         cached_context: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        thinking: dict[str, str] | None = None,
     ) -> LlmResponse: ...
 
 
@@ -99,6 +100,7 @@ class AnthropicClient:
         cached_context: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        thinking: dict[str, str] | None = None,
     ) -> LlmResponse:
         if not messages:
             raise LlmResponseError("complete() requires at least one message.")
@@ -130,6 +132,12 @@ class AnthropicClient:
             kwargs["system"] = system
         if temperature is not None:
             kwargs["temperature"] = temperature
+        if thinking is not None:
+            # Adaptive thinking is ON by default on current models when the field is
+            # omitted, and max_tokens caps thinking + text COMBINED — a structured
+            # extraction call that omits this can burn its whole budget on thinking
+            # and return zero text blocks (observed live 2026-07-12 at 16K tokens).
+            kwargs["thinking"] = thinking
 
         try:
             response = self._client.messages.create(**kwargs)

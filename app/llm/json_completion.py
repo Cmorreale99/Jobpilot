@@ -56,6 +56,7 @@ def complete_json[T](
     validator: Callable[[Any], T] | None = None,
     max_tokens: int | None = None,
     max_parse_retries: int = 1,
+    thinking: dict[str, str] | None = None,
 ) -> T:
     """Complete and return parsed (optionally validated) JSON.
 
@@ -74,6 +75,7 @@ def complete_json[T](
             system=system,
             cached_context=cached_context,
             max_tokens=max_tokens,
+            thinking=thinking,
             # No sampling params: current models (Sonnet 5 / Opus 4.8) reject
             # non-default temperature with a 400 — verified live. The strict-JSON
             # system prompts + parse-retry are the structure guarantee instead.

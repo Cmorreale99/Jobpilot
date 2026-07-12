@@ -32,6 +32,7 @@ class RecordedCall:
         cached_context: str | None,
         max_tokens: int | None,
         temperature: float | None,
+        thinking: dict[str, str] | None = None,
     ) -> None:
         self.messages = messages
         self.tier = tier
@@ -39,6 +40,7 @@ class RecordedCall:
         self.cached_context = cached_context
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.thinking = thinking
 
     @property
     def last_user_text(self) -> str:
@@ -78,9 +80,10 @@ class FakeLlmClient:
         cached_context: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        thinking: dict[str, str] | None = None,
     ) -> LlmResponse:
         self.calls.append(
-            RecordedCall(messages, tier, system, cached_context, max_tokens, temperature)
+            RecordedCall(messages, tier, system, cached_context, max_tokens, temperature, thinking)
         )
         if self._remaining_failures > 0:
             self._remaining_failures -= 1
