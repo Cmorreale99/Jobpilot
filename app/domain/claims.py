@@ -1030,6 +1030,14 @@ class ClaimRepository(Protocol):
         """
         ...
 
+    def list_all_evidence(self, user_id: str) -> list[StoredEvidence]:
+        """Every evidence row for one user — active AND superseded, all source types.
+
+        The audit's enumeration surface (H8): reconciliation must see the whole
+        lifecycle, not any queue's filtered view.
+        """
+        ...
+
     def get_evidence(self, evidence_id: int) -> StoredEvidence | None: ...
 
     def get_evidence_by_ref(

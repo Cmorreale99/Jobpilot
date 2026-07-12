@@ -400,6 +400,8 @@ V4 development (M23+) may begin when, and only when, all of the following hold o
 
 Sign-off artifact: the `audit_pipeline` scorecard row in `validation_runs`, plus this document updated with the gate-passing run's date.
 
+> **GATE PASSED — 2026-07-11.** `python -m app.tools.audit_pipeline` all-green on the live u1 corpus after the full hardened re-ingest (H5.1 structured run): capture=1479 rows, element_coverage=154 versions, ownership_labeled=1464, active_orphans=1479, reviewed_on_stale (approved) = clean, provenance_walk vacuous (0 approved stories — the fixture suite exercises it; re-run after story approvals), version_consistency=1633. One-time repairs before the pass (backup `jobpilot.db.bak-pre-gate-repairs-2026-07-11`): 5 mock-fixture rows superseded, 34 out-of-window commits backfill-captured (`extractor='backfill:commit-chunk-text'`), 32 legacy commit assignments stamped `repo_ref`, 130 pre-versioning rows stamped v1. Known design tension for V4: commits are supersession-exempt but the 30-commit gather window rolls — old commit evidence goes uncaptured without backfill; M23's ingestion substrate should capture commits durably at first sight. The rejected-claim-on-stale case does not hold the gate (approved-only check); it stays visible in `GET /roster/superseded-reviewed`.
+
 ---
 
 ## Appendix — corrections to the earlier audit

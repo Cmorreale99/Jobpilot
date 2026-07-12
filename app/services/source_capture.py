@@ -106,6 +106,12 @@ class InMemorySourceCaptureStore:
     ) -> CapturedSourceDocument | None:
         return self._documents.get((user_id, source_type, source_ref))
 
+    def list_documents(self, user_id: str) -> list[CapturedSourceDocument]:
+        return sorted(
+            (d for d in self._documents.values() if d.user_id == user_id),
+            key=lambda d: d.id,
+        )
+
     def record_elements(
         self,
         version_id: int,

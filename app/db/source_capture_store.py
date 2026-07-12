@@ -175,6 +175,15 @@ class SqlSourceCaptureStore:
             row = self._document_row(session, user_id, source_type, source_ref)
             return _to_document(row) if row is not None else None
 
+    def list_documents(self, user_id: str) -> list[CapturedSourceDocument]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(SourceDocumentRow)
+                .where(SourceDocumentRow.user_id == user_id)
+                .order_by(SourceDocumentRow.id)
+            )
+            return [_to_document(row) for row in rows]
+
     def record_elements(
         self,
         version_id: int,
