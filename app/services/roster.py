@@ -16,6 +16,7 @@ reassigns the same chunks (evidence upserts on its span ref).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -86,6 +87,7 @@ from app.domain.source_structure import (
 )
 from app.domain.text_normalization import NORMALIZATION_VERSION, normalize_source_text
 from app.domain.validation_runs import (
+    KIND_ASSIGNMENT_FINGERPRINT,
     KIND_ENTITY_OVERLAP,
     KIND_EVIDENCE_RECONCILIATION,
     KIND_PROJECT_RECONCILIATION,
@@ -374,6 +376,9 @@ class RosterAssignmentReport:
     # Documents whose assigner call failed outright (e.g. an LLM error): their chunks
     # persist honestly unassigned; the failure is bounded, loud, and re-runnable.
     assignment_failures: tuple[str, ...] = ()
+    # Documents skipped by the §5.8 fingerprint gate: content, roster, rule versions,
+    # and assigner all unchanged since their last completed pass — zero re-spend.
+    skipped_unchanged: int = 0
 
 
 @dataclass(frozen=True)
@@ -1051,12 +1056,66 @@ async def run_roster_assignment(
     assigned = 0
     pinned = 0
     truncated = 0
+    skipped_unchanged = 0
     section_decisions: list[SectionDecision] = []
     recon_new = 0
     recon_reactivated = 0
     recon_superseded = 0
     recon_pins = 0
     recon_warnings: list[str] = []
+
+    # The §5.8 assignment cost gate: a document whose content, the roster, the rule
+    # versions, AND the assigner generation are all unchanged since its last completed
+    # assignment is SKIPPED outright — its rows already reflect exactly this input
+    # (deterministic chunking), so re-deciding ownership only re-spends LLM budget.
+    # Live 2026-07-13: three interrupted runs re-paid the full assignment pass.
+    roster_material = "\x1e".join(
+        f"{e.id}\x1f{e.name}\x1f{'|'.join(sorted(e.aliases))}"
+        for e in sorted(roster, key=lambda e: e.id)
+    )
+    assigner_label = (
+        f"{type(assigner).__name__}/{type(section_assigner).__name__}/"
+        f"structured={settings.structured_assignment}"
+    )
+    fingerprints_seen: dict[str, str] = {}
+    if validation_log is not None:
+        for run in validation_log.list_runs(user_id, KIND_ASSIGNMENT_FINGERPRINT):
+            if run.detail:
+                fingerprints_seen[run.subject_ref] = run.detail[0]  # latest wins
+
+    def document_fingerprint(document: SourceDocument) -> tuple[str, str]:
+        material = "\x1e".join(
+            (
+                document.source_type,
+                document.source_ref,
+                document.raw_text if document.raw_text is not None else document.text,
+                roster_material,
+                assigner_label,
+                f"norm={NORMALIZATION_VERSION}",
+                f"struct={STRUCTURER_VERSION}",
+                f"collection={_doc_repo_ref(document) in collections}",
+            )
+        )
+        subject = f"{document.source_type}:{document.source_ref}"
+        return subject, hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def fingerprint_matches(document: SourceDocument) -> bool:
+        if validation_log is None:
+            return False
+        subject, digest = document_fingerprint(document)
+        return fingerprints_seen.get(subject) == digest
+
+    def record_fingerprint(document: SourceDocument) -> None:
+        if validation_log is None:
+            return
+        subject, digest = document_fingerprint(document)
+        validation_log.record(
+            user_id,
+            KIND_ASSIGNMENT_FINGERPRINT,
+            subject_ref=subject,
+            passed=True,
+            detail=(digest,),
+        )
 
     def apply(stored: StoredEvidence, target: int | None, method: str | None) -> StoredEvidence:
         """Assign one chunk unless a human already decided it (the H1 pin)."""
@@ -1207,6 +1266,21 @@ async def run_roster_assignment(
             apply(stored, target, ASSIGNMENT_REPO_REF)
             continue
 
+        if fingerprint_matches(document):
+            # §5.8 skip: content, roster, versions, and assigner unchanged since the
+            # last completed pass — the persisted rows already ARE this decision.
+            skipped_unchanged += 1
+            continue
+        failures_before = len(assignment_failures)
+
+        def finish_document(
+            document: SourceDocument = document, failures_before: int = failures_before
+        ) -> None:
+            """Stamp the fingerprint ONLY on a fully successful pass — a document
+            whose assigner failed stays eligible for the next run."""
+            if len(assignment_failures) == failures_before:
+                record_fingerprint(document)
+
         # Everything persisted for this document BEFORE this run's upserts - the
         # reconciliation baseline (H6). Commit refs are exempt above: one immutable
         # content-addressed row per sha, the fresh set never changes shape.
@@ -1246,6 +1320,7 @@ async def run_roster_assignment(
                 )
                 fresh.append(apply(stored, target, method))
             reconcile(document, previous, fresh)
+            finish_document()
             continue
 
         # --- structure-aware path (H5) ---------------------------------------------
@@ -1266,6 +1341,7 @@ async def run_roster_assignment(
                 element_ids,
             )
             reconcile(document, previous, fresh)
+            finish_document()
             continue
 
         sections = top_level_sections(elements)
@@ -1285,6 +1361,7 @@ async def run_roster_assignment(
                 document, prepared, targets, [chunk_method] * len(prepared), element_ids
             )
             reconcile(document, previous, fresh)
+            finish_document()
             continue
 
         target_by_element: dict[int, int | None] = {}
@@ -1369,6 +1446,7 @@ async def run_roster_assignment(
         methods = [ASSIGNMENT_SECTION if target is not None else None for target in targets]
         fresh = persist(document, prepared, targets, methods, element_ids)
         reconcile(document, previous, fresh)
+        finish_document()
 
     # Reviewed claims left citing superseded rows: the human decided on text that no
     # longer exists upstream. Surfaced loudly — in the report, the warnings, and the
@@ -1411,7 +1489,15 @@ async def run_roster_assignment(
         reconciliation=reconciliation,
         ambiguous=tuple(ambiguity_notes.values()),
         assignment_failures=tuple(assignment_failures),
+        skipped_unchanged=skipped_unchanged,
     )
+    if report.skipped_unchanged:
+        logger.info(
+            "roster assignment for %s: %d document(s) skipped — fingerprint unchanged "
+            "since their last completed pass (no re-spend)",
+            user_id,
+            report.skipped_unchanged,
+        )
     if report.assignment_failures:
         logger.error(
             "roster assignment for %s: %d document(s) failed assignment and stay unassigned: %s",

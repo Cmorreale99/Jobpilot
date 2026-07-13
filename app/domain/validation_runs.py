@@ -49,6 +49,13 @@ KIND_EVIDENCE_RECONCILIATION = "evidence_reconciliation"
 # consistency. ``passed`` = every check green; this row is the gate's sign-off
 # artifact (PIPELINE_HARDENING_PLAN.md §7).
 KIND_PIPELINE_AUDIT = "pipeline_audit"
+# One row per document whose assignment run completed, carrying the fingerprint of
+# everything the decision depended on (content, roster, rule versions, assigner).
+# The §5.8 cost gate for assignment: a document whose latest fingerprint matches is
+# SKIPPED — no chunking, no LLM ownership calls, no reconciliation churn. Mirrors
+# `experiences.extraction_hash` (live 2026-07-13: three interrupted runs re-paid the
+# full LLM assignment pass, ~$18 of ~$30 total spend).
+KIND_ASSIGNMENT_FINGERPRINT = "assignment_fingerprint"
 # One row per Master CV publication attempt (MASTER CV REPAIR §13.8/§14.5): the
 # disposition of every approved story (rendered, dropped for an ungrounded number,
 # dropped as not resume-ready, skipped on an unconfirmed entity) plus any

@@ -200,6 +200,13 @@ class Settings(BaseSettings):
     # requirement/fallback as the other LLM flags. Everything downstream of grouping
     # (candidates, ids, validators, gates) stays deterministic either way.
     problem_space_llm_detection: bool = False
+    # Fail-closed ceiling (estimated USD) for one LLM extraction run (§5.8.7): the run
+    # STOPS before starting any group whose estimate would push it past the ceiling —
+    # the skipped groups are named and stay eligible for the next run. 0 disables the
+    # ceiling (explicitly unlimited). Estimates use the same price table as cost
+    # logging; live 2026-07-13 a single unbounded run spent ~$30 before the credit
+    # balance itself stopped it.
+    llm_cost_ceiling_usd: float = 10.0
     anthropic_api_key: str = ""
     anthropic_model_bulk: str = "claude-sonnet-5"
     anthropic_model_deep: str = "claude-opus-4-8"

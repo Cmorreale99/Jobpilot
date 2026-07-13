@@ -67,6 +67,8 @@ def test_extraction_tool_wires_capture_and_log(
             deduped=[],
             failed_groups=[],
             skipped_unchanged=[],
+            skipped_budget=[],
+            estimated_cost_usd=0.0,
         )
 
     monkeypatch.setattr(extraction_tool, "get_settings", lambda: tool_settings)

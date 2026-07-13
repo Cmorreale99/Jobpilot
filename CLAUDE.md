@@ -239,6 +239,7 @@ A failure in one job never blocks the other (`run_job_safely` — observed live)
 | `TOP_N` | `10` | Deep-ranked final matches. |
 | `ANTHROPIC_MODEL_BULK` | (sonnet 5 high) | Bulk scoring/extraction. |
 | `ANTHROPIC_MODEL_DEEP` | (opus 4.8 high) | Deep ranking/drafting. |
+| `LLM_COST_CEILING_USD` | `10.0` | Fail-closed ceiling (estimated USD) per LLM extraction run: a group whose pre-flight estimate would breach it is NOT started (named in the report, still eligible next run); `0` disables. Assignment cost is bounded separately by the `assignment_fingerprint` skip — an unchanged document (content + roster + rule versions + assigner) never re-invokes a paid assigner. |
 | `LLM_ENABLED` | `false` | When false, the deterministic fake LLM client is used (no API key). True selects the real Anthropic client. |
 | `MATCHING_LLM_RANKING` | `false` | When false, matching uses the heuristic scorer/reranker. True selects the LLM-backed stages (needs `LLM_ENABLED`; else it warns and stays heuristic). |
 | `CLAIMS_LLM_EXTRACTION` | `false` | When false, claim extraction uses the deterministic heuristic two-pass extractor. True selects the LLM-backed one (needs `LLM_ENABLED`; else it warns and stays heuristic). The PAR validator gates every claim either way. |

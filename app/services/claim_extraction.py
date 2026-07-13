@@ -70,6 +70,7 @@ from app.domain.validation_runs import (
     KIND_PAR_VALIDATION,
     ValidationRunLog,
 )
+from app.llm.cost import price_for
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,10 @@ class ExtractionReport:
     deduped: list[str] = field(default_factory=list)  # duplicates of already-queued content
     failed_groups: list[str] = field(default_factory=list)  # extraction failed outright
     skipped_unchanged: list[str] = field(default_factory=list)  # evidence fingerprint matched
+    # Groups NOT started because their estimate would breach the run's cost ceiling
+    # (§5.8.7, fail-closed): named, still eligible for the next run.
+    skipped_budget: list[str] = field(default_factory=list)
+    estimated_cost_usd: float = 0.0  # pre-flight estimate of the work actually started
     severed_results: int = 0  # pass-2 results citing outside their batch (H7/F8)
 
     @property
@@ -288,6 +293,21 @@ def _dropped_draft_json(draft: DraftClaim) -> str:
     )
 
 
+def estimate_group_cost_usd(group: EvidenceGroup, model: str) -> float:
+    """Conservative pre-flight estimate for one group's two-pass LLM extraction.
+
+    ``chars/4`` approximates tokens. The envelope reflects the observed live shape
+    (2026-07-13): the chunk block is read by pass 1, pass 2 (cache-discounted), and
+    possibly a bounced re-extraction (x3 input turns overall), and pass-1 JSON quotes
+    the input (x1.5 output-to-input). An estimate is a guardrail, not a bill — it is
+    deliberately on the high side so the ceiling fails closed (§5.8.7).
+    """
+    chars = sum(len(chunk.chunk_text) for chunk in group.chunks)
+    tokens = chars / 4
+    price = price_for(model)
+    return (tokens * 3 * price.input_per_mtok + tokens * 1.5 * price.output_per_mtok) / 1_000_000
+
+
 def _group_fingerprint(group: EvidenceGroup) -> str:
     """Stable hash of a group's evidence content (what extraction actually reads)."""
     material = "\x1e".join(
@@ -396,11 +416,21 @@ async def run_claim_extraction(
     # this service can mint a CONFIRMED entity).
     entities = {e.name.casefold(): e for e in repository.list_experiences(user_id)}
 
+    # The §5.8.7 fail-closed cost ceiling: enforced only when this run actually
+    # spends (real LLM extraction enabled); the free heuristic never gates.
+    enforce_ceiling = (
+        settings.llm_enabled
+        and settings.claims_llm_extraction
+        and settings.llm_cost_ceiling_usd > 0
+    )
+    estimated_spend = 0.0
+
     persisted: list[Claim] = []
     dropped: list[str] = []
     deduped: list[str] = []
     failed_groups: list[str] = []
     skipped_unchanged: list[str] = []
+    skipped_budget: list[str] = []
     severed_results = 0
     for group in groups:
         experience = entities[group.experience.name.casefold()]
@@ -411,6 +441,28 @@ async def run_claim_extraction(
             logger.info("skipping %r: evidence unchanged since last extraction", experience.name)
             skipped_unchanged.append(experience.name)
             continue
+        if enforce_ceiling:
+            group_estimate = estimate_group_cost_usd(group, settings.anthropic_model_bulk)
+            if estimated_spend + group_estimate > settings.llm_cost_ceiling_usd:
+                logger.warning(
+                    "cost ceiling: NOT starting %r (est $%.2f would push the run past "
+                    "$%.2f; $%.2f already committed) — raise LLM_COST_CEILING_USD or "
+                    "re-run to continue where this run stopped",
+                    experience.name,
+                    group_estimate,
+                    settings.llm_cost_ceiling_usd,
+                    estimated_spend,
+                )
+                skipped_budget.append(f"{experience.name} (est ${group_estimate:.2f})")
+                continue
+            estimated_spend += group_estimate
+            logger.info(
+                "extracting %r: est $%.2f (run total est $%.2f of $%.2f ceiling)",
+                experience.name,
+                group_estimate,
+                estimated_spend,
+                settings.llm_cost_ceiling_usd,
+            )
         for chunk in group.chunks:
             repository.upsert_evidence(user_id, chunk)
         try:
@@ -495,8 +547,20 @@ async def run_claim_extraction(
         deduped=deduped,
         failed_groups=failed_groups,
         skipped_unchanged=skipped_unchanged,
+        skipped_budget=skipped_budget,
+        estimated_cost_usd=round(estimated_spend, 2),
         severed_results=severed_results,
     )
+    if report.skipped_budget:
+        logger.warning(
+            "claim extraction for %s: %d group(s) NOT started under the $%.2f cost "
+            "ceiling: %s — they stay eligible; re-run (or raise LLM_COST_CEILING_USD) "
+            "to continue",
+            user_id,
+            len(report.skipped_budget),
+            settings.llm_cost_ceiling_usd,
+            ", ".join(report.skipped_budget),
+        )
     if validation_log is not None and report.claims:
         # The per-run scorecard (audit Phase 4): extractor/prompt changes get a
         # tracked metric row instead of vibes. Boundary violations fail the row.

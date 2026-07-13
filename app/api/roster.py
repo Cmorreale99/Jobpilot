@@ -185,6 +185,8 @@ async def assign(
         "ambiguous": list(report.ambiguous),
         # Documents whose assigner failed (bounded, chunks left unassigned).
         "assignment_failures": list(report.assignment_failures),
+        # §5.8: documents skipped because nothing they depend on changed.
+        "skipped_unchanged": report.skipped_unchanged,
         # H6: stale rows visibly superseded, never orphaned — plus every warning.
         "reconciliation": {
             **report.reconciliation.summary(),

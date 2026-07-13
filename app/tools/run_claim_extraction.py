@@ -75,6 +75,16 @@ async def _run() -> None:
         f"{len(report.failed_groups)} group(s) failed extraction, "
         f"{len(report.skipped_unchanged)} group(s) skipped (evidence unchanged)"
     )
+    print(
+        f"cost: est ${report.estimated_cost_usd:.2f} committed this run "
+        f"(ceiling ${settings.llm_cost_ceiling_usd:.2f})"
+    )
+    if report.skipped_budget:
+        print(
+            f"cost ceiling: {len(report.skipped_budget)} group(s) NOT started — "
+            f"{', '.join(report.skipped_budget)}. Re-run to continue, or raise "
+            "LLM_COST_CEILING_USD."
+        )
     print(f"database: {settings.database_url}")
 
 
