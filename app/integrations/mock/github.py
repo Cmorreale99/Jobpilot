@@ -15,11 +15,14 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from app.domain.repo_docs import is_root_readme
 from app.integrations.base import (
     GitHubCommit,
     GitHubDocument,
     GitHubRepo,
+    GitHubRepoFile,
     GitHubRepoMetadata,
+    GitHubResponseError,
 )
 
 _MANIFEST_NAME = "manifest.json"
@@ -83,15 +86,56 @@ class MockGitHubClient:
         return [self._to_repo(entry) for entry in self._manifest.values()]
 
     async def read_repo(self, repo_ref: str) -> GitHubDocument:
+        return await self.read_repo_file(repo_ref, "README.md")
+
+    async def list_repo_files(self, repo_ref: str) -> list[GitHubRepoFile]:
+        """The repo's full file tree: the root README (when present) + declared files."""
         entry = self._entry(repo_ref)
-        readme_path = self._fixtures_dir / str(entry["readme"])
-        text = readme_path.read_text(encoding="utf-8")
+        files: list[GitHubRepoFile] = []
+        if entry.get("readme"):
+            files.append(GitHubRepoFile(repo_ref=repo_ref, path="README.md"))
+        declared = entry.get("files", [])
+        if isinstance(declared, list):
+            for item in declared:
+                if isinstance(item, dict) and item.get("path"):
+                    files.append(
+                        GitHubRepoFile(
+                            repo_ref=repo_ref,
+                            path=str(item["path"]),
+                            sha=_opt_str(item.get("sha")),
+                        )
+                    )
+        return files
+
+    async def read_repo_file(self, repo_ref: str, path: str) -> GitHubDocument:
+        entry = self._entry(repo_ref)
+        fixture: str | None = None
+        sha: str | None = None
+        if is_root_readme(path):
+            fixture = _opt_str(entry.get("readme"))
+        else:
+            declared = entry.get("files", [])
+            if isinstance(declared, list):
+                for item in declared:
+                    if isinstance(item, dict) and str(item.get("path")) == path:
+                        fixture = _opt_str(item.get("fixture"))
+                        sha = _opt_str(item.get("sha"))
+                        break
+        if not fixture:
+            raise GitHubResponseError(f"{repo_ref}: no readable fixture for path {path!r}")
+        fixture_path = self._fixtures_dir / fixture
+        try:
+            text = fixture_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise GitHubResponseError(f"{repo_ref}: failed to read {path!r} ({exc})") from exc
         return GitHubDocument(
             repo_ref=repo_ref,
             title=str(entry["name"]),
             text=text,
             primary_language=_opt_str(entry.get("primary_language")),
             pushed_at=_parse_time(entry.get("pushed_at")),
+            path=path,
+            revision=sha,
         )
 
     async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:

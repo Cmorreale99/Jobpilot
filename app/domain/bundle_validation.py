@@ -13,6 +13,8 @@ Pure logic: no imports from ``integrations/`` implementations or ``llm/``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -31,6 +33,7 @@ SELECTED_RESULT_OUTSIDE_BUNDLE = "selected_result_outside_bundle"
 CROSS_PROBLEM_SPACE_CONTAMINATION = "cross_problem_space_contamination"
 CROSS_PROJECT_CONTAMINATION = "cross_project_contamination"
 MISSING_RESULT = "missing_result"
+UNSUPPORTED_PAIRING = "unsupported_pairing"
 
 FATAL_BUNDLE_CODES = frozenset(
     {
@@ -40,7 +43,20 @@ FATAL_BUNDLE_CODES = frozenset(
         CROSS_PROBLEM_SPACE_CONTAMINATION,
         CROSS_PROJECT_CONTAMINATION,
         MISSING_RESULT,
+        UNSUPPORTED_PAIRING,
     }
+)
+
+# Action→result relationship statuses (MASTER CV REPAIR §9.1). Only the first three
+# may generate a bullet implying causality (§9.2); ``unknown`` stays unknown — a
+# shared problem-space id is deliberately NOT a relationship (§5.6.5/§9.3).
+RELATIONSHIP_DIRECT = "direct"  # the same claim: explicit source linkage
+RELATIONSHIP_SAME_SOURCE = "same_source_section"  # distinct claims citing shared evidence
+RELATIONSHIP_USER_ATTESTED = "user_attested"  # the user supplied the result for this story
+RELATIONSHIP_UNKNOWN = "unknown"
+
+SUPPORTED_RELATIONSHIPS = frozenset(
+    {RELATIONSHIP_DIRECT, RELATIONSHIP_SAME_SOURCE, RELATIONSHIP_USER_ATTESTED}
 )
 
 # The next_action a missing_result violation carries: ask the targeted result-type
@@ -181,6 +197,63 @@ def validate_evidence_boundary(candidate: EvidenceBounded) -> list[BundleViolati
     return violations
 
 
+def pairing_relationship(
+    action_claim_ids: Sequence[int],
+    result_claim_ids: Sequence[int],
+    evidence_ids_by_claim: Mapping[int, AbstractSet[int]],
+    *,
+    result_attested: bool = False,
+) -> str:
+    """Derive the action→result relationship from provenance facts (§9.1) — never
+    from problem-space membership or semantic similarity (§5.6.5-6).
+
+    * ``direct`` — the selected action and result share a claim: the extractor found
+      the work statement and the outcome in the same evidenced unit, under the
+      coupling gate.
+    * ``same_source_section`` — distinct claims whose cited evidence overlaps: the
+      same source chunk narrates both.
+    * ``user_attested`` — the result is the user's typed answer to this story's
+      targeted question; selecting it IS the user's confirmation.
+    * ``unknown`` — everything else. Unknown stays unknown.
+    """
+    if result_attested:
+        return RELATIONSHIP_USER_ATTESTED
+    if set(action_claim_ids) & set(result_claim_ids):
+        return RELATIONSHIP_DIRECT
+    action_evidence: set[int] = set()
+    for claim_id in action_claim_ids:
+        action_evidence |= set(evidence_ids_by_claim.get(claim_id, ()))
+    result_evidence: set[int] = set()
+    for claim_id in result_claim_ids:
+        result_evidence |= set(evidence_ids_by_claim.get(claim_id, ()))
+    if action_evidence & result_evidence:
+        return RELATIONSHIP_SAME_SOURCE
+    return RELATIONSHIP_UNKNOWN
+
+
+def validate_pairing_support(
+    action: ActionCandidate, result: ResultCandidate, relationship: str
+) -> list[BundleViolation]:
+    """The §9.2/§9.3 publication rule: an unsupported pairing is unselectable.
+
+    Only direct, same-source, or user-attested relationships may back a bullet that
+    implies causality. A pairing whose only connection is the shared problem space
+    refuses with a machine-readable violation — the reviewer picks a supported
+    result, attests the real outcome, or leaves the relationship honestly unknown.
+    """
+    if relationship in SUPPORTED_RELATIONSHIPS:
+        return []
+    return [
+        BundleViolation(
+            UNSUPPORTED_PAIRING,
+            f"action {action.text!r} and result {result.text!r} share no source "
+            "linkage (different claims, disjoint cited evidence) — a shared problem "
+            "space is not proof of causality (§5.6.5); select a result the sources "
+            "couple to this action, or attest the real outcome",
+        )
+    ]
+
+
 def validate_result_presence(bundle: PARBundle) -> list[BundleViolation]:
     """A bundle must have result candidates to generate from — or it is a follow-up.
 
@@ -206,12 +279,20 @@ __all__ = [
     "FATAL_BUNDLE_CODES",
     "MISSING_RESULT",
     "PROBLEM_SPACE_MISMATCH",
+    "RELATIONSHIP_DIRECT",
+    "RELATIONSHIP_SAME_SOURCE",
+    "RELATIONSHIP_UNKNOWN",
+    "RELATIONSHIP_USER_ATTESTED",
     "SELECTED_ACTION_OUTSIDE_BUNDLE",
     "SELECTED_RESULT_OUTSIDE_BUNDLE",
+    "SUPPORTED_RELATIONSHIPS",
+    "UNSUPPORTED_PAIRING",
     "BundleViolation",
     "EvidenceBounded",
+    "pairing_relationship",
     "validate_bundle_selection",
     "validate_evidence_boundary",
+    "validate_pairing_support",
     "validate_problem_space_alignment",
     "validate_result_presence",
 ]

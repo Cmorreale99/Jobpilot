@@ -246,3 +246,90 @@ async def test_error_results_raise_clearly() -> None:
     client, _ = _client({TOOLS.file_contents: error})
     with pytest.raises(GitHubResponseError, match="returned an error"):
         await client.read_repo("jordanrivera/fraud-stream")
+
+
+# --- file-universe enumeration (MASTER CV REPAIR §4.1/§5.2.13) -------------------------
+
+
+class _PathAwareSession:
+    """Fake session answering ``get_file_contents`` per requested path."""
+
+    def __init__(self, listings: dict[str, _FakeResult]) -> None:
+        self._listings = listings
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> _FakeResult:
+        self.calls.append((name, arguments))
+        if name != TOOLS.file_contents:
+            raise AssertionError(f"unexpected tool {name}")
+        return self._listings[arguments["path"]]
+
+
+def _path_client(listings: dict[str, _FakeResult]) -> McpGitHubClient:
+    session = _PathAwareSession(listings)
+
+    @asynccontextmanager
+    async def factory() -> Any:
+        yield session
+
+    return McpGitHubClient(
+        _mcp_settings(),
+        credentials=GitHubCredentials(access_token="pat"),
+        session_factory=factory,
+    )
+
+
+async def test_list_repo_files_walks_the_whole_tree() -> None:
+    root = [
+        {"name": "README.md", "path": "README.md", "type": "file", "sha": "r1", "size": 10},
+        {"name": "CLAUDE.md", "path": "CLAUDE.md", "type": "file", "sha": "c1", "size": 20},
+        {"name": "docs", "path": "docs", "type": "dir"},
+        {"name": "projects", "path": "projects", "type": "dir"},
+    ]
+    docs = [{"name": "ARCHITECTURE.md", "path": "docs/ARCHITECTURE.md", "type": "file"}]
+    projects = [{"name": "rec", "path": "projects/rec", "type": "dir"}]
+    rec = [{"name": "README.md", "path": "projects/rec/README.md", "type": "file", "sha": "n1"}]
+    client = _path_client(
+        {
+            "/": _FakeResult(structured=root),
+            "docs": _FakeResult(structured=docs),
+            "projects": _FakeResult(structured=projects),
+            "projects/rec": _FakeResult(structured=rec),
+        }
+    )
+
+    files = await client.list_repo_files("jordanrivera/fraud-stream")
+
+    assert {f.path for f in files} == {
+        "README.md",
+        "CLAUDE.md",
+        "docs/ARCHITECTURE.md",
+        "projects/rec/README.md",
+    }
+    shas = {f.path: f.sha for f in files}
+    assert shas["README.md"] == "r1"
+    assert shas["projects/rec/README.md"] == "n1"
+
+
+async def test_list_repo_files_raises_on_unlistable_tree() -> None:
+    """A non-listing payload is a required-source failure, never a silent subset."""
+    client = _path_client({"/": _FakeResult(resource_text="not a directory listing")})
+    with pytest.raises(GitHubResponseError, match="directory listing"):
+        await client.list_repo_files("jordanrivera/fraud-stream")
+
+
+async def test_read_repo_file_reads_nested_path_with_revision() -> None:
+    payload = {
+        "name": "README.md",
+        "path": "projects/rec/README.md",
+        "sha": "n1",
+        "encoding": "base64",
+        "content": base64.b64encode(b"# Paper Recommender").decode(),
+    }
+    client = _path_client({"projects/rec/README.md": _FakeResult(structured=payload)})
+
+    doc = await client.read_repo_file("jordanrivera/fraud-stream", "projects/rec/README.md")
+
+    assert doc.text == "# Paper Recommender"
+    assert doc.path == "projects/rec/README.md"
+    assert doc.revision == "n1"

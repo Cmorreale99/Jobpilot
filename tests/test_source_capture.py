@@ -34,10 +34,13 @@ from app.integrations.base import (
     GitHubCommit,
     GitHubDocument,
     GitHubRepo,
+    GitHubRepoFile,
+    GitHubResponseError,
     UploadCandidate,
     UploadDocument,
 )
 from app.services.roster import (
+    GATHER_AWAITING_USER_DECISION,
     GATHER_OK,
     GATHER_POLICY_EXCLUDED,
     GATHER_READ_FAILED,
@@ -188,6 +191,16 @@ class FakeGitHubClient:
         return list(self.repos)
 
     async def read_repo(self, repo_ref: str) -> GitHubDocument:
+        return self.readmes[repo_ref]
+
+    async def list_repo_files(self, repo_ref: str) -> list[GitHubRepoFile]:
+        if repo_ref in self.readmes:
+            return [GitHubRepoFile(repo_ref=repo_ref, path="README.md")]
+        return []
+
+    async def read_repo_file(self, repo_ref: str, path: str) -> GitHubDocument:
+        if path != "README.md" or repo_ref not in self.readmes:
+            raise GitHubResponseError(f"no fixture file {path!r} in {repo_ref}")
         return self.readmes[repo_ref]
 
     async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:
@@ -428,13 +441,17 @@ async def test_gather_report_statuses_cover_every_disposition() -> None:
         documents={"ok_doc": _drive_doc("ok_doc", "Shipped it.")},
     )
     gathered = await gather_source_documents(drive, FakeGitHubClient(), "u1", _settings())
+    # MASTER CV REPAIR §5.1.2: allowed dispositions include awaiting_user_decision
+    # (enumerated repo files whose admission the user has not decided).
     assert {d.status for d in gathered.report.dispositions} <= {
         GATHER_OK,
         GATHER_READ_FAILED,
         GATHER_POLICY_EXCLUDED,
+        GATHER_AWAITING_USER_DECISION,
     }
     assert gathered.report.summary() == {
         GATHER_OK: 1,
         GATHER_READ_FAILED: 0,
         GATHER_POLICY_EXCLUDED: 0,
+        GATHER_AWAITING_USER_DECISION: 0,
     }

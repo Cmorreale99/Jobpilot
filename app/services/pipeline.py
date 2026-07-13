@@ -32,12 +32,14 @@ from app.db.job_repository import SqlJobRepository
 from app.db.master_cv_snapshot_store import SqlMasterCvSnapshotStore
 from app.db.project_story_repository import SqlProjectStoryRepository
 from app.db.session import create_all, create_db_engine, create_session_factory
+from app.db.validation_run_log import SqlValidationRunLog
 from app.domain.applications import ApplicationRepository, OutreachStatus
 from app.domain.claims import ClaimRepository
 from app.domain.jobs import JobRepository
 from app.domain.master_cv_snapshot import MasterCvSnapshotStore
 from app.domain.project_story import ProjectStoryRepository
 from app.domain.story_snapshot import story_master_cv_from_snapshot
+from app.domain.validation_runs import ValidationRunLog
 from app.integrations.base import JobSource, MailClient, ResearchClient
 from app.integrations.jobs_factory import create_job_source
 from app.integrations.mail_factory import create_mail_client
@@ -62,6 +64,10 @@ class PipelineDependencies:
     snapshot_store: MasterCvSnapshotStore
     job_repository: JobRepository
     application_repository: ApplicationRepository
+    # Publication gate + dispositions (MASTER CV REPAIR §5.9): when present, the
+    # snapshot step blocks on required-source failures and records every story's
+    # publication disposition. Optional so injected test doubles stay minimal.
+    validation_log: ValidationRunLog | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,7 @@ def build_default_dependencies(settings: Settings | None = None) -> PipelineDepe
         snapshot_store=SqlMasterCvSnapshotStore(session_factory),
         job_repository=SqlJobRepository(session_factory),
         application_repository=SqlApplicationRepository(session_factory),
+        validation_log=SqlValidationRunLog(session_factory),
     )
 
 
@@ -135,7 +142,11 @@ async def run_application_pipeline(
 
     version_before = deps.snapshot_store.get_latest(user_id)
     snapshot = create_story_snapshot(
-        user_id, deps.story_repository, deps.claim_repository, deps.snapshot_store
+        user_id,
+        deps.story_repository,
+        deps.claim_repository,
+        deps.snapshot_store,
+        validation_log=deps.validation_log,
     )
     changed = version_before is None or snapshot.version != version_before.version
     master_cv = story_master_cv_from_snapshot(snapshot)

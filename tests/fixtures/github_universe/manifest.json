@@ -1,0 +1,79 @@
+{
+  "description": "GitHub file-universe fixtures (MASTER CV REPAIR spec 16.1/16.2/16.3/16.4): a repo with nested docs + CLAUDE.md, a collection/portfolio repo with child-project READMEs, a CLAUDE.md-only repo, and a repo whose README read fails while commits succeed.",
+  "username": "cmorreale",
+  "repos": [
+    {
+      "repo_ref": "cmorreale/jobpilot",
+      "name": "jobpilot",
+      "owner": "cmorreale",
+      "description": "Personalized, mostly-automated job-search pipeline.",
+      "primary_language": "Python",
+      "is_fork": false,
+      "is_private": false,
+      "stars": 4,
+      "pushed_at": "2026-07-01T00:00:00Z",
+      "readme": "jobpilot/README.md",
+      "files": [
+        { "path": "CLAUDE.md", "fixture": "jobpilot/CLAUDE.md", "sha": "c1a" },
+        { "path": "docs/ARCHITECTURE.md", "fixture": "jobpilot/docs_ARCHITECTURE.md", "sha": "a1b" },
+        { "path": "app/main.py", "fixture": null, "sha": "s1c" },
+        { "path": "tests/test_main.py", "fixture": null, "sha": "s2d" }
+      ],
+      "commits": [
+        { "sha": "aaa1", "message": "fix(ingestion): repair the structuring boundary so PDF reflow keeps paragraphs intact", "authored_at": "2026-06-20T10:00:00Z" },
+        { "sha": "aaa2", "message": "feat(dashboard): render story review cards with cited evidence quotes", "authored_at": "2026-06-22T10:00:00Z" }
+      ]
+    },
+    {
+      "repo_ref": "cmorreale/Cameron-Morreale-portfolio",
+      "name": "Cameron-Morreale-portfolio",
+      "owner": "cmorreale",
+      "description": "Portfolio collection of independent projects.",
+      "primary_language": "Jupyter Notebook",
+      "is_fork": false,
+      "is_private": false,
+      "stars": 1,
+      "pushed_at": "2026-05-15T00:00:00Z",
+      "readme": "portfolio/README.md",
+      "files": [
+        { "path": "projects/paper-recommender/README.md", "fixture": "portfolio/paper_recommender_README.md", "sha": "p1e" },
+        { "path": "projects/oneworld/README.md", "fixture": "portfolio/oneworld_README.md", "sha": "o1f" }
+      ],
+      "commits": [
+        { "sha": "bbb1", "message": "Add paper recommender notebook exports and evaluation results", "authored_at": "2026-04-01T09:00:00Z" }
+      ]
+    },
+    {
+      "repo_ref": "cmorreale/claude-only",
+      "name": "claude-only",
+      "owner": "cmorreale",
+      "description": "Repo whose only documentation is CLAUDE.md.",
+      "primary_language": "Python",
+      "is_fork": false,
+      "is_private": false,
+      "stars": 0,
+      "pushed_at": "2026-06-01T00:00:00Z",
+      "readme": null,
+      "files": [
+        { "path": "CLAUDE.md", "fixture": "claude_only/CLAUDE.md", "sha": "c2g" }
+      ],
+      "commits": []
+    },
+    {
+      "repo_ref": "cmorreale/broken-readme",
+      "name": "broken-readme",
+      "owner": "cmorreale",
+      "description": "README read fails; commit ingestion succeeds (16.3 masking case).",
+      "primary_language": "Python",
+      "is_fork": false,
+      "is_private": false,
+      "stars": 0,
+      "pushed_at": "2026-06-05T00:00:00Z",
+      "readme": "broken/README.md",
+      "files": [],
+      "commits": [
+        { "sha": "ccc1", "message": "chore: initial commit of scraper skeleton", "authored_at": "2026-03-01T09:00:00Z" }
+      ]
+    }
+  ]
+}

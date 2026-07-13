@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.config import Settings, get_settings
 from app.domain.chunking import chunk_elements, chunk_normalized_text
@@ -29,6 +30,7 @@ from app.domain.claims import (
     ASSIGNMENT_SECTION,
     SOURCE_DRIVE,
     SOURCE_GITHUB_COMMIT,
+    SOURCE_GITHUB_DOC,
     SOURCE_GITHUB_README,
     SOURCE_UPLOAD,
     Claim,
@@ -47,6 +49,13 @@ from app.domain.project_reconciliation import (
     ReconciliationResult,
     reconcile_expected_projects,
 )
+from app.domain.repo_docs import (
+    is_claude_md,
+    is_readme_path,
+    is_root_readme,
+    repo_doc_admission_reason,
+    repo_doc_title,
+)
 from app.domain.roster import (
     ChunkAssigner,
     RosterProposer,
@@ -64,7 +73,9 @@ from app.domain.source_capture import (
 )
 from app.domain.source_structure import (
     STRUCTURER_VERSION,
+    SectionSubtree,
     SourceElement,
+    child_sections,
     heading_trail,
     structure_commit_message,
     structure_source_text,
@@ -83,6 +94,8 @@ from app.integrations.base import (
     DriveClient,
     DriveResponseError,
     GitHubClient,
+    GitHubRepo,
+    GitHubRepoFile,
     GitHubResponseError,
     UploadsClient,
 )
@@ -103,9 +116,13 @@ logger = logging.getLogger(__name__)
 
 # Disposition statuses for the gather report (H2): every discovered candidate ends in
 # exactly one of these — a source can be excluded or fail to read, but never vanish.
+# ``awaiting_user_decision`` (MASTER CV REPAIR §5.1.2/§22.1) marks enumerated repo files
+# whose admission the user has not decided (source code, tests, notebooks): they are in
+# the universe and the denominator, deliberately not ingested, never silently dropped.
 GATHER_OK = "ok"
 GATHER_READ_FAILED = "read_failed"
 GATHER_POLICY_EXCLUDED = "policy_excluded"
+GATHER_AWAITING_USER_DECISION = "awaiting_user_decision"
 
 
 @dataclass(frozen=True)
@@ -124,10 +141,61 @@ class SourceDisposition:
 
 
 @dataclass(frozen=True)
+class RepoDocAccounting:
+    """Per-repository document accounting (MASTER CV REPAIR §4.3/§16.1).
+
+    Distinguishes *repository discovered*, *documentation captured*, *history
+    captured*, and *ingestion complete* — commit success can never mask a failed
+    README or CLAUDE.md read. ``files_enumerated`` is ``None`` when the tree could
+    not be enumerated at all (itself a required failure). README flags cover the
+    ROOT README only (nested READMEs are documents counted in ``docs_*``);
+    CLAUDE.md flags cover every CLAUDE.md in the tree.
+    """
+
+    repo_ref: str
+    enumeration_failed: bool = False
+    files_enumerated: int | None = None
+    docs_ingested: int = 0
+    docs_failed: int = 0
+    not_admitted: int = 0
+    commits_captured: int = 0
+    commits_failed: bool = False
+    readme_present: bool = False
+    readme_captured: bool = False
+    claude_md_present: bool = False
+    claude_md_captured: bool = False
+
+    @property
+    def complete(self) -> bool:
+        """Repository ingestion complete: tree enumerated, every admitted doc read,
+        and every required doc (README/CLAUDE.md when present) captured."""
+        return (
+            not self.enumeration_failed
+            and self.docs_failed == 0
+            and (self.readme_captured or not self.readme_present)
+            and (self.claude_md_captured or not self.claude_md_present)
+        )
+
+    def required_failures(self) -> list[str]:
+        """Named required-source failures (§14.1): these block publication."""
+        failures: list[str] = []
+        if self.enumeration_failed:
+            failures.append(f"{self.repo_ref}: repository file enumeration failed")
+        if self.readme_present and not self.readme_captured:
+            failures.append(f"{self.repo_ref}: README present but not captured")
+        if self.claude_md_present and not self.claude_md_captured:
+            failures.append(f"{self.repo_ref}: CLAUDE.md present but not captured")
+        return failures
+
+
+@dataclass(frozen=True)
 class GatherReport:
     """Full disposition accounting for one gather pass (H2): zero silent drops."""
 
     dispositions: tuple[SourceDisposition, ...] = ()
+    # Per-repo doc accounting (§16.1): the file universe, its dispositions, and the
+    # required-doc capture flags. Empty for gathers with no GitHub repos.
+    repo_docs: tuple[RepoDocAccounting, ...] = ()
 
     def _with_status(self, status: str) -> list[SourceDisposition]:
         return [d for d in self.dispositions if d.status == status]
@@ -144,11 +212,81 @@ class GatherReport:
     def policy_excluded(self) -> list[SourceDisposition]:
         return self._with_status(GATHER_POLICY_EXCLUDED)
 
+    @property
+    def awaiting_user_decision(self) -> list[SourceDisposition]:
+        return self._with_status(GATHER_AWAITING_USER_DECISION)
+
+    @property
+    def required_failures(self) -> list[str]:
+        """Every named required-source failure across the gather (§5.1.5/§14.1)."""
+        return [f for acc in self.repo_docs for f in acc.required_failures()]
+
+    @property
+    def complete(self) -> bool:
+        """True only when nothing failed to read and no required doc is missing.
+
+        This is the gate publication consumes: partial output must never present
+        itself as complete (§14.1).
+        """
+        return not self.read_failed and not self.required_failures
+
     def summary(self) -> dict[str, int]:
         return {
             GATHER_OK: len(self.ok),
             GATHER_READ_FAILED: len(self.read_failed),
             GATHER_POLICY_EXCLUDED: len(self.policy_excluded),
+            GATHER_AWAITING_USER_DECISION: len(self.awaiting_user_decision),
+        }
+
+    def coverage(self) -> dict[str, Any]:
+        """Coverage with honest denominators (MASTER CV REPAIR §4.16/§5.1.6-8/§16.15).
+
+        DISCOVERY (was the configured universe enumerated?) and PROCESSING (how much
+        of the admitted universe was captured?) are separate numbers. The denominator
+        is always the actual configured universe — a cached or partial subset can
+        never present itself as 100%. Missing files are named, never just counted.
+        """
+        repositories: list[dict[str, Any]] = []
+        for acc in self.repo_docs:
+            admitted = acc.docs_ingested + acc.docs_failed
+            missing = [
+                d.source_ref
+                for d in self.read_failed
+                if d.source_ref == acc.repo_ref
+                or d.source_ref.startswith((f"{acc.repo_ref}/", f"{acc.repo_ref}@"))
+            ]
+            repositories.append(
+                {
+                    "repo_ref": acc.repo_ref,
+                    "discovery_complete": not acc.enumeration_failed,
+                    "files_enumerated": acc.files_enumerated,
+                    "docs_admitted": admitted,
+                    "docs_ingested": acc.docs_ingested,
+                    "not_admitted": acc.not_admitted,
+                    "commits_captured": acc.commits_captured,
+                    "processing_pct": (
+                        round(100.0 * acc.docs_ingested / admitted, 1) if admitted else 100.0
+                    ),
+                    "fully_ingested": acc.complete,
+                    "missing_files": missing,
+                    "required_failures": acc.required_failures(),
+                }
+            )
+        docs_admitted = sum(r["docs_admitted"] for r in repositories)
+        docs_ingested = sum(r["docs_ingested"] for r in repositories)
+        return {
+            "repositories": repositories,
+            "totals": {
+                "repositories_discovered": len(self.repo_docs),
+                "files_enumerated": sum(acc.files_enumerated or 0 for acc in self.repo_docs),
+                "docs_admitted": docs_admitted,
+                "docs_ingested": docs_ingested,
+                "awaiting_user_decision": len(self.awaiting_user_decision),
+                "policy_excluded": len(self.policy_excluded),
+                "read_failures": len(self.read_failed),
+                "required_failures": len(self.required_failures),
+                "sources_gathered": len(self.ok),
+            },
         }
 
 
@@ -228,6 +366,9 @@ class RosterAssignmentReport:
     sections: tuple[SectionDecision, ...] = ()
     truncated_prompts: int = 0
     reconciliation: EvidenceReconciliation = field(default_factory=EvidenceReconciliation)
+    # Refs matching MULTIPLE confirmed entities (MASTER CV REPAIR §4.9/§16.7): their
+    # evidence stays unresolved (never first-match assigned) awaiting a user decision.
+    ambiguous: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -340,6 +481,7 @@ async def gather_source_documents(
     settings = settings or get_settings()
     documents: list[SourceDocument] = []
     dispositions: list[SourceDisposition] = []
+    repo_accounting: list[RepoDocAccounting] = []
 
     def gathered(document: SourceDocument, *, extractor: str, raw_text: str) -> None:
         """Capture raw + its element tree, record ok, keep the normalized document."""
@@ -403,41 +545,155 @@ async def gather_source_documents(
         if reason is not None:
             excluded(SOURCE_GITHUB_README, repo.repo_ref, repo.name, reason)
             continue
+
+        # --- the repository FILE UNIVERSE (MASTER CV REPAIR §4.1/§6.2/§16.1) --------
+        # Enumerate the complete tree; every entry ends in exactly one disposition.
+        # READMEs (root + nested), CLAUDE.md, and all Markdown are admitted documents;
+        # everything else awaits the user's §22.1 admission decision — visible, never
+        # silently absent and never silently ingested.
+        enumeration_failed = False
+        files: list[GitHubRepoFile] = []
         try:
-            readme = await github_client.read_repo(repo.repo_ref)
+            files = await github_client.list_repo_files(repo.repo_ref)
         except GitHubResponseError as exc:
-            failed(SOURCE_GITHUB_README, repo.repo_ref, repo.name, exc)
-        else:
+            enumeration_failed = True
+            failed(SOURCE_GITHUB_DOC, f"{repo.repo_ref}/*", repo.name, exc)
+
+        docs_ingested = 0
+        docs_failed = 0
+        not_admitted = 0
+        readme_present = False
+        readme_captured = False
+        claude_present_n = 0
+        claude_captured_n = 0
+
+        async def ingest_doc(
+            path: str,
+            doc_source_type: str,
+            doc_source_ref: str,
+            title: str,
+            repo: GitHubRepo = repo,  # bound per iteration (B023)
+        ) -> bool:
+            """Read one admitted repo document; True when captured."""
+            nonlocal docs_ingested, docs_failed
+            try:
+                document = await github_client.read_repo_file(repo.repo_ref, path)
+            except GitHubResponseError as exc:
+                docs_failed += 1
+                failed(doc_source_type, doc_source_ref, title, exc)
+                return False
             gathered(
                 SourceDocument(
-                    source_type=SOURCE_GITHUB_README,
-                    source_ref=repo.repo_ref,
-                    title=repo.name,
-                    text=normalize_source_text(readme.text),
+                    source_type=doc_source_type,
+                    source_ref=doc_source_ref,
+                    title=title,
+                    text=normalize_source_text(document.text),
                     modified_time=repo.pushed_at,
-                    raw_text=readme.text,
+                    raw_text=document.text,
                 ),
                 extractor=github_extractor,
-                raw_text=readme.text,
+                raw_text=document.text,
             )
+            docs_ingested += 1
+            return True
+
+        if not enumeration_failed:
+            for repo_file in files:
+                path = repo_file.path
+                if is_root_readme(path):
+                    # The root README keeps its legacy identity (github_readme,
+                    # repo_ref) so existing evidence rows stay continuous (H6).
+                    readme_present = True
+                    readme_captured = await ingest_doc(
+                        path, SOURCE_GITHUB_README, repo.repo_ref, repo.name
+                    )
+                    continue
+                admission = repo_doc_admission_reason(path)
+                doc_ref = f"{repo.repo_ref}/{path}"
+                if admission is not None:
+                    not_admitted += 1
+                    dispositions.append(
+                        SourceDisposition(
+                            SOURCE_GITHUB_DOC,
+                            doc_ref,
+                            repo_doc_title(repo.name, path),
+                            GATHER_AWAITING_USER_DECISION,
+                            reason=admission,
+                        )
+                    )
+                    continue
+                if is_claude_md(path):
+                    claude_present_n += 1
+                    if await ingest_doc(
+                        path, SOURCE_GITHUB_DOC, doc_ref, repo_doc_title(repo.name, path)
+                    ):
+                        claude_captured_n += 1
+                    continue
+                await ingest_doc(path, SOURCE_GITHUB_DOC, doc_ref, repo_doc_title(repo.name, path))
+        else:
+            # Tree unavailable: the repo is already incomplete (a required failure),
+            # but still attempt the root README so behavior never regresses below
+            # the legacy single-README read.
+            try:
+                readme = await github_client.read_repo(repo.repo_ref)
+            except GitHubResponseError as exc:
+                failed(SOURCE_GITHUB_README, repo.repo_ref, repo.name, exc)
+            else:
+                readme_present = True
+                readme_captured = True
+                docs_ingested += 1
+                gathered(
+                    SourceDocument(
+                        source_type=SOURCE_GITHUB_README,
+                        source_ref=repo.repo_ref,
+                        title=repo.name,
+                        text=normalize_source_text(readme.text),
+                        modified_time=repo.pushed_at,
+                        raw_text=readme.text,
+                    ),
+                    extractor=github_extractor,
+                    raw_text=readme.text,
+                )
+
+        commits_captured = 0
+        commits_failed = False
         try:
             commits = await github_client.list_commits(repo.repo_ref)
         except GitHubResponseError as exc:
+            commits_failed = True
             failed(SOURCE_GITHUB_COMMIT, f"{repo.repo_ref}@*", repo.name, exc)
-            continue
-        for commit in commits:
-            gathered(
-                SourceDocument(
-                    source_type=SOURCE_GITHUB_COMMIT,
-                    source_ref=f"{repo.repo_ref}@{commit.sha}",
-                    title=repo.name,
-                    text=normalize_source_text(commit.message),
-                    modified_time=commit.authored_at,
+        else:
+            for commit in commits:
+                gathered(
+                    SourceDocument(
+                        source_type=SOURCE_GITHUB_COMMIT,
+                        source_ref=f"{repo.repo_ref}@{commit.sha}",
+                        title=repo.name,
+                        text=normalize_source_text(commit.message),
+                        modified_time=commit.authored_at,
+                        raw_text=commit.message,
+                    ),
+                    extractor=github_extractor,
                     raw_text=commit.message,
-                ),
-                extractor=github_extractor,
-                raw_text=commit.message,
+                )
+                commits_captured += 1
+
+        repo_accounting.append(
+            RepoDocAccounting(
+                repo_ref=repo.repo_ref,
+                enumeration_failed=enumeration_failed,
+                files_enumerated=None if enumeration_failed else len(files),
+                docs_ingested=docs_ingested,
+                docs_failed=docs_failed,
+                not_admitted=not_admitted,
+                commits_captured=commits_captured,
+                commits_failed=commits_failed,
+                readme_present=readme_present,
+                readme_captured=readme_captured,
+                claude_md_present=claude_present_n > 0,
+                claude_md_captured=claude_present_n > 0 and claude_captured_n == claude_present_n,
             )
+        )
 
     uploads_client = uploads_client or create_uploads_client(settings)
     if uploads_client is not None:
@@ -466,20 +722,35 @@ async def gather_source_documents(
                 raw_text=upload.text,
             )
 
-    report = GatherReport(dispositions=tuple(dispositions))
+    report = GatherReport(dispositions=tuple(dispositions), repo_docs=tuple(repo_accounting))
     if report.read_failed:
         logger.warning(
             "gather for %s: %d source(s) failed to read — see the gather report",
             user_id,
             len(report.read_failed),
         )
+    if report.required_failures:
+        logger.warning(
+            "gather for %s: %d REQUIRED-source failure(s) — publication must not "
+            "proceed on this candidate: %s",
+            user_id,
+            len(report.required_failures),
+            "; ".join(report.required_failures),
+        )
     if validation_log is not None:
         validation_log.record(
             user_id,
             KIND_SOURCE_GATHER,
             subject_ref="sources",
-            passed=not report.read_failed,
-            detail=tuple(d.describe() for d in report.dispositions if d.status != GATHER_OK),
+            passed=report.complete,
+            detail=(
+                *(f"required_failure: {f}" for f in report.required_failures),
+                *(
+                    d.describe()
+                    for d in report.dispositions
+                    if d.status in (GATHER_READ_FAILED, GATHER_POLICY_EXCLUDED)
+                ),
+            ),
         )
     return GatheredSources(documents=documents, report=report)
 
@@ -631,12 +902,53 @@ async def run_project_reconciliation(
     return report
 
 
-def _repo_entity(roster: list[Experience], repo_ref: str) -> Experience | None:
-    """The confirmed entity a repo's evidence belongs to (matched by name/alias)."""
-    for entity in roster:
-        if entity.matches_name(repo_ref):
-            return entity
+def _matching_entities(roster: list[Experience], ref: str) -> list[Experience]:
+    """EVERY confirmed entity matching ``ref`` by name/alias — never just the first."""
+    return [entity for entity in roster if entity.matches_name(ref)]
+
+
+def _sole_entity(roster: list[Experience], ref: str, ambiguous: list[str]) -> Experience | None:
+    """The single matching entity, or ``None`` — a multi-match is recorded ambiguity.
+
+    MASTER CV REPAIR §4.9/§5.2.11/§16.7: canonical assignment may not depend on
+    first-match ordering. Multiple matches leave the evidence unresolved (visible in
+    the unassigned queue for a user decision) and the ambiguity is reported.
+    """
+    matches = _matching_entities(roster, ref)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        ambiguous.append(
+            f"{ref}: matches {len(matches)} confirmed entities "
+            f"({', '.join(e.name for e in matches)}) — left unresolved for a user decision"
+        )
     return None
+
+
+def _doc_repo_ref(document: SourceDocument) -> str:
+    """The owning repo_ref of a GitHub document (README ref, or the doc ref's prefix)."""
+    if document.source_type == SOURCE_GITHUB_README:
+        return document.source_ref
+    parts = document.source_ref.split("/")
+    return "/".join(parts[:2]) if len(parts) >= 2 else document.source_ref
+
+
+def _collection_repo_refs(documents: Sequence[SourceDocument]) -> set[str]:
+    """Repos evidencing MULTIPLE projects: any repo with nested-README child docs.
+
+    The deterministic collection signal (§3.3/§7.4): a nested README declares a child
+    project, so the repository is a container — its root README sections and its
+    repo-wide commits must not be force-assigned to any single entity by repo
+    reference alone.
+    """
+    collections: set[str] = set()
+    for document in documents:
+        if document.source_type != SOURCE_GITHUB_DOC:
+            continue
+        parts = document.source_ref.split("/")
+        if len(parts) >= 3 and is_readme_path("/".join(parts[2:])):
+            collections.add("/".join(parts[:2]))
+    return collections
 
 
 @dataclass(frozen=True)
@@ -812,16 +1124,63 @@ async def run_roster_assignment(
                 len(plan.pin_migrations),
             )
 
+    # Collection repositories (repos evidencing multiple child projects) and alias
+    # ambiguity (MASTER CV REPAIR §4.6-4.9): a container's docs are owned per SECTION,
+    # its repo-wide commits stay unresolved/supporting-only, and a ref matching
+    # multiple confirmed entities is a recorded ambiguity — never first-match owned.
+    collections = _collection_repo_refs(documents)
+    ambiguity_notes: dict[str, str] = {}
+
+    def note_ambiguity(ref: str) -> None:
+        notes: list[str] = []
+        entity = _sole_entity(roster, ref, notes)
+        assert entity is None  # callers only note when multiple matched
+        if notes:
+            ambiguity_notes.setdefault(ref, notes[0])
+
+    def github_doc_boundary(document: SourceDocument) -> tuple[bool, int | None]:
+        """Whether this repo document has ONE deterministic user-approved owner.
+
+        ``(True, entity_id)``: the user confirmed exactly one entity carrying this
+        doc's ref (a child project's own README) or the repo's ref on a
+        single-project repo — the §3.8 deterministic boundary. ``(False, None)``:
+        section-level assignment must decide (collection repos, zero matches, or
+        ambiguity — the latter recorded).
+        """
+        if document.source_type == SOURCE_GITHUB_DOC:
+            direct = _matching_entities(roster, document.source_ref)
+            if len(direct) > 1:
+                note_ambiguity(document.source_ref)
+                return False, None
+            if len(direct) == 1:
+                return True, direct[0].id
+        repo_ref = _doc_repo_ref(document)
+        if repo_ref in collections:
+            return False, None
+        matches = _matching_entities(roster, repo_ref)
+        if len(matches) > 1:
+            note_ambiguity(repo_ref)
+            return False, None
+        if len(matches) == 1:
+            return True, matches[0].id
+        return False, None
+
     for document in documents:
         if document.source_type == SOURCE_GITHUB_COMMIT:
             base_ref, _ = split_span_ref(document.source_ref)
             repo_ref = base_ref.rpartition("@")[0]
-            entity = _repo_entity(roster, repo_ref)
+            target: int | None = None
+            if repo_ref not in collections:
+                matches = _matching_entities(roster, repo_ref)
+                if len(matches) == 1:
+                    target = matches[0].id
+                elif len(matches) > 1:
+                    note_ambiguity(repo_ref)
             stored = repository.upsert_evidence(
                 user_id,
                 EvidenceChunk(document.source_type, document.source_ref, document.text),
             )
-            apply(stored, entity.id if entity else None, ASSIGNMENT_REPO_REF)
+            apply(stored, target, ASSIGNMENT_REPO_REF)
             continue
 
         # Everything persisted for this document BEFORE this run's upserts - the
@@ -831,14 +1190,16 @@ async def run_roster_assignment(
             user_id, document.source_type, document.source_ref
         )
 
+        is_repo_doc = document.source_type in (SOURCE_GITHUB_README, SOURCE_GITHUB_DOC)
+        forced, forced_target = github_doc_boundary(document) if is_repo_doc else (False, None)
+
         structured = settings.structured_assignment and document.raw_text is not None
         if not structured:
             # The flat-text path — the pre-H5 behavior, kept behind the flag as the
             # one-release rollback lever (and for callers with no raw text).
             pieces = chunk_normalized_text(document.text)
-            if document.source_type == SOURCE_GITHUB_README:
-                entity = _repo_entity(roster, document.source_ref)
-                targets: list[int | None] = [entity.id if entity else None] * len(pieces)
+            if forced:
+                targets: list[int | None] = [forced_target] * len(pieces)
                 method = ASSIGNMENT_README_REF
             else:
                 targets = assigner.assign([piece.text for piece in pieces], roster)
@@ -864,14 +1225,14 @@ async def run_roster_assignment(
         prepared = _prepare_element_chunks(document, elements)
         element_ids = _element_ids_for(capture_store, user_id, document)
 
-        if document.source_type == SOURCE_GITHUB_README:
-            # One repo-owned tree: every section belongs to the repo's entity.
-            entity = _repo_entity(roster, document.source_ref)
-            target = entity.id if entity else None
+        if forced:
+            # A single deterministic user-approved owner (§3.8): a single-project
+            # repo's docs, or a child project's own README. Collection-repo root
+            # READMEs never take this path — their sections decide (§4.7).
             fresh = persist(
                 document,
                 prepared,
-                [target] * len(prepared),
+                [forced_target] * len(prepared),
                 [ASSIGNMENT_README_REF] * len(prepared),
                 element_ids,
             )
@@ -891,31 +1252,76 @@ async def run_roster_assignment(
             reconcile(document, previous, fresh)
             continue
 
-        contents = [
-            SectionContent(
-                heading=section.path,
-                body="\n".join(
-                    elements[index].raw_text
-                    for index in section.element_indices
-                    if index != section.heading_index
-                ),
-            )
-            for section in sections
-        ]
-        section_targets = section_assigner.assign_sections(contents, roster)
-        truncated += getattr(section_assigner, "last_truncated", 0)
         target_by_element: dict[int, int | None] = {}
-        for section, section_target in zip(sections, section_targets, strict=True):
-            section_decisions.append(
-                SectionDecision(
-                    source_ref=document.source_ref,
-                    path=section.path,
-                    experience_id=section_target,
-                    method=section_assigner.method,
+
+        def decide_sections(
+            subtrees: list[SectionSubtree],
+            elements: Sequence[SourceElement] = elements,
+            document: SourceDocument = document,
+            target_by_element: dict[int, int | None] = target_by_element,
+        ) -> None:
+            """Assign ownership per subtree, descending when a heading decides nothing.
+
+            A subtree WITH child headings is decided by its own heading alone — a
+            mixed multi-project body must never vote (MASTER CV REPAIR §4.7). When
+            that heading is silent, ownership refines into the child subtrees (a
+            portfolio README's title over child-project sections); only a leaf
+            subtree may fall back to its body vocabulary.
+            """
+            nonlocal truncated
+            kids_of = [child_sections(elements, subtree) for subtree in subtrees]
+            branch = [any(kid.heading_index is not None for kid in kids) for kids in kids_of]
+            contents = [
+                SectionContent(
+                    heading=subtree.path,
+                    body=(
+                        ""
+                        if is_branch
+                        else "\n".join(
+                            elements[index].raw_text
+                            for index in subtree.element_indices
+                            if index != subtree.heading_index
+                        )
+                    ),
                 )
-            )
-            for index in section.element_indices:
-                target_by_element[index] = section_target
+                for subtree, is_branch in zip(subtrees, branch, strict=True)
+            ]
+            section_targets = section_assigner.assign_sections(contents, roster)
+            truncated += getattr(section_assigner, "last_truncated", 0)
+            for subtree, kids, is_branch, section_target in zip(
+                subtrees, kids_of, branch, section_targets, strict=True
+            ):
+                if section_target is None and is_branch:
+                    # Silent heading over child sections: the children decide
+                    # themselves; the root heading + its direct prose stay unowned.
+                    section_decisions.append(
+                        SectionDecision(
+                            source_ref=document.source_ref,
+                            path=subtree.path,
+                            experience_id=None,
+                            method=section_assigner.method,
+                        )
+                    )
+                    if subtree.heading_index is not None:
+                        target_by_element[subtree.heading_index] = None
+                    for kid in kids:
+                        if kid.heading_index is None:
+                            for index in kid.element_indices:
+                                target_by_element[index] = None
+                    decide_sections([kid for kid in kids if kid.heading_index is not None])
+                    continue
+                section_decisions.append(
+                    SectionDecision(
+                        source_ref=document.source_ref,
+                        path=subtree.path,
+                        experience_id=section_target,
+                        method=section_assigner.method,
+                    )
+                )
+                for index in subtree.element_indices:
+                    target_by_element[index] = section_target
+
+        decide_sections(sections)
         targets = [
             target_by_element.get(chunk.element_index) if chunk.element_index is not None else None
             for chunk in prepared
@@ -963,7 +1369,15 @@ async def run_roster_assignment(
         sections=tuple(section_decisions),
         truncated_prompts=truncated,
         reconciliation=reconciliation,
+        ambiguous=tuple(ambiguity_notes.values()),
     )
+    if report.ambiguous:
+        logger.warning(
+            "roster assignment for %s: %d ambiguous ref(s) left unresolved for a user decision: %s",
+            user_id,
+            len(report.ambiguous),
+            "; ".join(report.ambiguous),
+        )
     logger.info(
         "roster assignment for %s: %d chunk(s), %d assigned, %d honestly unassigned, "
         "%d human-pinned (untouched), %d section decision(s), %d truncated prompt(s); "

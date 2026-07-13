@@ -155,6 +155,10 @@ EXPERIENCE_TRANSITIONS: dict[ExperienceStatus, frozenset[ExperienceStatus]] = {
 # the content gate lives in the PAR validator, where it belongs).
 SOURCE_DRIVE = "drive"
 SOURCE_GITHUB_COMMIT = "github_commit"
+# A repository document that is not the root README: CLAUDE.md, nested READMEs,
+# architecture/design docs, project Markdown (MASTER CV REPAIR §4.1/§6.2). Its
+# source_ref is "owner/repo/path/to/file" — path provenance is part of identity.
+SOURCE_GITHUB_DOC = "github_doc"
 SOURCE_GITHUB_PR = "github_pr"
 SOURCE_GITHUB_README = "github_readme"
 SOURCE_UPLOAD = "upload"
@@ -1120,6 +1124,13 @@ def evidence_source_url(source_type: str, source_ref: str) -> str | None:
         return None
     if source_type == SOURCE_GITHUB_README:
         return f"https://github.com/{ref}"
+    if source_type == SOURCE_GITHUB_DOC:
+        # ref is "owner/repo/path/to/file" — link the file on the default branch.
+        parts = ref.split("/", 2)
+        if len(parts) == 3:
+            owner, repo, path = parts
+            return f"https://github.com/{owner}/{repo}/blob/HEAD/{path}"
+        return None
     if source_type == SOURCE_GITHUB_COMMIT and "@" in ref:
         repo_ref, _, sha = ref.rpartition("@")
         if repo_ref and sha:

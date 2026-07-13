@@ -37,6 +37,8 @@ from app.integrations.base import (
     GitHubCommit,
     GitHubDocument,
     GitHubRepo,
+    GitHubRepoFile,
+    GitHubResponseError,
 )
 from app.main import create_app
 from app.services.claim_repository import InMemoryClaimRepository
@@ -90,6 +92,16 @@ class FakeGitHubClient:
         return list(self.repos)
 
     async def read_repo(self, repo_ref: str) -> GitHubDocument:
+        return self.readmes[repo_ref]
+
+    async def list_repo_files(self, repo_ref: str) -> list[GitHubRepoFile]:
+        if repo_ref in self.readmes:
+            return [GitHubRepoFile(repo_ref=repo_ref, path="README.md")]
+        return []
+
+    async def read_repo_file(self, repo_ref: str, path: str) -> GitHubDocument:
+        if path != "README.md" or repo_ref not in self.readmes:
+            raise GitHubResponseError(f"no fixture file {path!r} in {repo_ref}")
         return self.readmes[repo_ref]
 
     async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:

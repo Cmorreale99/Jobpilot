@@ -36,8 +36,10 @@ from app.domain.bullet import GeneratedBullet, generate_bullet
 from app.domain.bundle_validation import (
     ASK_TARGETED_FOLLOWUP,
     BundleViolation,
+    pairing_relationship,
     validate_bundle_selection,
     validate_evidence_boundary,
+    validate_pairing_support,
     validate_problem_space_alignment,
     validate_result_presence,
 )
@@ -346,10 +348,40 @@ def select_bundle_component(
     violations = list(validate_problem_space_alignment(bundle.problem, action, result))
     for candidate in (bundle.problem, action, result):
         violations.extend(validate_evidence_boundary(candidate))
+    # §9.2/§9.3: the pairing itself must be source-supported (same claim / shared
+    # cited evidence) or user-attested — the shared problem space is never enough.
+    violations.extend(
+        validate_pairing_support(
+            action, result, _selected_pairing_relationship(story, action, result, claim_repository)
+        )
+    )
     if violations:
         raise BundleSelectionError(violations)
 
     return story_repository.record_selection(story_id, selected_action_id, selected_result_id)
+
+
+def _selected_pairing_relationship(
+    story: ProjectStory,
+    action: Any,
+    result: Any,
+    claim_repository: ClaimRepository,
+) -> str:
+    """Resolve the action→result relationship from claim provenance (§9.1)."""
+    claim_ids = {*action.claim_ids, *result.claim_ids}
+    claims_by_id = {
+        c.id: c for c in claim_repository.list_claims(story.user_id) if c.id in claim_ids
+    }
+    evidence_ids_by_claim = {
+        claim_id: {link.evidence_id for link in claim.evidence}
+        for claim_id, claim in claims_by_id.items()
+    }
+    return pairing_relationship(
+        action.claim_ids,
+        result.claim_ids,
+        evidence_ids_by_claim,
+        result_attested=not result.claim_ids,
+    )
 
 
 def generate_story_bullet(
@@ -389,12 +421,28 @@ def generate_story_bullet(
 
     claims_by_id = {c.id: c for c in claim_repository.list_claims(story.user_id)}
     selected_claim_ids: list[int] = []
+    selected_action = None
+    selected_result = None
     for action in bundle.action_candidates:
         if action.candidate_id == selected_action_id:
+            selected_action = action
             selected_claim_ids.extend(action.claim_ids)
     for result in bundle.result_candidates:
         if result.candidate_id == selected_result_id:
+            selected_result = result
             selected_claim_ids.extend(result.claim_ids)
+    if selected_action is not None and selected_result is not None:
+        # §9.2: a bullet implies causality — re-gate the recorded pairing here too,
+        # so a selection persisted before a claim edit can never publish unsupported.
+        pairing = validate_pairing_support(
+            selected_action,
+            selected_result,
+            _selected_pairing_relationship(
+                story, selected_action, selected_result, claim_repository
+            ),
+        )
+        if pairing:
+            raise BundleSelectionError(pairing)
     evidence_texts = [
         stored.chunk_text
         for stored in resolve_component_evidence(

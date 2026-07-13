@@ -35,6 +35,7 @@ from app.integrations.base import (
     GitHubCredentials,
     GitHubDocument,
     GitHubRepo,
+    GitHubRepoFile,
     GitHubRepoMetadata,
     GitHubResponseError,
 )
@@ -248,16 +249,69 @@ class McpGitHubClient:
         return [_map_repo(item) for item in _as_items(payload)]
 
     async def read_repo(self, repo_ref: str) -> GitHubDocument:
+        return await self.read_repo_file(repo_ref, _README_PATH)
+
+    async def read_repo_file(self, repo_ref: str, path: str) -> GitHubDocument:
+        """Read one repository file by tree path (README, CLAUDE.md, nested docs)."""
         self._require_credentials()
         owner, repo = _split_ref(repo_ref)
         payload = await self._call(
             self._tools.file_contents,
-            {"owner": owner, "repo": repo, "path": _README_PATH},
+            {"owner": owner, "repo": repo, "path": path},
         )
         if isinstance(payload, str):
             # Real-server shape: the file body arrives as embedded-resource text.
-            return GitHubDocument(repo_ref=repo_ref, title=repo, text=payload)
-        return _map_document(payload, repo_ref, repo)
+            return GitHubDocument(repo_ref=repo_ref, title=repo, text=payload, path=path)
+        return _map_document(payload, repo_ref, repo, path)
+
+    async def list_repo_files(self, repo_ref: str) -> list[GitHubRepoFile]:
+        """Enumerate the complete file tree by walking directory listings.
+
+        The GitHub MCP server's ``get_file_contents`` on a directory path returns the
+        REST contents-API listing (``[{name, path, type, sha, size}, ...]``); walking
+        every ``dir`` entry yields the full universe. Any non-listing payload raises —
+        an unenumerable tree must surface as a required-source failure, never shrink
+        to a README-only subset.
+        """
+        self._require_credentials()
+        owner, repo = _split_ref(repo_ref)
+        files: list[GitHubRepoFile] = []
+        pending = ["/"]
+        seen: set[str] = set()
+        while pending:
+            directory = pending.pop()
+            if directory in seen:
+                continue
+            seen.add(directory)
+            payload = await self._call(
+                self._tools.file_contents,
+                {"owner": owner, "repo": repo, "path": directory},
+            )
+            if not isinstance(payload, list):
+                raise GitHubResponseError(
+                    f"GitHub MCP directory listing for {repo_ref}:{directory!r} returned "
+                    f"an unexpected payload type {type(payload).__name__!r}"
+                )
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                entry_path = str(item.get("path", item.get("name", "")))
+                if not entry_path:
+                    continue
+                entry_type = str(item.get("type", "file"))
+                if entry_type == "dir":
+                    pending.append(entry_path)
+                elif entry_type == "file":
+                    size = item.get("size")
+                    files.append(
+                        GitHubRepoFile(
+                            repo_ref=repo_ref,
+                            path=entry_path,
+                            sha=str(item["sha"]) if item.get("sha") else None,
+                            size_bytes=int(size) if isinstance(size, int) else None,
+                        )
+                    )
+        return files
 
     async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:
         self._require_credentials()
@@ -370,7 +424,9 @@ def _map_repo(item: dict[str, Any]) -> GitHubRepo:
     )
 
 
-def _map_document(payload: dict[str, Any], repo_ref: str, repo_name: str) -> GitHubDocument:
+def _map_document(
+    payload: dict[str, Any], repo_ref: str, repo_name: str, path: str | None = None
+) -> GitHubDocument:
     text = _decode_content(payload)
     return GitHubDocument(
         repo_ref=repo_ref,
@@ -378,6 +434,8 @@ def _map_document(payload: dict[str, Any], repo_ref: str, repo_name: str) -> Git
         text=text,
         primary_language=payload.get("language"),
         pushed_at=_parse_time(payload.get("pushed_at")),
+        path=str(payload.get("path", path)) if (payload.get("path") or path) else None,
+        revision=str(payload["sha"]) if payload.get("sha") else None,
     )
 
 

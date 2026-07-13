@@ -19,6 +19,7 @@ Two protocols with deterministic defaults here (LLM-backed versions in
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,6 +29,7 @@ from typing import Protocol, runtime_checkable
 from app.domain.claims import (
     ASSIGNMENT_HEURISTIC,
     SOURCE_GITHUB_COMMIT,
+    SOURCE_GITHUB_DOC,
     SOURCE_GITHUB_README,
     Claim,
     ClaimField,
@@ -39,6 +41,7 @@ from app.domain.claims import (
     StoredEvidence,
 )
 from app.domain.matching import tokenize
+from app.domain.repo_docs import nested_readme_project_name
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,29 @@ class HeuristicRosterProposer:
         for document in documents:
             if document.source_type == SOURCE_GITHUB_COMMIT:
                 continue  # commits evidence a repo's entity; they don't propose one
+            if document.source_type == SOURCE_GITHUB_DOC:
+                # Repo documents (CLAUDE.md, architecture docs) evidence an existing
+                # entity — they don't propose one. The exception: a NESTED README
+                # declares a child project of a (possibly collection) repository
+                # (MASTER CV REPAIR §3.3/§7.4), so it proposes that project.
+                path = document.source_ref
+                child = nested_readme_project_name(path)
+                if child is None:
+                    continue
+                key = child.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                proposals.append(
+                    ProposedEntity(
+                        name=child,
+                        kind=ExperienceKind.PROJECT,
+                        section=ExperienceSection.PROJECTS_HACKATHONS,
+                        aliases=(document.source_ref,),
+                        source_refs=(document.source_ref,),
+                    )
+                )
+                continue
             key = document.title.casefold()
             if not document.title.strip() or key in seen:
                 continue
@@ -250,6 +276,67 @@ class HeuristicSectionAssigner:
         return assignments
 
 
+# --- roster review hints (MASTER CV REPAIR §7.2/§12.4) --------------------------------
+
+# Generic repository/document names that are not canonical project names without
+# source support (§12.4). Compared casefolded against the entity name.
+GENERIC_PROJECT_NAMES = frozenset(
+    {
+        "portfolio",
+        "final-project",
+        "final project",
+        "project",
+        "projects",
+        "capstone",
+        "assignment",
+        "homework",
+    }
+)
+_COURSE_CODE = re.compile(r"^[A-Za-z]{2,4}\s?-?\d{3,4}$")
+
+
+def _repo_ref_aliases(experience: Experience) -> list[str]:
+    """Aliases shaped like a repo ref (``owner/name``, no file path)."""
+    return [a for a in experience.aliases if a.count("/") == 1 and not a.endswith(".md")]
+
+
+def roster_review_hints(experience: Experience, roster: Sequence[Experience]) -> dict[str, object]:
+    """Derived review metadata for one roster entry (§7.2): shown, never persisted.
+
+    * ``may_be_container`` — another entity's alias sits UNDER this entity's repo ref
+      (a nested child doc), so this repo may be a collection, not a project.
+    * ``derived_from_repo_name`` — the entity name is exactly its repo alias's name
+      part: identity came from a storage boundary, not source content.
+    * ``generic_name`` — the name is a §12.4 generic (``portfolio``, ``capstone``,
+      course codes …) that needs source support before it is a real project name.
+    * ``overlapping_ids`` — other entities sharing a name/alias with this one
+      (competing interpretations; resolved by merge or alias edit).
+    """
+    repo_refs = _repo_ref_aliases(experience)
+    others = [e for e in roster if e.id != experience.id]
+    may_be_container = any(
+        alias.startswith(f"{ref}/") for ref in repo_refs for e in others for alias in e.aliases
+    )
+    name = " ".join(experience.name.split()).casefold()
+    derived_from_repo_name = any(ref.split("/", 1)[1].casefold() == name for ref in repo_refs)
+    generic_name = name in GENERIC_PROJECT_NAMES or bool(_COURSE_CODE.match(experience.name))
+
+    def identity_set(entity: Experience) -> set[str]:
+        return {
+            " ".join(entity.name.split()).casefold(),
+            *(" ".join(a.split()).casefold() for a in entity.aliases),
+        }
+
+    own_names = identity_set(experience)
+    overlapping_ids = sorted(e.id for e in others if own_names & identity_set(e))
+    return {
+        "may_be_container": may_be_container,
+        "derived_from_repo_name": derived_from_repo_name,
+        "generic_name": generic_name,
+        "overlapping_ids": overlapping_ids,
+    }
+
+
 # --- cross-entity evidence overlap (V3 Phase 1, docs/ARCHITECTURE_V3.md §3.7) ---------
 
 # A shared chunk shorter than this never signals: short fragments (section headers,
@@ -348,4 +435,5 @@ __all__ = [
     "SectionContent",
     "SourceDocument",
     "detect_entity_overlaps",
+    "roster_review_hints",
 ]

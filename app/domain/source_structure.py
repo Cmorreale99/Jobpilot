@@ -336,6 +336,48 @@ def top_level_sections(elements: Sequence[SourceElement]) -> list[SectionSubtree
     ]
 
 
+def child_sections(
+    elements: Sequence[SourceElement], subtree: SectionSubtree
+) -> list[SectionSubtree]:
+    """Partition one section subtree into its CHILD subtrees, document order.
+
+    One subtree per child heading directly governed by the root, plus a preamble
+    pseudo-section (``heading_index=None``) for non-heading elements sitting directly
+    under the root. The root heading element itself belongs to no child. Ownership
+    refinement (MASTER CV REPAIR §4.7): when a top-level heading decides nothing —
+    a portfolio README's title over child-project sections — assignment descends to
+    these children instead of guessing from the mixed body.
+    """
+    root = subtree.heading_index
+    if root is None:
+        return []
+    grouped: dict[int | None, list[int]] = {}
+    order: list[int | None] = []
+    for index in subtree.element_indices:
+        if index == root:
+            continue
+        current = elements[index]
+        while current.parent_index is not None and current.parent_index != root:
+            current = elements[current.parent_index]
+        key = (
+            current.sequence_index
+            if current.element_type == ELEMENT_HEADING and current.parent_index == root
+            else None
+        )
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(index)
+    return [
+        SectionSubtree(
+            heading_index=key,
+            path=heading_text(elements[key]) if key is not None else None,
+            element_indices=tuple(grouped[key]),
+        )
+        for key in order
+    ]
+
+
 def verify_full_coverage(raw: str, elements: list[SourceElement]) -> list[str]:
     """The reconciliation invariant: zero silently dropped characters.
 
@@ -381,6 +423,7 @@ __all__ = [
     "STRUCTURER_VERSION",
     "SectionSubtree",
     "SourceElement",
+    "child_sections",
     "heading_text",
     "heading_trail",
     "structure_commit_message",

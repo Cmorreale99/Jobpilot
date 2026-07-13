@@ -31,6 +31,7 @@ from app.domain.resume_context import (
     build_resume_context,
     build_story_resume_context,
 )
+from app.domain.validation_runs import ValidationRunLog
 from app.render.render_master_cv import render
 from app.services.master_cv_snapshot import create_master_cv_snapshot
 from app.services.story_snapshot import create_story_snapshot
@@ -90,6 +91,7 @@ def render_master_cv_from_stories(
     settings: Settings | None = None,
     *,
     profile: ResumeProfile | None = None,
+    validation_log: ValidationRunLog | None = None,
 ) -> Artifact:
     """Render the Master CV docx from **approved project stories** (V3 Phase 4).
 
@@ -97,7 +99,9 @@ def render_master_cv_from_stories(
     (render-time resume-ready gate + duplicate-metric refusal applied there), and the docx
     renders that frozen version through the same frozen template. Raises
     :class:`~app.domain.story_snapshot.DuplicateMetricError` when two approved stories share
-    an outcome span.
+    an outcome span. With a ``validation_log``, required-source failures in the latest
+    gather block publication (:class:`~app.services.story_snapshot.SourceCompletenessError`)
+    and every story's publication disposition is recorded (MASTER CV REPAIR §5.9/§13.8).
     """
     settings = settings or get_settings()
     template = Path(settings.resume_template_path)
@@ -105,7 +109,13 @@ def render_master_cv_from_stories(
         raise RenderConfigurationError(f"resume template not found at {template}")
     profile = profile or load_resume_profile(settings)
 
-    snapshot = create_story_snapshot(user_id, story_repository, claim_repository, snapshot_store)
+    snapshot = create_story_snapshot(
+        user_id,
+        story_repository,
+        claim_repository,
+        snapshot_store,
+        validation_log=validation_log,
+    )
     context = build_story_resume_context(profile, snapshot.content)
 
     return _emit(user_id, context, snapshot, settings, template, artifact_store)

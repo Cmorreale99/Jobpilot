@@ -29,9 +29,11 @@ from app.domain.claims import (
     Experience,
     ExperienceKind,
     ExperienceStatus,
+    evidence_source_url,
 )
+from app.domain.evidence_inventory import evidence_categories, source_importance
 from app.domain.project_story import ProjectStoryRepository
-from app.domain.roster import RosterDetectionError
+from app.domain.roster import RosterDetectionError, roster_review_hints
 from app.domain.source_capture import SourceCaptureStore
 from app.domain.validation_runs import ValidationRunLog
 from app.integrations.drive_factory import create_drive_client
@@ -80,6 +82,9 @@ def _serialize(experience: Experience, repository: ClaimRepository) -> dict[str,
         if experience.status is ExperienceStatus.CONFIRMED
         else 0
     )
+    # Derived review hints (MASTER CV REPAIR §7.2/§12.4): container/repo-name/generic
+    # flags + competing interpretations, computed at read time, never persisted.
+    hints = roster_review_hints(experience, repository.list_experiences(experience.user_id))
     return {
         "id": experience.id,
         "name": experience.name,
@@ -92,6 +97,7 @@ def _serialize(experience: Experience, repository: ClaimRepository) -> dict[str,
         "sort_order": experience.sort_order,
         "merged_into_id": experience.merged_into_id,
         "assigned_chunks": assigned,
+        **hints,
     }
 
 
@@ -127,6 +133,8 @@ async def detect(
         "documents": report.documents,
         "proposed": [_serialize(e, repository) for e in report.proposed],
         "sources": report.gather.summary(),
+        # §4.16/§13.1: discovery vs processing over the actual configured universe.
+        "coverage": report.gather.coverage(),
     }
 
 
@@ -158,6 +166,8 @@ async def assign(
         "unassigned": report.unassigned,
         "pinned": report.pinned,
         "sources": report.gather.summary(),
+        # §4.16/§13.1: discovery vs processing over the actual configured universe.
+        "coverage": report.gather.coverage(),
         # H5: the per-section ownership decisions and any LLM prompt truncations —
         # both reported, never silent.
         "sections": [
@@ -170,6 +180,9 @@ async def assign(
             for decision in report.sections
         ],
         "truncated_prompts": report.truncated_prompts,
+        # §16.7: refs matching multiple confirmed entities — unresolved, awaiting the
+        # user's decision (resolve via alias edits or manual evidence assignment).
+        "ambiguous": list(report.ambiguous),
         # H6: stale rows visibly superseded, never orphaned — plus every warning.
         "reconciliation": {
             **report.reconciliation.summary(),
@@ -224,6 +237,56 @@ def unassigned(user_id: str, repository: RepositoryDep) -> dict[str, Any]:
             for e in rows
         ],
     }
+
+
+@router.get("/evidence")
+def evidence_inventory(
+    user_id: str,
+    repository: RepositoryDep,
+    experience_id: int | None = None,
+    include_inactive: bool = False,
+) -> dict[str, Any]:
+    """The full evidence inventory (MASTER CV REPAIR §4.12/§5.4.10/§10.3/§15).
+
+    Every stored evidence row, queryable independently of claim or story readiness:
+    source identity + link, exact text, section context, assignment (entity, method,
+    active/superseded), DERIVED category (claim-citation facts, never a text guess),
+    §6.3 importance tier, and which claims cite it. Non-PAR evidence is inspectable
+    here — nothing disappears for failing to form a complete resume bullet.
+    """
+    claims = repository.list_claims(user_id)
+    rows = [
+        row
+        for row in repository.list_all_evidence(user_id)
+        if (include_inactive or row.is_active)
+        and (experience_id is None or row.experience_id == experience_id)
+    ]
+    items = []
+    for row in rows:
+        cited_by = [
+            {"claim_id": claim.id, "field": link.field.value}
+            for claim in claims
+            for link in claim.evidence
+            if link.evidence_id == row.id
+        ]
+        items.append(
+            {
+                "id": row.id,
+                "source_type": row.source_type,
+                "source_ref": row.source_ref,
+                "source_url": evidence_source_url(row.source_type, row.source_ref),
+                "chunk_text": row.chunk_text,
+                "section_path": row.section_path,
+                "experience_id": row.experience_id,
+                "assignment_method": row.assignment_method,
+                "is_active": row.is_active,
+                "superseded_by_id": row.superseded_by_id,
+                "categories": list(evidence_categories(row, claims)),
+                "importance_tier": source_importance(row.source_type, row.source_ref),
+                "cited_by": cited_by,
+            }
+        )
+    return {"count": len(items), "items": items}
 
 
 @router.post("/evidence/{evidence_id}/assign")

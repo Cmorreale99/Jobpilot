@@ -177,14 +177,36 @@ class GitHubRepoMetadata:
 
 
 @dataclass(frozen=True)
+class GitHubRepoFile:
+    """One entry of a repository's file tree — the enumerable GitHub universe.
+
+    Every admitted repository's tree is explicitly enumerable (MASTER CV REPAIR
+    §5.2.13): each file ends in a disposition downstream (ingested / awaiting user
+    decision / read failed), so no source object silently disappears.
+    """
+
+    repo_ref: str
+    path: str
+    sha: str | None = None
+    size_bytes: int | None = None
+
+
+@dataclass(frozen=True)
 class GitHubDocument:
-    """A repository's extracted README text (career evidence)."""
+    """A repository document's extracted text (career evidence).
+
+    ``path`` is the file's tree path (``None`` only for legacy root-README reads);
+    ``revision`` is the blob/commit SHA when the transport reports one — path and
+    revision provenance ride with the evidence (§5.2.12).
+    """
 
     repo_ref: str
     title: str
     text: str
     primary_language: str | None = None
     pushed_at: datetime | None = None
+    path: str | None = None
+    revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -218,6 +240,21 @@ class GitHubClient(Protocol):
 
     async def read_repo(self, repo_ref: str) -> GitHubDocument:
         """Read and return the README text of a single repository."""
+        ...
+
+    async def list_repo_files(self, repo_ref: str) -> list[GitHubRepoFile]:
+        """Enumerate the repository's complete file tree (the GitHub universe).
+
+        Required for source accounting (MASTER CV REPAIR §4.1/§5.1): coverage
+        denominators are computed over this enumeration, and every entry receives an
+        explicit disposition. Raises :class:`GitHubResponseError` on failure — an
+        unenumerable repo is a required-source failure, never a silent README-only
+        subset.
+        """
+        ...
+
+    async def read_repo_file(self, repo_ref: str, path: str) -> GitHubDocument:
+        """Read one repository file by tree path (nested READMEs, CLAUDE.md, docs)."""
         ...
 
     async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:
