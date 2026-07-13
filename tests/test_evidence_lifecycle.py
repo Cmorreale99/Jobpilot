@@ -496,3 +496,27 @@ async def test_superseded_reviewed_endpoint_lists_decisions_on_vanished_text() -
     assert item["status"] == "approved"
     assert item["superseded_evidence"]
     assert "Cut reconciliation time" in item["superseded_evidence"][0]["chunk_text"]
+
+
+def test_verbatim_upsert_under_newer_normalizer_restamps_the_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A normalizer bump must not strand unchanged rows on the old stamp: a row the
+    current run re-produces VERBATIM was just vouched for by the current normalizer,
+    so the upsert re-stamps it (observed live: 1,525 stranded rows, 2026-07-12)."""
+    import app.services.claim_repository as repo_module
+
+    repository = InMemoryClaimRepository()
+    monkeypatch.setattr(repo_module, "NORMALIZATION_VERSION", 1)
+    old = repository.upsert_evidence(
+        "u1", EvidenceChunk(SOURCE_DRIVE, "doc#chars=0-10", "Same text.")
+    )
+    assert old.normalization_version == 1
+
+    monkeypatch.setattr(repo_module, "NORMALIZATION_VERSION", 2)
+    restamped = repository.upsert_evidence(
+        "u1", EvidenceChunk(SOURCE_DRIVE, "doc#chars=0-10", "Same text.")
+    )
+    assert restamped.id == old.id
+    assert restamped.chunk_text == "Same text."
+    assert restamped.normalization_version == 2
