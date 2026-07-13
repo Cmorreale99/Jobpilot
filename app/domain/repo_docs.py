@@ -16,6 +16,8 @@ Shared by the gather service (admission + accounting) and the roster proposer
 
 from __future__ import annotations
 
+import re
+
 # Root README variants (case-insensitive basenames) accepted as "the" README.
 _README_BASENAMES = frozenset(
     {"readme", "readme.md", "readme.markdown", "readme.rst", "readme.txt"}
@@ -43,12 +45,46 @@ def is_claude_md(path: str) -> bool:
     return _basename(path) == _CLAUDE_BASENAME
 
 
+# Directory segments that hold test data, agent tooling, or vendored content — not
+# the user's career documentation. Live finding (2026-07-12): admitting all Markdown
+# pulled `tests/fixtures/**` into the corpus, whose files describe FICTIONAL careers
+# (fabricated projects and metrics) — ingesting them risks invented evidence
+# (§5.7.2). These paths stay enumerated with an awaiting-user-decision disposition;
+# the user's §22.1 decision can admit them explicitly.
+_NON_CAREER_SEGMENTS = frozenset(
+    {
+        "tests",
+        "test",
+        "fixtures",
+        ".claude",
+        ".github",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "templates",
+    }
+)
+
+
+def _in_non_career_directory(path: str) -> bool:
+    segments = [p.strip().lower() for p in path.split("/")[:-1]]
+    return any(segment in _NON_CAREER_SEGMENTS for segment in segments)
+
+
 def repo_doc_admission_reason(path: str) -> str | None:
     """Why this tree path is NOT admitted as a career document (``None`` = admitted).
 
-    Admitted: READMEs (root + nested), CLAUDE.md, and all Markdown. Everything else
-    is enumerated but awaits the user's §22.1 decision.
+    Admitted: READMEs (root + nested), CLAUDE.md, and all Markdown — except files
+    under test/tooling/vendored directories, whose content is test data (often a
+    fictional career), not the user's documentation. Everything not admitted is
+    enumerated but awaits the user's §22.1 decision; nothing silently disappears.
     """
+    if _in_non_career_directory(path):
+        return (
+            "in a test/tooling/vendored directory (test fixtures often describe a "
+            "FICTIONAL career) — awaiting the user's §22.1 admission decision"
+        )
     if is_readme_path(path) or is_claude_md(path):
         return None
     if _basename(path).endswith(_MARKDOWN_SUFFIXES):
@@ -57,6 +93,22 @@ def repo_doc_admission_reason(path: str) -> str | None:
         "not in the admitted GitHub document universe (source/tests/notebooks and "
         "other non-Markdown files await the user's §22.1 admission decision)"
     )
+
+
+_MULTI_ENTITY_BASENAMES = re.compile(r"(^|[^a-z])(resume|cv)([^a-z]|$)", re.IGNORECASE)
+
+
+def is_multi_entity_doc(path: str) -> bool:
+    """True for docs that describe MANY entities (resumes/CVs checked into a repo).
+
+    §6.1: one document may contain multiple projects or roles. A resume inside a
+    single-project repository must never inherit the repo's entity boundary — its
+    sections are owned per section, like any multi-entity document. (Live finding
+    2026-07-12: `Jobpilot/resume.md` would otherwise force Cooper/OneWorld content
+    under the JobPilot entity.)
+    """
+    stem = _basename(path).rsplit(".", 1)[0]
+    return bool(_MULTI_ENTITY_BASENAMES.search(stem))
 
 
 def repo_doc_title(repo_name: str, path: str) -> str:
@@ -77,6 +129,7 @@ def nested_readme_project_name(path: str) -> str | None:
 
 __all__ = [
     "is_claude_md",
+    "is_multi_entity_doc",
     "is_readme_path",
     "is_root_readme",
     "nested_readme_project_name",

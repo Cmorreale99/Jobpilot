@@ -220,3 +220,34 @@ async def test_root_readme_keeps_legacy_source_identity(
         "cmorreale/jobpilot",
         "cmorreale/Cameron-Morreale-portfolio",
     }
+
+
+# --- live findings 2026-07-12: test-fixture and multi-entity doc handling ---------------
+
+
+def test_test_and_tooling_paths_are_not_admitted_career_docs() -> None:
+    """Test fixtures often describe a FICTIONAL career — never silently ingested."""
+    from app.domain.repo_docs import repo_doc_admission_reason
+
+    for path in (
+        "tests/fixtures/github/fraud-stream.md",
+        "tests/eval/README.md",
+        ".claude/agents/model-scout.md",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        "web/node_modules/pkg/README.md",
+    ):
+        reason = repo_doc_admission_reason(path)
+        assert reason is not None and "22.1" in reason, f"{path} must await user decision"
+    # Real docs stay admitted.
+    for path in ("CLAUDE.md", "docs/ARCHITECTURE.md", "projects/rec/README.md", "resume.md"):
+        assert repo_doc_admission_reason(path) is None, f"{path} must stay admitted"
+
+
+def test_resume_docs_are_multi_entity_never_repo_forced() -> None:
+    from app.domain.repo_docs import is_multi_entity_doc
+
+    assert is_multi_entity_doc("resume.md")
+    assert is_multi_entity_doc("docs/Cmorreale_2026_finance_CV.md")
+    assert is_multi_entity_doc("my-resume-v2.md")
+    assert not is_multi_entity_doc("docs/ARCHITECTURE.md")
+    assert not is_multi_entity_doc("cvs_pharmacy_integration.md")  # 'cvs' is not 'cv'

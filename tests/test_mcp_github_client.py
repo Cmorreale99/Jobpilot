@@ -333,3 +333,52 @@ async def test_read_repo_file_reads_nested_path_with_revision() -> None:
     assert doc.text == "# Paper Recommender"
     assert doc.path == "projects/rec/README.md"
     assert doc.revision == "n1"
+
+
+class _FlakySession:
+    """Fails the first call for one path, succeeds on retry (live stdio hiccup)."""
+
+    def __init__(self, listings: dict[str, _FakeResult], flaky_path: str) -> None:
+        self._listings = listings
+        self._flaky_path = flaky_path
+        self._failed_once = False
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> _FakeResult:
+        if arguments["path"] == self._flaky_path and not self._failed_once:
+            self._failed_once = True
+            return _FakeResult(resource_text="transient garbage, not a listing")
+        return self._listings[arguments["path"]]
+
+
+async def test_list_repo_files_parses_json_string_listing() -> None:
+    """Some transports deliver the directory listing as a JSON text payload."""
+    import json as _json
+
+    listing = [{"name": "README.md", "path": "README.md", "type": "file", "sha": "r1"}]
+    client = _path_client({"/": _FakeResult(resource_text=_json.dumps(listing))})
+    files = await client.list_repo_files("jordanrivera/fraud-stream")
+    assert [f.path for f in files] == ["README.md"]
+
+
+async def test_list_repo_files_retries_a_transient_directory_failure_once() -> None:
+    root = [
+        {"name": "docs", "path": "docs", "type": "dir"},
+        {"name": "README.md", "path": "README.md", "type": "file"},
+    ]
+    docs = [{"name": "A.md", "path": "docs/A.md", "type": "file"}]
+    session = _FlakySession(
+        {"/": _FakeResult(structured=root), "docs": _FakeResult(structured=docs)},
+        flaky_path="docs",
+    )
+
+    @asynccontextmanager
+    async def factory() -> Any:
+        yield session
+
+    client = McpGitHubClient(
+        _mcp_settings(),
+        credentials=GitHubCredentials(access_token="pat"),
+        session_factory=factory,
+    )
+    files = await client.list_repo_files("jordanrivera/fraud-stream")
+    assert {f.path for f in files} == {"README.md", "docs/A.md"}

@@ -228,3 +228,37 @@ def test_roster_review_hints_flag_containers_and_generic_names() -> None:
     assert generic_hints["generic_name"] is True, (
         "course-code names (DS4635) are not canonical project names without source support"
     )
+
+
+# --- live finding 2026-07-13: one assigner failure never kills the run ------------------
+
+
+@pytest.mark.asyncio
+async def test_assigner_failure_is_bounded_to_the_document() -> None:
+    from app.domain.roster import RosterDetectionError
+
+    class ExplodingSectionAssigner:
+        method = "llm"
+
+        def assign_sections(self, sections, roster):
+            raise RosterDetectionError("LLM call returned no text blocks")
+
+    repo = InMemoryClaimRepository()
+    _truth_roster(repo)
+    report = await run_roster_assignment(
+        EmptyDriveClient(),
+        MockGitHubClient(FIXTURES),
+        USER,
+        repo,
+        _settings(),
+        section_assigner=ExplodingSectionAssigner(),
+    )
+
+    assert report.assignment_failures, "the failure must be reported, not swallowed"
+    # The failed documents' chunks persist, honestly unassigned.
+    portfolio_rows = _rows_for_base(repo, PORTFOLIO, SOURCE_GITHUB_README)
+    assert portfolio_rows, "chunks must still persist when assignment fails"
+    assert all(row.experience_id is None for row in portfolio_rows)
+    # Deterministic boundaries (forced docs, commits) are unaffected by the failure.
+    jobpilot_rows = _rows_for_base(repo, "cmorreale/jobpilot", SOURCE_GITHUB_README)
+    assert jobpilot_rows and all(row.experience_id is not None for row in jobpilot_rows)

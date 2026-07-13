@@ -21,6 +21,7 @@ build returns formatted text rather than structured content, add a parser at
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -283,15 +284,7 @@ class McpGitHubClient:
             if directory in seen:
                 continue
             seen.add(directory)
-            payload = await self._call(
-                self._tools.file_contents,
-                {"owner": owner, "repo": repo, "path": directory},
-            )
-            if not isinstance(payload, list):
-                raise GitHubResponseError(
-                    f"GitHub MCP directory listing for {repo_ref}:{directory!r} returned "
-                    f"an unexpected payload type {type(payload).__name__!r}"
-                )
+            payload = await self._list_directory(owner, repo, repo_ref, directory)
             for item in payload:
                 if not isinstance(item, dict):
                     continue
@@ -312,6 +305,41 @@ class McpGitHubClient:
                         )
                     )
         return files
+
+    async def _list_directory(
+        self, owner: str, repo: str, repo_ref: str, directory: str
+    ) -> list[Any]:
+        """One directory listing, tolerant of transport variance (verified live).
+
+        The server may deliver the REST listing as structured content, as a
+        JSON-encoded text block, or (transient stdio hiccups — each call spawns a
+        fresh server process) fail once mid-walk. A string payload is JSON-parsed;
+        a failed or non-list response is retried ONCE before the walk declares the
+        repository unenumerable (a required-source failure, §14.1 — never a silent
+        README-only subset).
+        """
+        last_error: GitHubResponseError | None = None
+        for _attempt in range(2):
+            try:
+                payload = await self._call(
+                    self._tools.file_contents,
+                    {"owner": owner, "repo": repo, "path": directory},
+                )
+            except GitHubResponseError as exc:
+                last_error = exc
+                continue
+            if isinstance(payload, str):
+                with contextlib.suppress(json.JSONDecodeError):
+                    payload = json.loads(payload)
+            if isinstance(payload, list):
+                return payload
+            last_error = GitHubResponseError(
+                f"GitHub MCP directory listing for {repo_ref}:{directory!r} returned "
+                f"an unexpected payload type {type(payload).__name__!r}"
+            )
+        raise last_error if last_error is not None else GitHubResponseError(
+            f"GitHub MCP directory listing for {repo_ref}:{directory!r} failed"
+        )
 
     async def list_commits(self, repo_ref: str) -> list[GitHubCommit]:
         self._require_credentials()

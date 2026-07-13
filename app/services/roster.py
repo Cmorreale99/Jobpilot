@@ -51,6 +51,7 @@ from app.domain.project_reconciliation import (
 )
 from app.domain.repo_docs import (
     is_claude_md,
+    is_multi_entity_doc,
     is_readme_path,
     is_root_readme,
     repo_doc_admission_reason,
@@ -58,6 +59,7 @@ from app.domain.repo_docs import (
 )
 from app.domain.roster import (
     ChunkAssigner,
+    RosterDetectionError,
     RosterProposer,
     SectionAssigner,
     SectionContent,
@@ -369,6 +371,9 @@ class RosterAssignmentReport:
     # Refs matching MULTIPLE confirmed entities (MASTER CV REPAIR §4.9/§16.7): their
     # evidence stays unresolved (never first-match assigned) awaiting a user decision.
     ambiguous: tuple[str, ...] = ()
+    # Documents whose assigner call failed outright (e.g. an LLM error): their chunks
+    # persist honestly unassigned; the failure is bounded, loud, and re-runnable.
+    assignment_failures: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1154,6 +1159,10 @@ async def run_roster_assignment(
                 return False, None
             if len(direct) == 1:
                 return True, direct[0].id
+            if is_multi_entity_doc(document.source_ref):
+                # A resume/CV checked into a repo describes MANY entities (§6.1):
+                # never repo-boundary-forced — its sections are owned per section.
+                return False, None
         repo_ref = _doc_repo_ref(document)
         if repo_ref in collections:
             return False, None
@@ -1164,6 +1173,21 @@ async def run_roster_assignment(
         if len(matches) == 1:
             return True, matches[0].id
         return False, None
+
+    assignment_failures: list[str] = []
+
+    def note_assignment_failure(document: SourceDocument, exc: Exception) -> None:
+        """One assigner failure never kills the run (live 2026-07-13: an LLM call
+        with no text blocks crashed the whole assignment pass). The document's
+        chunks persist honestly UNASSIGNED — queryable, manually assignable — and
+        the failure is loud in the log, the report, and the API response."""
+        assignment_failures.append(f"{document.source_type}:{document.source_ref}: {exc}")
+        logger.error(
+            "assignment failed for %s %s — its chunks stay unassigned this run: %s",
+            document.source_type,
+            document.source_ref,
+            exc,
+        )
 
     for document in documents:
         if document.source_type == SOURCE_GITHUB_COMMIT:
@@ -1202,8 +1226,13 @@ async def run_roster_assignment(
                 targets: list[int | None] = [forced_target] * len(pieces)
                 method = ASSIGNMENT_README_REF
             else:
-                targets = assigner.assign([piece.text for piece in pieces], roster)
-                method = assigner.method
+                try:
+                    targets = assigner.assign([piece.text for piece in pieces], roster)
+                    method = assigner.method
+                except RosterDetectionError as exc:
+                    note_assignment_failure(document, exc)
+                    targets = [None] * len(pieces)
+                    method = None
                 truncated += getattr(assigner, "last_truncated", 0)
             fresh: list[StoredEvidence] = []
             for piece, target in zip(pieces, targets, strict=True):
@@ -1244,10 +1273,16 @@ async def run_roster_assignment(
         if not has_headings:
             # Structureless source: no section context exists — per-chunk assignment
             # survives here (and only here), still refusing ties.
-            targets = assigner.assign([chunk.text for chunk in prepared], roster)
+            chunk_method: str | None = assigner.method
+            try:
+                targets = assigner.assign([chunk.text for chunk in prepared], roster)
+            except RosterDetectionError as exc:
+                note_assignment_failure(document, exc)
+                targets = [None] * len(prepared)
+                chunk_method = None
             truncated += getattr(assigner, "last_truncated", 0)
             fresh = persist(
-                document, prepared, targets, [assigner.method] * len(prepared), element_ids
+                document, prepared, targets, [chunk_method] * len(prepared), element_ids
             )
             reconcile(document, previous, fresh)
             continue
@@ -1321,7 +1356,12 @@ async def run_roster_assignment(
                 for index in subtree.element_indices:
                     target_by_element[index] = section_target
 
-        decide_sections(sections)
+        try:
+            decide_sections(sections)
+        except RosterDetectionError as exc:
+            # Ownership undecided: the document's chunks persist honestly unassigned.
+            note_assignment_failure(document, exc)
+            target_by_element.clear()
         targets = [
             target_by_element.get(chunk.element_index) if chunk.element_index is not None else None
             for chunk in prepared
@@ -1370,7 +1410,15 @@ async def run_roster_assignment(
         truncated_prompts=truncated,
         reconciliation=reconciliation,
         ambiguous=tuple(ambiguity_notes.values()),
+        assignment_failures=tuple(assignment_failures),
     )
+    if report.assignment_failures:
+        logger.error(
+            "roster assignment for %s: %d document(s) failed assignment and stay unassigned: %s",
+            user_id,
+            len(report.assignment_failures),
+            "; ".join(report.assignment_failures),
+        )
     if report.ambiguous:
         logger.warning(
             "roster assignment for %s: %d ambiguous ref(s) left unresolved for a user decision: %s",

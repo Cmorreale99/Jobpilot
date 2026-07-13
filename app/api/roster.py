@@ -183,6 +183,8 @@ async def assign(
         # §16.7: refs matching multiple confirmed entities — unresolved, awaiting the
         # user's decision (resolve via alias edits or manual evidence assignment).
         "ambiguous": list(report.ambiguous),
+        # Documents whose assigner failed (bounded, chunks left unassigned).
+        "assignment_failures": list(report.assignment_failures),
         # H6: stale rows visibly superseded, never orphaned — plus every warning.
         "reconciliation": {
             **report.reconciliation.summary(),

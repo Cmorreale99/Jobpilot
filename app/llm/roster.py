@@ -185,6 +185,11 @@ class LlmRosterProposer:
                 messages=[LlmMessage.user(prompt)],
                 tier=self._tier,
                 validator=_parse_entities,
+                # Structured JSON output: adaptive thinking (the model default
+                # when omitted) shares max_tokens with the reply and can consume
+                # the whole budget - 'no text blocks' observed live 2026-07-13
+                # (same failure PR #68 fixed for extraction calls).
+                thinking={"type": "disabled"},
             )
         except LlmError as exc:
             raise RosterDetectionError(f"LLM roster detection failed: {exc}") from exc
@@ -238,6 +243,11 @@ class LlmChunkAssigner:
                 messages=[LlmMessage.user(prompt)],
                 tier=self._tier,
                 validator=_parse_assignments,
+                # Structured JSON output: adaptive thinking (the model default
+                # when omitted) shares max_tokens with the reply and can consume
+                # the whole budget - 'no text blocks' observed live 2026-07-13
+                # (same failure PR #68 fixed for extraction calls).
+                thinking={"type": "disabled"},
             )
         except LlmError as exc:
             raise RosterDetectionError(f"LLM chunk assignment failed: {exc}") from exc
@@ -328,6 +338,11 @@ class LlmSectionAssigner:
                 messages=[LlmMessage.user(prompt)],
                 tier=self._tier,
                 validator=_parse_section_assignments,
+                # Structured JSON output: adaptive thinking (the model default
+                # when omitted) shares max_tokens with the reply and can consume
+                # the whole budget - 'no text blocks' observed live 2026-07-13
+                # (same failure PR #68 fixed for extraction calls).
+                thinking={"type": "disabled"},
             )
         except LlmError as exc:
             raise RosterDetectionError(f"LLM section assignment failed: {exc}") from exc

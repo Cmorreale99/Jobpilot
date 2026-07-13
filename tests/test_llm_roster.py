@@ -127,3 +127,27 @@ def test_assigner_drops_hallucinated_ids_and_missing_indices() -> None:
 def test_assigner_failure_is_loud() -> None:
     with pytest.raises(RosterDetectionError):
         LlmChunkAssigner(FakeLlmClient(["nope", "still nope"])).assign(["a"], _roster())
+
+
+def test_roster_llm_calls_disable_adaptive_thinking() -> None:
+    """Live 2026-07-13: adaptive thinking consumed max_tokens on an assignment call
+    ('no text blocks') — every structured roster call must disable it (same fix
+    PR #68 applied to extraction)."""
+    client = FakeLlmClient([_entities_json()])
+    LlmRosterProposer(client).propose(_DOCS)
+    assert client.calls[-1].thinking == {"type": "disabled"}
+
+    assign_client = FakeLlmClient(
+        [json.dumps({"assignments": [{"chunk_index": 0, "experience_id": None}]})]
+    )
+    roster = [
+        Experience(
+            id=1,
+            user_id="u1",
+            name="Wellington",
+            section=ExperienceSection.PROJECTS_HACKATHONS,
+            kind=ExperienceKind.PROJECT,
+        )
+    ]
+    LlmChunkAssigner(assign_client).assign(["some chunk"], roster)
+    assert assign_client.calls[-1].thinking == {"type": "disabled"}
