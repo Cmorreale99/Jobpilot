@@ -156,18 +156,18 @@ def _seed_group(repo: InMemoryClaimRepository, name: str, chars: int) -> None:
 @pytest.mark.asyncio
 async def test_cost_ceiling_stops_before_starting_over_budget_groups() -> None:
     repo = InMemoryClaimRepository()
-    # Each ~400K-char group estimates ≈ $3.15 on sonnet pricing; a $5 ceiling
-    # admits exactly one.
+    # Each ~400K-char group estimates ≈ $7.35 on sonnet pricing (calibrated envelope);
+    # an $8 ceiling admits exactly one.
     _seed_group(repo, "Alpha", 400_000)
     _seed_group(repo, "Beta", 400_000)
     extractor = CountingExtractor()
-    settings = _settings(llm_enabled=True, claims_llm_extraction=True, llm_cost_ceiling_usd=5.0)
+    settings = _settings(llm_enabled=True, claims_llm_extraction=True, llm_cost_ceiling_usd=8.0)
 
     report = await run_claim_extraction(USER, repo, settings, extractor=extractor)
 
     assert len(extractor.groups) == 1, "only the affordable group may start"
     assert len(report.skipped_budget) == 1
-    assert report.estimated_cost_usd <= 5.0
+    assert report.estimated_cost_usd <= 8.0
     # The skipped group stays eligible: a second (higher-ceiling) run picks it up
     # and the completed one is hash-skipped, not re-paid.
     settings2 = _settings(llm_enabled=True, claims_llm_extraction=True, llm_cost_ceiling_usd=50.0)
@@ -197,5 +197,5 @@ def test_estimate_is_in_a_sane_ballpark() -> None:
         chunks=(EvidenceChunk(SOURCE_DRIVE, "d", "y" * 100_000),),
     )
     est = estimate_group_cost_usd(group, "claude-sonnet-5")
-    # 25K tokens → conservative envelope ≈ $0.79; must be neither $0 nor absurd.
-    assert 0.3 < est < 3.0
+    # 25K tokens → calibrated envelope ≈ $1.84; must be neither $0 nor absurd.
+    assert 0.5 < est < 5.0

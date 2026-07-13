@@ -296,16 +296,17 @@ def _dropped_draft_json(draft: DraftClaim) -> str:
 def estimate_group_cost_usd(group: EvidenceGroup, model: str) -> float:
     """Conservative pre-flight estimate for one group's two-pass LLM extraction.
 
-    ``chars/4`` approximates tokens. The envelope reflects the observed live shape
-    (2026-07-13): the chunk block is read by pass 1, pass 2 (cache-discounted), and
-    possibly a bounced re-extraction (x3 input turns overall), and pass-1 JSON quotes
-    the input (x1.5 output-to-input). An estimate is a guardrail, not a bill — it is
-    deliberately on the high side so the ceiling fails closed (§5.8.7).
+    ``chars/4`` approximates tokens. The envelope is CALIBRATED against the live run
+    of 2026-07-13, where a (3x input, 1.5x output) envelope under-ran actual spend by
+    ~2.4x — pass 1 + pass 2 + a bounced re-extraction re-read the block (cache writes
+    bill at 1.25x, and reads are not free), batch system prompts add per-call
+    overhead, and pass-1 JSON quotes the input. A ceiling only fails closed when the
+    estimate errs HIGH: (7x input, 3.5x output).
     """
     chars = sum(len(chunk.chunk_text) for chunk in group.chunks)
     tokens = chars / 4
     price = price_for(model)
-    return (tokens * 3 * price.input_per_mtok + tokens * 1.5 * price.output_per_mtok) / 1_000_000
+    return (tokens * 7 * price.input_per_mtok + tokens * 3.5 * price.output_per_mtok) / 1_000_000
 
 
 def _group_fingerprint(group: EvidenceGroup) -> str:
